@@ -1,0 +1,6 @@
+# Prefer SSH tunnels or a VPN for RPC. Do not expose wallet RPC to the internet.
+# This file is a reminder, not a recommended public reverse-proxy config.
+
+# Example SSH tunnel from operator laptop:
+# ssh -N -L 19556:127.0.0.1:19556 user@NODE_IP
+# Then call RPC locally at http://127.0.0.1:19556/

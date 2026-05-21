@@ -1,0 +1,63 @@
+# Legacy Coin pretty console / miner polish example
+rpcbind=127.0.0.1
+rpcport=19556
+port=19555
+
+# Pretty console and P2P heartbeat
+log_mode=pretty
+log_color=true
+log_emoji=true
+p2p_heartbeat=true
+p2p_heartbeat_seconds=60
+p2p_show_latency=true
+p2p_show_peer_height=true
+p2p_compact_heartbeat=true
+suppress_repeated_warnings=true
+trusted_peer_name=seed-node-1
+
+# Mining safety
+mining_enabled=false
+mining_threads=1
+mining_safe_required=true
+reject_zero_mining_hash=true
+# mining_pubkey_hash is created by setupwallet / getminingaddress
+
+# Full miner control
+# mining_enabled=true starts miner on daemon boot when wallet/mining_pubkey_hash is ready.
+# mining_auto_start=true is the explicit autostart switch; keep false for manual control.
+mining_auto_start=false
+mining_max_threads=4
+mining_peer_required=false
+mining_stop_after_blocks=0
+
+# --- V5.12 public P2P hardening ---
+# Legacy Coin remains public P2P. These controls improve identity and visibility.
+# V5.12.1 rejects empty/wrong chain_id when enforcement is enabled.
+chain_id=legacy-mainnet-1.0.0-rc2-5b4c78e4
+chain_id_enforce=true
+peer_safety=true
+peer_ban_threshold=100
+peer_temp_ban_seconds=3600
+peer_reconnect_backoff=true
+seed_peers=true
+
+# Developer/test repair only, not normal product mode:
+# connect=YOUR_NODE_IP:19555
+# noseednode=true
+
+# V5.12 transaction relay/mining test helpers
+# With mining_pubkey_hash set, this now works:
+#   legacycoin-cli generate 1
+# and the result should show mempool_tx_included > 0 when pending txs exist.
+
+# V5.13.1 pretty console defaults
+log_mode=pretty
+log_color=true
+log_emoji=true
+suppress_repeated_warnings=true
+p2p_heartbeat=true
+p2p_heartbeat_seconds=60
+p2p_show_latency=true
+p2p_show_peer_height=true
+p2p_compact_heartbeat=true
+chain_id_enforce=true

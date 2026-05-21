@@ -1,0 +1,31 @@
+# Legacy Coin mainnet example config
+# Copy to:
+#   Linux/macOS: ~/.legacycoind/legacycoin.conf
+#   Windows: %APPDATA%\LegacyCoin\legacycoin.conf
+
+# P2P must be reachable for seed/relay nodes.
+bind=0.0.0.0
+
+# Keep wallet/RPC private by default.
+# For public exposure, set rpcbind=0.0.0.0 and keep TLS+auth enabled.
+rpcbind=127.0.0.1
+rpcuser=legacyrpc
+rpcpassword=CHANGE-THIS-TO-32+RANDOM-CHARS
+rpctls=1
+rpctlscert=CHANGE-ME-PATH/rpc.cert
+rpctlskey=CHANGE-ME-PATH/rpc.key
+
+# Bootstrap peers. Use domain names you control or static IP:port values.
+addnode=seed1.example.org:19555
+addnode=seed2.example.org:19555
+addnode=seed3.example.org:19555
+
+# Optional launch safety: fail startup if these anchors do not match.
+interop_check=1
+interop_genesis_hash=5b4c78e4556afcd51acf7b9eb2e387fbea2d1414e6042d80d38e6256987154f5
+interop_message_start=a4acc64d
+interop_p2p_port=19555
+interop_rpc_port=19556
+
+# Do not enable this for mainnet. It exists for temporary testnet staging only.
+# allow_script_coverage_pending=false

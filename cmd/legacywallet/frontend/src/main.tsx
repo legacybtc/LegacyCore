@@ -1,0 +1,1441 @@
+import React, { useEffect, useMemo, useState } from "react";
+import { createRoot } from "react-dom/client";
+import {
+  Activity,
+  AlertTriangle,
+  Archive,
+  BadgeCheck,
+  Bug,
+  Coins,
+  Copy,
+  Database,
+  Download,
+  Gauge,
+  Globe2,
+  History,
+  Lock,
+  Network,
+  Pickaxe,
+  Play,
+  Radio,
+  RefreshCw,
+  Rocket,
+  Send,
+  Settings,
+  Shield,
+  Square,
+  Unlock,
+  Wallet,
+} from "lucide-react";
+import "./styles/app.css";
+
+const legacyLogo = "/legacy-logo.jpg";
+
+type Dict = Record<string, any>;
+type SettingsShape = {
+  dataDir: string;
+  startNodeOnLaunch: boolean;
+  stopNodeOnExit: boolean;
+  defaultThreads: number;
+  theme: string;
+  network?: { mode: string; nodes: string[] };
+  launchpad?: { apiUrl: string };
+};
+type Backend = {
+  Snapshot(): Promise<Dict>;
+  WalletExists(): Promise<boolean>;
+  CreateWallet(passphrase: string): Promise<Dict>;
+  ImportWallet(seedHex: string, passphrase: string): Promise<Dict>;
+  StartNode(): Promise<void>;
+  StopNode(): Promise<string>;
+  WindowMinimise(): Promise<void>;
+  WindowToggleMaximise(): Promise<void>;
+  Quit(): Promise<void>;
+  GetBlockchainInfo(): Promise<Dict>;
+  GetWalletSummary(): Promise<Dict>;
+  GetNewAddress(): Promise<string>;
+  ListReceiveAddresses(): Promise<string[]>;
+  GetDefaultAddress(): Promise<string>;
+  SendToAddress(to: string, amount: string, fee: string): Promise<Dict>;
+  SendTokenDeploy(op: Dict, fee: string): Promise<Dict>;
+  SendTokenTransfer(op: Dict, fee: string): Promise<Dict>;
+  SendTokenBurn(op: Dict, fee: string): Promise<Dict>;
+  SplitCoins(from: string, total: string, outputs: string, fee: string): Promise<Dict>;
+  GetLaunchpadAPI(path: string): Promise<Dict>;
+  ListWalletTransactions(): Promise<Dict[]>;
+  GetWalletTransaction(txid: string): Promise<Dict>;
+  GetTransactionStatus(txid: string): Promise<Dict>;
+  ListPendingTransactions(): Promise<Dict[]>;
+  RebroadcastTransaction(txid: string): Promise<Dict>;
+  GetPeerInfo(): Promise<any[]>;
+  GetMinerStatus(): Promise<Dict>;
+  StartMiner(threads: number): Promise<Dict>;
+  StopMiner(): Promise<Dict>;
+  SetMinerThreads(threads: number): Promise<Dict>;
+  GetNodeConfig(): Promise<Dict>;
+  SaveNetworkSettings(s: { mode: string; nodes: string[] }): Promise<Dict>;
+  TestNodeConnection(node: string): Promise<Dict>;
+  TestConfiguredNodes(): Promise<Dict[]>;
+  ReconnectPeers(): Promise<Dict>;
+  GetChainTiming(): Promise<Dict>;
+  Doctor(): Promise<Dict>;
+  CheckStorage(): Promise<Dict>;
+  BackupWallet(dest: string): Promise<Dict>;
+  GetExplorerSummary(): Promise<Dict>;
+  GetSupplyInfo(): Promise<Dict>;
+  GetRecentBlocks(limit: number): Promise<Dict[]>;
+  GetBlockByHeight(height: number): Promise<Dict>;
+  GetBlockByHash(hash: string): Promise<Dict>;
+  GetTransaction(txid: string): Promise<Dict>;
+  GetMempool(): Promise<Dict>;
+  SearchExplorer(query: string): Promise<Dict>;
+  SaveSettings(settings: SettingsShape): Promise<SettingsShape>;
+};
+
+declare global {
+  interface Window {
+    go?: { main?: { App?: Backend } };
+  }
+}
+
+const api = () => {
+  const app = window.go?.main?.App;
+  if (!app) throw new Error("Legacy Wallet backend is not available");
+  return app;
+};
+
+const tabs = [
+  ["overview", Activity, "Overview"],
+  ["wallet", Wallet, "Wallet"],
+  ["receive", Coins, "Receive"],
+  ["send", Send, "Send"],
+  ["activity", History, "Activity"],
+  ["explorer", Globe2, "Explorer"],
+  ["backup", Archive, "Backup"],
+  ["mining", Pickaxe, "Mining"],
+  ["network", Network, "Network"],
+  ["diagnostics", Bug, "Diagnostics"],
+  ["settings", Settings, "Settings"],
+] as const;
+
+function App() {
+  const [snap, setSnap] = useState<Dict | null>(null);
+  const [tab, setTab] = useState("overview");
+  const [toast, setToast] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function refresh() {
+    try {
+      setSnap(await api().Snapshot());
+    } catch (e) {
+      setToast(cleanError(e));
+    }
+  }
+
+  async function run<T>(label: string, fn: () => Promise<T>) {
+    setBusy(true);
+    try {
+      const result = await fn();
+      setToast(`${label} complete`);
+      await refresh();
+      return result;
+    } catch (e) {
+      setToast(cleanError(e));
+      throw e;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    refresh();
+    const id = setInterval(refresh, 3000);
+    return () => clearInterval(id);
+  }, []);
+
+  const page = useMemo(() => {
+    if (!snap) return <Loading />;
+    if (!snap.wallet_exists) return <FirstRun run={run} />;
+    const p = { snap, run, refresh };
+    if (tab === "wallet") return <WalletPage {...p} />;
+    if (tab === "receive") return <ReceivePage {...p} />;
+    if (tab === "send") return <SendPage {...p} />;
+    if (tab === "activity") return <ActivityPage {...p} />;
+    if (tab === "explorer") return <ExplorerPage {...p} />;
+    if (tab === "backup") return <BackupPage {...p} />;
+    if (tab === "mining") return <MiningPage {...p} />;
+    if (tab === "network") return <NetworkPage {...p} />;
+    if (tab === "diagnostics") return <DiagnosticsPage {...p} />;
+    if (tab === "settings") return <SettingsPage {...p} />;
+    return <Overview {...p} />;
+  }, [snap, tab]);
+
+  const running = Boolean(snap?.node?.running);
+  const walletLocked = Boolean(snap?.wallet?.wallet?.locked);
+
+  return (
+    <main className="appWindow">
+      <TitleBar />
+      <div className="shell">
+        <aside className="sidebar">
+          <div className="brand">
+            <img src={legacyLogo} alt="" aria-hidden="true" />
+            <div>
+              <h1>Legacy Wallet</h1>
+              <p>Full-node desktop wallet</p>
+            </div>
+          </div>
+          <nav>
+            {tabs.map(([id, Icon, label]) => (
+              <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>
+                <Icon size={17} />
+                <span>{label}</span>
+              </button>
+            ))}
+          </nav>
+          <div className="sidebarCard">
+            <StatusDot ok={running} />
+            <div>
+              <strong>{running ? "Internal node running" : "Node offline"}</strong>
+              <small>{walletLocked ? "Wallet locked" : "Wallet ready"}</small>
+            </div>
+          </div>
+        </aside>
+
+        <section className="workspace">
+          <header>
+            <div>
+              <p className="eyebrow">Legacy Wallet 1.0.0</p>
+              <h2>{tabs.find(([id]) => id === tab)?.[2] || "Overview"}</h2>
+            </div>
+            <div className="toolbar">
+              <button className="iconText" onClick={refresh} disabled={busy}><RefreshCw size={16} /> Refresh</button>
+              <button className="primary" onClick={() => run("Start node", () => api().StartNode())} disabled={busy || running}>
+                <Play size={16} /> Start Node
+              </button>
+              <button onClick={() => run("Stop node", () => api().StopNode())} disabled={busy || !running}>
+                <Square size={16} /> Stop
+              </button>
+            </div>
+          </header>
+          {snap?.node?.error && <Notice tone="danger" text={`${snap.node.error}. Please close the old Legacy Core node and restart Legacy Wallet.`} />}
+          {page}
+          {toast && <div className="toast" onClick={() => setToast("")}>{toast}</div>}
+        </section>
+      </div>
+      <StatusBar snap={snap} />
+    </main>
+  );
+}
+
+function FirstRun({ run }: { run: <T>(label: string, fn: () => Promise<T>) => Promise<T> }) {
+  const [passphrase, setPassphrase] = useState("");
+  const [seedHex, setSeedHex] = useState("");
+  const [created, setCreated] = useState<Dict | null>(null);
+
+  return (
+    <div className="page firstRun">
+      <section className="heroPanel">
+        <img src={legacyLogo} alt="" aria-hidden="true" />
+        <div>
+          <p className="eyebrow">First-run setup</p>
+          <h3>Create or import your Legacy wallet</h3>
+          <p>Legacy Wallet will start the internal full node after wallet setup. Back up your wallet before receiving LBTC.</p>
+        </div>
+      </section>
+      <div className="twoCol">
+        <section className="panel">
+          <h3>Create Wallet</h3>
+          <Notice tone="warn" text="Never share wallet backups, private keys, or seed material." />
+          <Field label="Optional wallet passphrase">
+            <input type="password" value={passphrase} onChange={(e) => setPassphrase(e.target.value)} />
+          </Field>
+          <button className="primary wide" onClick={async () => setCreated(await run("Create wallet", () => api().CreateWallet(passphrase)))}>
+            Create wallet and start node
+          </button>
+        </section>
+        <section className="panel">
+          <h3>Import Wallet</h3>
+          <Field label="Seed hex">
+            <input value={seedHex} onChange={(e) => setSeedHex(e.target.value)} />
+          </Field>
+          <Field label="Optional wallet passphrase">
+            <input type="password" value={passphrase} onChange={(e) => setPassphrase(e.target.value)} />
+          </Field>
+          <button className="wide" onClick={async () => setCreated(await run("Import wallet", () => api().ImportWallet(seedHex, passphrase)))}>
+            Import wallet and start node
+          </button>
+        </section>
+      </div>
+      {created && <ResultCard title="Wallet ready" rows={[["Receive address", created.address], ["Backup warning", created.backup_warning || "Back up your wallet now."]]} />}
+    </div>
+  );
+}
+
+function Overview({ snap }: PageProps) {
+  const chain = snap.blockchain || {};
+  const wallet = snap.wallet || {};
+  const mining = snap.mining || {};
+  return (
+    <div className="page">
+      <div className="heroPanel compactHero">
+        <img src={legacyLogo} alt="" aria-hidden="true" />
+        <div>
+          <p className="eyebrow">Legacy Wallet</p>
+          <h3>Full-node desktop wallet for Legacy Coin</h3>
+          <p>Mainnet wallet. The wallet owns the local node lifecycle inside this app.</p>
+        </div>
+      </div>
+      <div className="metricGrid">
+        <Metric label="Wallet" value={snap.wallet_exists ? "Ready" : "Setup required"} icon={<Wallet />} />
+        <Metric label="Node" value={snap.node?.running ? "Online" : "Offline"} icon={<Radio />} />
+        <Metric label="Height" value={chain.height ?? "Starting"} />
+        <Metric label="Peers" value={chain.peer_count ?? (snap.peers || []).length ?? 0} />
+        <Metric label="Sync" value={syncLabel(chain, snap.peers || [])} />
+        <Metric label="Best block" value={chain.bestblockhash || "-"} mono copyable />
+        <Metric label="Chain ID" value={snap.coin?.chain_id} mono copyable />
+        <Metric label="Version" value={snap.coin?.version} />
+      </div>
+      <section className="panel lifecyclePanel">
+        <div className="lifecycleIcon"><Database size={38} /></div>
+        <div>
+          <h3>Node Lifecycle</h3>
+          <p className="muted">This app starts Legacy Core internally. Local RPC remains available for CLI compatibility only.</p>
+          <div className="pillRow">
+            <span className="pill good"><StatusDot ok={Boolean(snap.node?.running)} /> {snap.node?.running ? "Internal node running" : "Internal node stopped"}</span>
+            <span className="pill">Legacy Coin Mainnet</span>
+          </div>
+        </div>
+        <div className="kv miniKv">
+          <div><span>Node Status</span><strong>{snap.node?.running ? "Running" : "Stopped"}</strong></div>
+          <div><span>Uptime</span><strong>{seconds(snap.node?.uptime_seconds)}</strong></div>
+          <div><span>Connections</span><strong>{chain.peer_count ?? (snap.peers || []).length ?? 0}</strong></div>
+          <div><span>Network</span><strong>Legacy Coin Mainnet</strong></div>
+          <div><span>Sync Progress</span><strong>{syncLabel(chain, snap.peers || [])}</strong></div>
+        </div>
+      </section>
+      <div className="twoCol">
+        <section className="panel">
+          <h3>Recent Activity</h3>
+          <div className="eventList">
+            <div><BadgeCheck size={18} /><span>Node status: {snap.node?.running ? "running" : "stopped"}</span><small>{seconds(snap.node?.uptime_seconds)}</small></div>
+            <div><Network size={18} /><span>Connected peers: {chain.peer_count ?? (snap.peers || []).length ?? 0}</span><small>live</small></div>
+            <div><Wallet size={18} /><span>Wallet balance: {wallet.total_lbtc ? lbtc(wallet.total_lbtc) : fmtAmount(wallet.total)}</span><small>local</small></div>
+            <div><Shield size={18} /><span>Storage health monitored</span><small>doctor</small></div>
+          </div>
+        </section>
+        <section className="panel networkSummary">
+          <h3>Network Summary</h3>
+          <div className="summaryTiles">
+            <Metric label="Peers" value={chain.peer_count ?? (snap.peers || []).length ?? 0} />
+            <Metric label="Blocks" value={chain.height ?? "-"} />
+            <Metric label="Last Block" value={seconds(chain.last_block_age_seconds)} />
+            <Metric label="Difficulty" value={chain.current_bits || mining.current_bits || "-"} />
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function WalletPage({ snap, run, refresh }: PageProps) {
+  const w = snap.wallet || {};
+  const security = w.wallet || {};
+  const [address, setAddress] = useState("");
+  const current = address || (w.receive_addresses || [])[Math.max(0, (w.receive_addresses || []).length - 1)] || "";
+  return (
+    <div className="page">
+      <div className="metricGrid">
+        <Metric label="Confirmed available" value={w.confirmed_available_lbtc ? lbtc(w.confirmed_available_lbtc) : fmtAmount(w.confirmed_available)} />
+        <Metric label="Safe pending change" value={w.safe_pending_change_lbtc ? lbtc(w.safe_pending_change_lbtc) : fmtAmount(w.safe_pending_change)} />
+        <Metric label="Pending outgoing" value={w.pending_outgoing_lbtc ? lbtc(w.pending_outgoing_lbtc) : fmtAmount(w.pending_outgoing)} />
+        <Metric label="Locked pending change" value={w.locked_pending_change_lbtc ? lbtc(w.locked_pending_change_lbtc) : fmtAmount(w.locked_pending_change)} />
+        <Metric label="Unsafe pending change" value={w.unsafe_pending_change_lbtc ? lbtc(w.unsafe_pending_change_lbtc) : fmtAmount(w.unsafe_pending_change)} />
+        <Metric label="Pending external incoming" value={w.pending_external_incoming_lbtc ? lbtc(w.pending_external_incoming_lbtc) : fmtAmount(w.pending_external_incoming)} />
+        <Metric label="Immature" value={w.immature_lbtc ? lbtc(w.immature_lbtc) : fmtAmount(w.immature)} />
+        <Metric label="Total" value={w.total_lbtc ? lbtc(w.total_lbtc) : fmtAmount(w.total)} />
+        <Metric label="Encryption" value={security.encrypted ? "Encrypted" : "Unencrypted"} icon={security.locked ? <Lock /> : <Unlock />} />
+      </div>
+      {Number(w.safe_pending_change || 0) > 0 && <Notice tone="info" text="Safe pending change can be used for another transaction. It confirms after its parent transaction confirms." />}
+      {Number(w.locked_pending_change || 0) > 0 && <Notice tone="warn" text="Some pending change is already used by child transactions and cannot be spent again." />}
+      <div className="twoCol">
+        <InfoPanel title="Wallet security" rows={[
+          ["Locked", yesNo(security.locked)],
+          ["Encrypted", yesNo(security.encrypted)],
+          ["Classic key count", security.classic_key_count ?? "-"],
+          ["Hybrid key count", security.hybrid_key_count ?? "-"],
+          ["Backup reminder", "Back up before receiving funds."],
+        ]} />
+        <section className="panel">
+          <h3>Current receive address</h3>
+          <div className="addressBox">{current ? <CopyableValue value={current} /> : "Generate an address to receive LBTC"}</div>
+          <div className="row">
+            <button className="primary" onClick={async () => { setAddress(await run("Create receive address", () => api().GetNewAddress())); await refresh(); }}>Create new receive address</button>
+            <button disabled={!current} onClick={() => copy(current)}><Copy size={16} /> Copy address</button>
+          </div>
+          <div className="splitLine topGap"><span>Default mining address</span><strong className="mono">{w.default_mining_address ? <CopyableValue value={w.default_mining_address} /> : "Set when miner starts"}</strong></div>
+          <Notice tone="warn" text="Back up your wallet before testing serious receive/send flows." />
+        </section>
+      </div>
+      {(w.locked_outputs || []).length > 0 && <section className="panel">
+        <h3>Locked / pending output details</h3>
+        <div className="table tableScroll">
+          <div className="tr head"><span>Outpoint</span><span>Amount</span><span>Reason</span><span>Depth</span><span>Safe</span></div>
+          {(w.locked_outputs || []).map((o: Dict) => <div className="tr" key={o.outpoint}><span className="mono"><CopyableValue value={o.outpoint} /></span><span>{o.amount_lbtc ? lbtc(o.amount_lbtc) : fmtAmount(o.amount)}</span><span>{o.reason}</span><span>{o.chain_depth ?? "-"}</span><span>{yesNo(o.safe_to_spend)}</span></div>)}
+        </div>
+      </section>}
+    </div>
+  );
+}
+
+function ReceivePage({ snap, run, refresh }: PageProps) {
+  const [address, setAddress] = useState("");
+  const [label, setLabel] = useState("");
+  const addresses = snap.wallet?.receive_addresses || [];
+  const current = address || addresses[addresses.length - 1] || "";
+
+  return (
+    <div className="page twoCol">
+      <section className="panel receivePanel">
+        <h3>Receive LBTC</h3>
+        <Field label="Optional label">
+          <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Example: Main receive" />
+        </Field>
+        <div className="receiveAddressCard">
+          <Coins size={34} />
+          <div>
+            <strong>{current ? "Current receive address" : "No receive address yet"}</strong>
+            <p>{current ? "Use copy or generate a fresh local wallet address." : "Generate an address before requesting LBTC."}</p>
+          </div>
+        </div>
+        <div className="addressBox">{current ? <CopyableValue value={current} /> : "No receive address selected"}</div>
+        <div className="row">
+          <button className="primary" onClick={async () => { setAddress(await run("Generate address", () => api().GetNewAddress())); await refresh(); }}>
+            Create new receive address
+          </button>
+          <button disabled={!current} onClick={() => copy(current)}><Copy size={16} /> Copy address</button>
+        </div>
+        <p className="muted">Your wallet can have many receiving addresses. They all belong to this same wallet.</p>
+      </section>
+      <section className="panel">
+        <h3>Address book</h3>
+        <AddressList addresses={addresses} />
+      </section>
+    </div>
+  );
+}
+
+function SendPage({ snap, run, refresh }: PageProps) {
+  const [to, setTo] = useState("");
+  const [amount, setAmount] = useState("");
+  const [fee, setFee] = useState("0.00001000");
+  const [confirming, setConfirming] = useState(false);
+  const [typed, setTyped] = useState("");
+  const [result, setResult] = useState<Dict | null>(null);
+  const [localError, setLocalError] = useState("");
+  const total = safeNum(amount) + safeNum(fee);
+  const peers = Number(snap.blockchain?.peer_count ?? (snap.peers || []).length ?? 0);
+  const spendable = Number(snap.wallet?.spendable || 0) / 1e8;
+  const canConfirm = Boolean(to.trim()) && safeNum(amount) > 0 && safeNum(fee) > 0;
+
+  async function broadcast() {
+    setLocalError("");
+    const sent = await run("Broadcast transaction", () => api().SendToAddress(to, amount, fee));
+    setResult(sent);
+    setConfirming(false);
+    setTyped("");
+    await refresh();
+  }
+
+  function review() {
+    if (!to.trim()) return setLocalError("Enter a destination address.");
+    if (safeNum(amount) <= 0) return setLocalError("Enter an amount greater than 0 LBTC.");
+    if (safeNum(fee) <= 0) return setLocalError("Fee must be greater than 0 LBTC.");
+    if (spendable > 0 && total > spendable) return setLocalError("Not enough spendable LBTC for this amount plus fee.");
+    setLocalError("");
+    setConfirming(true);
+  }
+
+  async function retry(txid: string) {
+    const res = await run("Retry broadcast", () => api().RebroadcastTransaction(txid));
+    setResult(res);
+    await refresh();
+  }
+
+  return (
+    <div className="page twoCol">
+      <section className="panel">
+        <h3>Send LBTC</h3>
+        {peers === 0 && <Notice tone="warn" text="No network peers connected. Connect to peers before sending, or keep the wallet open until peers connect." />}
+        {localError && <Notice tone="danger" text={localError} />}
+        <Field label="Destination address">
+          <input value={to} onChange={(e) => setTo(e.target.value)} placeholder="L..." />
+        </Field>
+        <Field label="Amount">
+          <input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.1" />
+        </Field>
+        <Field label="Fee">
+          <input value={fee} onChange={(e) => setFee(e.target.value)} />
+        </Field>
+        <div className="totalLine"><span>Total</span><strong>{formatHumanLBTC(total)}</strong></div>
+        <button className="danger wide" disabled={!canConfirm} onClick={review}>Review transaction</button>
+      </section>
+      <section className="panel">
+        <h3>Send status</h3>
+        {result ? (
+          <div className={`txStatus ${result.status || "pending"}`}>
+            <div className="successStack">
+              <BadgeCheck />
+              <div>
+                <strong>{sendStatusTitle(result)}</strong>
+                <p>{result.message || sendStatusMessage(result)}</p>
+                <p className="mono"><CopyableValue value={result.txid} /></p>
+              </div>
+              <button onClick={() => copy(result.txid)}><Copy size={16} /> Copy txid</button>
+            </div>
+            <InfoPanel title="After-send details" rows={[
+              ["Amount", result.amount_lbtc || formatHumanLBTC(result.amount / 1e8)],
+              ["Fee", result.fee_lbtc || formatHumanLBTC(result.fee / 1e8)],
+              ["Total", result.total_lbtc || formatHumanLBTC(result.total / 1e8)],
+              ["Destination", result.address || to],
+              ["Broadcast", result.broadcast ? `Broadcast to ${result.broadcast_count || 0} peer(s)` : "Not broadcast yet"],
+              ["Confirmations", result.confirmations || 0],
+              ["Mempool", yesNo(result.mempool)],
+              ["Block height", result.block_height || "-"],
+              ["Timestamp", dateTime(result.timestamp)],
+            ]} flush />
+            {(result.status === "local_only" || result.status === "pending_broadcast") && (
+              <button className="primary" onClick={() => retry(result.txid)}><RefreshCw size={16} /> Retry broadcast</button>
+            )}
+            {result.last_error && <Notice tone="warn" text={result.last_error} />}
+          </div>
+        ) : (
+          <p className="muted">No transaction broadcast this session.</p>
+        )}
+      </section>
+      {confirming && (
+        <div className="modalShade">
+          <section className="modal">
+            <h3>Confirm send</h3>
+            <InfoPanel title="Transaction" rows={[["Destination", to], ["Amount", formatHumanLBTC(amount)], ["Fee", formatHumanLBTC(fee)], ["Total", formatHumanLBTC(total)]]} flush />
+            {peers === 0 && <Notice tone="warn" text="Your wallet has no network peers. This transaction may stay local until peers connect." />}
+            <Notice tone="warn" text="After broadcast, transactions cannot be cancelled. Please verify the address and amount. Type CONFIRM to enable Broadcast now." />
+            <Field label="Confirmation">
+              <input value={typed} onChange={(e) => setTyped(e.target.value)} />
+            </Field>
+            <div className="row end">
+              <button onClick={() => setConfirming(false)}>Cancel</button>
+              <button className="danger" disabled={typed !== "CONFIRM"} onClick={broadcast}>Broadcast now</button>
+            </div>
+          </section>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LaunchpadPage({ snap, run }: PageProps) {
+  const [section, setSection] = useState("dashboard");
+  const [tokens, setTokens] = useState<Dict[]>([]);
+  const [apiStatus, setAPIStatus] = useState("not checked");
+  const [result, setResult] = useState<Dict | null>(null);
+  const [deploy, setDeploy] = useState<Dict>({ name: "", tick: "", desc: "", img: "", web: "", x: "", tg: "", discord: "", supply: "", dec: 0, creator: (snap.wallet?.receive_addresses || [])[0] || "" });
+  const [transfer, setTransfer] = useState<Dict>({ id: "", from: "", to: "", amt: "" });
+  const [burn, setBurn] = useState<Dict>({ id: "", from: "", amt: "" });
+  const [fee, setFee] = useState("0.00001000");
+  async function loadTokens(sort = "") {
+    try {
+      const data = await api().GetLaunchpadAPI(`/api/tokens?limit=24${sort ? `&sort=${sort}` : ""}`);
+      setTokens(data.tokens || []);
+      setAPIStatus("online");
+    } catch (e) {
+      setAPIStatus(cleanError(e));
+      setTokens([]);
+    }
+  }
+  useEffect(() => { loadTokens(); }, []);
+  const myAddrs = new Set<string>((snap.wallet?.receive_addresses || []).map(String));
+  const myCreated = tokens.filter((t) => myAddrs.has(String(t.creator || "")));
+  return (
+    <div className="page launchpadDesktop">
+      <section className="heroPanel launchHero">
+        <div className="lifecycleIcon"><Rocket size={34} /></div>
+        <div>
+          <p className="eyebrow">Legacy Launchpad</p>
+          <h3>Launch community tokens from your own full-node wallet</h3>
+          <p>Legacy Tokens v0.1 signs locally, broadcasts through your node, and never sends private keys to a server.</p>
+        </div>
+        <div className="pillRow">
+          <span className="pill good">No custody</span><span className="pill">Fixed supply v0.1</span><span className="pill">No trading</span>
+        </div>
+      </section>
+      <div className="launchTabs">
+        {["dashboard", "launch", "mine", "directory", "transfers", "explorer", "node", "settings"].map((id) => <button key={id} className={section === id ? "active" : ""} onClick={() => setSection(id)}>{titleCase(id === "mine" ? "my tokens" : id)}</button>)}
+      </div>
+      {section === "dashboard" && <div className="launchGrid">
+        <div className="metricGrid compactMetrics">
+          <Metric label="Node" value={snap.node?.running ? "Online" : "Offline"} />
+          <Metric label="Height" value={snap.blockchain?.height ?? "-"} />
+          <Metric label="Peers" value={snap.blockchain?.peer_count ?? (snap.peers || []).length ?? 0} />
+          <Metric label="LBTC" value={snap.wallet?.spendable_lbtc ? lbtc(snap.wallet.spendable_lbtc) : fmtAmount(snap.wallet?.spendable)} />
+          <Metric label="Pending outgoing" value={fmtAmount(snap.wallet?.pending_outgoing)} />
+          <Metric label="My tokens" value={myCreated.length} />
+        </div>
+        <section className="panel"><h3>Launchpad activity</h3><div className="eventList">
+          <div><Rocket size={18} /><span>Indexer/API: {apiStatus}</span><small>local/public</small></div>
+          <div><Wallet size={18} /><span>Local wallet signing: enabled</span><small>self-custody</small></div>
+          <div><Shield size={18} /><span>No server-side private keys</span><small>required</small></div>
+        </div></section>
+        <Notice tone="warn" text="User-created tokens are not endorsed by Legacy Coin. No profit, liquidity, exchange listing, or value is promised. Tokens may be scams, jokes, spam, or worthless." />
+      </div>}
+      {section === "launch" && <div className="twoCol">
+        <section className="panel launchWizard">
+          <h3>Launch Token</h3>
+          <Field label="Token name"><input value={deploy.name || ""} onChange={(e) => setDeploy({ ...deploy, name: e.target.value })} placeholder="Legacy Dog" /></Field>
+          <Field label="Ticker"><input value={deploy.tick || ""} onChange={(e) => setDeploy({ ...deploy, tick: e.target.value.toUpperCase() })} placeholder="LDOG" /></Field>
+          <Field label="Description"><input value={deploy.desc || ""} onChange={(e) => setDeploy({ ...deploy, desc: e.target.value })} /></Field>
+          <Field label="Logo/image URL"><input value={deploy.img || ""} onChange={(e) => setDeploy({ ...deploy, img: e.target.value })} /></Field>
+          <div className="twoCol tight"><Field label="Supply"><input value={deploy.supply || ""} onChange={(e) => setDeploy({ ...deploy, supply: e.target.value })} /></Field><Field label="Decimals"><input type="number" min={0} max={8} value={deploy.dec ?? 0} onChange={(e) => setDeploy({ ...deploy, dec: Number(e.target.value) })} /></Field></div>
+          <Field label="Creator address"><input value={deploy.creator || ""} onChange={(e) => setDeploy({ ...deploy, creator: e.target.value })} /></Field>
+          <Field label="Fee"><input value={fee} onChange={(e) => setFee(e.target.value)} /></Field>
+          <label className="check"><input type="checkbox" id="launchRisk" /> I understand this token is user-created, not endorsed, and has no guaranteed value.</label>
+          <button className="primary wide" onClick={async () => {
+            const ok = (document.getElementById("launchRisk") as HTMLInputElement | null)?.checked;
+            if (!ok) throw new Error("Acknowledge the risk warning first.");
+            setResult(await run("Deploy token", () => api().SendTokenDeploy(deploy, fee)));
+          }}>Create, sign, and broadcast DEPLOY</button>
+        </section>
+        <section className="panel">
+          <h3>Preview / status</h3>
+          <div className="tokenPreviewDesk"><strong>{deploy.name || "Token preview"} <span>{deploy.tick || "TICK"}</span></strong><p>{deploy.desc || "Fixed-supply LBTC-native community token."}</p><small>Supply {deploy.supply || "-"} | Decimals {deploy.dec ?? 0}</small></div>
+          {result && <ResultCard title="Token transaction" rows={[["Status", result.status], ["TxID", result.txid], ["Token ID", result.token_id], ["Message", result.message], ["Fee", result.fee_lbtc]]} />}
+          <Notice tone="info" text="This desktop action uses your local wallet and node. The public explorer only discovers and displays indexed token activity." />
+        </section>
+      </div>}
+      {section === "mine" && <TokenCards tokens={myCreated} empty="No tokens created by this wallet are indexed yet." />}
+      {section === "directory" && <section className="panel"><div className="row"><button onClick={() => loadTokens("")}>New</button><button onClick={() => loadTokens("holders")}>Most holders</button><button onClick={() => loadTokens("transfers")}>Most transfers</button><button onClick={() => loadTokens("activity")}>Trending</button></div><TokenCards tokens={tokens} empty="No tokens indexed yet. Launch the first LBTC-native community token." /></section>}
+      {section === "transfers" && <div className="twoCol">
+        <section className="panel"><h3>Send Token</h3><Field label="Token ID"><input value={transfer.id || ""} onChange={(e) => setTransfer({ ...transfer, id: e.target.value })} /></Field><Field label="From"><input value={transfer.from || ""} onChange={(e) => setTransfer({ ...transfer, from: e.target.value })} /></Field><Field label="Recipient"><input value={transfer.to || ""} onChange={(e) => setTransfer({ ...transfer, to: e.target.value })} /></Field><Field label="Amount"><input value={transfer.amt || ""} onChange={(e) => setTransfer({ ...transfer, amt: e.target.value })} /></Field><button className="primary wide" onClick={async () => setResult(await run("Transfer token", () => api().SendTokenTransfer(transfer, fee)))}>Sign and broadcast TRANSFER</button></section>
+        <section className="panel"><h3>Burn Token</h3><Field label="Token ID"><input value={burn.id || ""} onChange={(e) => setBurn({ ...burn, id: e.target.value })} /></Field><Field label="From"><input value={burn.from || ""} onChange={(e) => setBurn({ ...burn, from: e.target.value })} /></Field><Field label="Amount"><input value={burn.amt || ""} onChange={(e) => setBurn({ ...burn, amt: e.target.value })} /></Field><button className="danger wide" onClick={async () => setResult(await run("Burn token", () => api().SendTokenBurn(burn, fee)))}>Sign and broadcast BURN</button>{result && <pre className="object-view small">{JSON.stringify(result, null, 2)}</pre>}</section>
+      </div>}
+      {section === "explorer" && <InfoPanel title="Explorer / public discovery" rows={[["Launchpad API", snap.settings?.launchpad?.apiUrl || "http://127.0.0.1:8090"], ["API status", apiStatus], ["Role", "Discovery, token pages, holders, transfers, social sharing"], ["Signing", "Desktop wallet only"]]} />}
+      {section === "node" && <InfoPanel title="Node status" rows={[["Internal node", snap.node?.running ? "running" : "stopped"], ["Height", snap.blockchain?.height], ["Best block", snap.blockchain?.bestblockhash], ["Chain ID", snap.coin?.chain_id], ["Genesis", snap.coin?.genesis_hash], ["P2P/RPC", `${snap.coin?.p2p_port} / ${snap.coin?.rpc_port}`], ["Backend", "cgo-c-reference where applicable"]]} />}
+      {section === "settings" && <InfoPanel title="Launchpad settings" rows={[["API URL", snap.settings?.launchpad?.apiUrl || "http://127.0.0.1:8090"], ["Use local default", "Start Legacy Explorer / Launchpad backend on 127.0.0.1:8090"], ["Warning", "Do not trust unofficial token APIs for balances without verifying against your node/indexer."]]} />}
+    </div>
+  );
+}
+
+function TokenCards({ tokens, empty }: { tokens: Dict[]; empty: string }) {
+  return <div className="tokenDeskGrid">{tokens.length ? tokens.map((t) => <div className="tokenDeskCard" key={t.token_id}><strong>{t.name || "Unnamed"} <span>{t.ticker || ""}</span></strong><p>{t.description || "Legacy Token v0.1"}</p><small>ID {shortenMiddle(String(t.token_id || ""))} | Supply {t.total_supply || "-"} | Holders {t.holders ?? "-"}</small><small>Creator {shortenMiddle(String(t.creator || ""))}</small></div>) : <Notice tone="info" text={empty} />}</div>;
+}
+
+function ActivityPage({ snap }: PageProps) {
+  const txs = Array.isArray(snap.transactions) ? snap.transactions : [];
+  const [filter, setFilter] = useState("all");
+  const pending = txs.filter((t: Dict) => ["pending", "local_only", "pending_broadcast"].includes(String(t.status)));
+  const sent = txs.filter((t: Dict) => t.direction === "sent");
+  const received = txs.filter((t: Dict) => t.direction === "received");
+  const selfTransfers = txs.filter((t: Dict) => t.direction === "self_transfer");
+  const miningRewards = txs.filter((t: Dict) => t.direction === "mining_reward");
+  const failed = txs.filter((t: Dict) => t.status === "failed");
+  const recent = [...txs].sort((a: Dict, b: Dict) => Number(b.timestamp || 0) - Number(a.timestamp || 0)).slice(0, 12);
+  const filtered = filter === "all" ? recent : filter === "pending" ? pending : filter === "sent" ? sent : filter === "received" ? received : filter === "self_transfer" ? selfTransfers : filter === "mining_reward" ? miningRewards : failed;
+  return (
+    <div className="page activityPage">
+      <section className="panel activityGroups">
+        <h3>Recent wallet activity</h3>
+        <div className="activityGroupSummary">
+          <span>Pending <strong>{pending.length}</strong></span>
+          <span>Sent <strong>{sent.length}</strong></span>
+          <span>Received from others <strong>{received.length}</strong></span>
+          <span>Self-transfers <strong>{selfTransfers.length}</strong></span>
+          <span>Mining rewards <strong>{miningRewards.length}</strong></span>
+          <span>Failed <strong>{failed.length}</strong></span>
+        </div>
+        <div className="segmented">
+          {[
+            ["all", "All"], ["sent", "Sent"], ["received", "Received"], ["self_transfer", "Self-transfer"], ["mining_reward", "Mining rewards"], ["pending", "Pending"], ["failed", "Failed"],
+          ].map(([id, label]) => <button key={id} className={filter === id ? "active" : ""} onClick={() => setFilter(id)}>{label}</button>)}
+        </div>
+        <div className="activityGroupList">
+          <ActivityGroup title={filter === "all" ? "Recent activity" : titleCase(filter.replace("_", " "))} rows={filtered} empty="No matching wallet transactions." />
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ExplorerPage({ snap, run }: PageProps) {
+  const [blocks, setBlocks] = useState<Dict[]>([]);
+  const [selectedBlock, setSelectedBlock] = useState<Dict | null>(null);
+  const [selectedTx, setSelectedTx] = useState<Dict | null>(null);
+  const [mempool, setMempool] = useState<Dict | null>(null);
+  const [query, setQuery] = useState("");
+  const [searchStatus, setSearchStatus] = useState("");
+  const [searching, setSearching] = useState(false);
+  const summary = snap.explorer || {};
+  const supply = summary.supply || snap.supply || {};
+
+  async function loadBlocks() {
+    const rows = await run("Load blocks", () => api().GetRecentBlocks(30));
+    setBlocks(rows || []);
+    if (!selectedBlock && rows?.[0]) setSelectedBlock(await api().GetBlockByHash(rows[0].hash));
+  }
+  async function loadMempool() {
+    setMempool(await run("Load mempool", () => api().GetMempool()));
+  }
+  async function search() {
+    setSearching(true);
+    setSearchStatus("");
+    try {
+      const res = await run("Explorer search", () => api().SearchExplorer(query));
+      if (res?.block) { setSelectedBlock(res.block); setSelectedTx(null); }
+      if (res?.transaction) setSelectedTx(res.transaction);
+      setSearchStatus(res?.message || (res?.type ? `Found ${res.type}` : ""));
+    } catch (e) {
+      setSearchStatus(cleanError(e) || "Local node RPC unavailable.");
+    } finally {
+      setSearching(false);
+    }
+  }
+  useEffect(() => { loadBlocks(); loadMempool(); }, []);
+
+  return (
+    <div className="page explorerPage">
+      <div className="metricGrid compactMetrics explorerMetrics">
+        <Metric label="Height" value={summary.height ?? snap.blockchain?.height ?? "-"} />
+        <Metric label="Best hash" value={summary.bestblockhash || snap.blockchain?.bestblockhash || "-"} mono copyable />
+        <Metric label="Bits" value={summary.current_bits || snap.blockchain?.current_bits || "-"} />
+        <Metric label="Mempool" value={summary.mempool_count ?? 0} />
+        <Metric label="Avg block time" value={seconds(summary.average_block_time)} />
+        <Metric label="Network KH/s" value={networkHashLabel(summary.network_hashps)} />
+      </div>
+      <div className="explorerTopGrid">
+        <section className="panel explorerSearch">
+          <h3>Local Explorer</h3>
+          <div className="row explorerSearchRow">
+            <input value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") search(); }} placeholder="Search height, block hash, or txid" />
+            <button className="primary" disabled={searching} onClick={search}>{searching ? "Searching..." : "Search"}</button>
+            <button onClick={loadBlocks}>Blocks</button>
+            <button onClick={loadMempool}>Mempool</button>
+          </div>
+          {searchStatus && <Notice tone={searchStatus.startsWith("Found") ? "success" : "info"} text={searchStatus} />}
+          <p className="muted">Address search requires address index support and is planned.</p>
+        </section>
+        <section className="panel supplyPanel">
+          <div className="supplyHead">
+            <div>
+              <h3>Supply / Emission</h3>
+              <p className="muted">Total mined includes immature coinbase rewards. Coinbase rewards mature after {supply.coinbase_maturity ?? 100} confirmations.</p>
+            </div>
+            <div className="supplyProgressText">{percent(supply.emission_progress_percent)} issued</div>
+          </div>
+          <div className="supplyGrid">
+            <Metric label="Max Supply" value={lbtc(supply.max_supply_lbtc)} />
+            <Metric label="Total Mined" value={lbtc(supply.total_issued_lbtc)} />
+            <Metric label="Matured" value={lbtc(supply.matured_supply_lbtc)} />
+            <Metric label="Immature" value={lbtc(supply.immature_supply_lbtc)} />
+            <Metric label="Reward" value={lbtc(supply.current_reward_lbtc)} />
+            <Metric label="Next Halving" value={supply.next_halving_height ?? "-"} />
+          </div>
+          <div className="emissionBar" aria-label="Emission progress">
+            <i style={{ width: `${Math.min(100, Math.max(0, Number(supply.emission_progress_percent || 0)))}%` }} />
+          </div>
+          <div className="supplyFacts">
+            <span>Height: <strong>{supply.current_height ?? summary.height ?? "-"}</strong></span>
+            <span>Until halving: <strong>{supply.blocks_until_halving ?? "-"}</strong></span>
+            <span>Interval: <strong>{supply.halving_interval ?? "210000"}</strong></span>
+            <span>Maturity: <strong>{supply.coinbase_maturity ?? "100"}</strong></span>
+          </div>
+        </section>
+      </div>
+      <div className="explorerWorkspace">
+        <section className="panel scrollPanel explorerBlocks">
+          <h3>Recent blocks</h3>
+          <div className="table blockTable tableScroll">
+            <div className="tr head"><span>Height</span><span>Hash</span><span>Time</span><span>Tx</span><span>Bits</span><span>Nonce</span></div>
+            {blocks.map((b) => (
+              <div className="tr clickable" role="button" tabIndex={0} key={b.hash} onClick={async () => setSelectedBlock(await api().GetBlockByHash(b.hash))}>
+                <span>{b.height}</span><span className="mono"><CopyableValue value={b.hash} /></span><span>{dateTime(b.time)}</span><span>{b.tx_count}</span><span>{b.bits}</span><span>{b.nonce}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+        <section className="panel scrollPanel explorerDetails">
+          <h3>Block details</h3>
+          {selectedBlock ? (
+            <>
+              <div className="kv explorerKv">
+                <div><span>Height</span><strong>{selectedBlock.height}</strong></div>
+                <div><span>Hash</span><strong className="mono"><CopyableValue value={selectedBlock.hash} /></strong></div>
+                <div><span>Previous</span><strong className="mono"><CopyableValue value={selectedBlock.previous_hash} /></strong></div>
+                <div><span>Merkle root</span><strong className="mono"><CopyableValue value={selectedBlock.merkle_root} /></strong></div>
+                <div><span>Timestamp</span><strong>{dateTime(selectedBlock.timestamp)}</strong></div>
+                <div><span>Bits / nonce</span><strong>{selectedBlock.bits} / {selectedBlock.nonce}</strong></div>
+              </div>
+              <div className="table txTable tableScroll smallScroll">
+                <div className="tr head"><span>Txid</span><span>Outputs</span><span>Coinbase</span></div>
+                {(selectedBlock.transactions || []).map((tx: Dict) => (
+                  <div className="tr clickable" role="button" tabIndex={0} key={tx.txid} onClick={() => setSelectedTx(tx)}>
+                    <span className="mono"><CopyableValue value={tx.txid} /></span><span>{tx.outputs?.length || 0}</span><span>{yesNo(tx.coinbase)}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : <p className="muted">Select a block to inspect details.</p>}
+        </section>
+        <section className="panel scrollPanel explorerTx">
+          <h3>Transaction</h3>
+          {selectedTx ? <TransactionDetails tx={selectedTx} /> : <p className="muted">Select a transaction from a block or search by txid.</p>}
+        </section>
+        <section className="panel scrollPanel explorerMempool">
+          <h3>Mempool</h3>
+          <div className="splitLine"><span>Count</span><strong>{mempool?.count ?? 0}</strong></div>
+          <div className="mempoolList tableScroll smallScroll">
+            {(mempool?.txids || []).length === 0 && <p className="muted">No local mempool transactions.</p>}
+            {(mempool?.transactions || mempool?.txids || []).map((row: any) => {
+              const id = typeof row === "string" ? row : row.txid;
+              return <div key={id} className="mono clickable mempoolItem" role="button" tabIndex={0} onClick={async () => setSelectedTx(await api().GetTransaction(id))}><CopyableValue value={id} />{typeof row !== "string" && <small> fee {row.fee} size {row.size}</small>}</div>;
+            })}
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function BackupPage({ snap, run }: PageProps) {
+  const [dest, setDest] = useState("");
+  const [result, setResult] = useState<{ ok: boolean; path?: string; message?: string } | null>(null);
+  const suggested = `${snap.settings?.dataDir || "."}\\backups\\legacy-wallet-backup-${new Date().toISOString().slice(0, 10)}.json`;
+  async function backup() {
+    setResult(null);
+    try {
+      const res = await run("Backup wallet", () => api().BackupWallet(dest));
+      setResult({ ok: Boolean(res?.ok), path: res?.backup || dest, message: "Wallet backup created." });
+    } catch (err: any) {
+      setResult({ ok: false, path: dest, message: String(err?.message || err || "Backup failed") });
+    }
+  }
+  return (
+    <div className="page twoCol backupPage">
+      <section className="panel">
+        <h3>Backup Wallet</h3>
+        <Notice tone="danger" text="Never share wallet backups, private keys, or seed material. Backups may contain spend authority." />
+        <Field label="Backup file path">
+          <input value={dest} onChange={(e) => setDest(e.target.value)} placeholder="C:\\Users\\You\\Documents\\legacy-wallet-backup.json" />
+        </Field>
+        <div className="row">
+          <button onClick={() => setDest(suggested)}>Use suggested path</button>
+          <button className="primary" disabled={!dest.trim()} onClick={backup}><Download size={16} /> Create local backup</button>
+        </div>
+      </section>
+      <section className="panel">
+        <h3>Backup result</h3>
+        {result ? (
+          <>
+            <Notice tone={result.ok ? "success" : "danger"} text={result.message || (result.ok ? "Backup created." : "Backup failed.")} />
+            <InfoPanel title="Latest backup" rows={[["Status", result.ok ? "Success" : "Failed"], ["Path", result.path || dest]]} flush />
+          </>
+        ) : <p className="muted">Choose a local file path and run backup. The backup stays on this computer only.</p>}
+      </section>
+    </div>
+  );
+}
+
+function MiningPage({ snap, run }: PageProps) {
+  const mining = snap.mining || {};
+  const [threads, setThreads] = useState<number>(mining.configured_threads || snap.settings?.defaultThreads || 1);
+  const [selectedProfile, setSelectedProfile] = useState<string>(() => profileForThreads(mining.configured_threads || snap.settings?.defaultThreads || 1, snap.settings?.defaultThreads || 4));
+  const profiles = [
+    { id: "eco", label: "Eco", threads: 1, note: "low heat" },
+    { id: "balanced", label: "Balanced", threads: 4, note: "recommended" },
+    { id: "performance", label: "Performance", threads: Math.max(6, snap.settings?.defaultThreads || 6), note: "strong mining" },
+    { id: "stress", label: "Stress", threads: Math.max(12, (snap.settings?.defaultThreads || 6) * 2), note: "testing only" },
+  ] as const;
+  async function chooseProfile(profile: typeof profiles[number]) {
+    setSelectedProfile(profile.id);
+    setThreads(profile.threads);
+    await run("Set miner profile", () => api().SetMinerThreads(profile.threads));
+  }
+  return (
+    <div className="page miningPage">
+      <div className="metricGrid miningMetrics">
+        <Metric label="Mining" value={mining.active_mining ? "Running" : "Stopped"} />
+        <Metric label="Threads" value={`${mining.active_threads || 0} active / ${mining.configured_threads || threads} set`} />
+        <Metric label="Local KH/s" value={fmtNumber(mining.local_khps)} />
+        <Metric label="Network KH/s" value={networkHashLabel(mining.network_hashps)} />
+        <Metric label="Accepted" value={mining.accepted_blocks || 0} />
+        <Metric label="Stale" value={mining.stale_blocks || 0} />
+        <Metric label="Rejected" value={mining.rejected_blocks || 0} />
+        <Metric label="Difficulty bits" value={mining.current_bits || snap.blockchain?.current_bits || "-"} />
+      </div>
+      <section className="panel minerControls">
+        <h3>Miner controls</h3>
+        <div className="profileGrid">
+          {profiles.map((profile) => <button key={profile.id} onClick={() => chooseProfile(profile)} className={selectedProfile === profile.id ? "active profileCard" : "profileCard"}><strong>{profile.label}</strong><span>{profile.threads} threads</span><small>{profile.note}</small></button>)}
+        </div>
+        <div className="row">
+          <label className="inline">Threads<input type="number" min={1} value={threads} onChange={(e) => { setThreads(Number(e.target.value)); setSelectedProfile("custom"); }} /></label>
+          <span className="pill">Configured profile: {title(selectedProfile)}</span>
+          <button onClick={() => run("Set threads", () => api().SetMinerThreads(threads))}>Set threads</button>
+          <button className="primary" onClick={() => run("Start miner", () => api().StartMiner(threads))}>Start mining</button>
+          <button onClick={() => run("Stop miner", () => api().StopMiner())}>Stop mining</button>
+        </div>
+      </section>
+      <div className="miningLower">
+        <InfoPanel title="Miner session" rows={[
+          ["Thread state", mining.thread_state || "stopped"],
+          ["Active mining address", mining.active_mining_address || "Created when miner starts"],
+          ["Pubkey hash", mining.mining_pubkey_hash || "-"],
+          ["Configured threads", mining.configured_threads || threads],
+          ["Active threads", mining.active_threads || 0],
+          ["Effective threads", mining.effective_threads || mining.active_threads || 0],
+          ["Hashes per thread", fmtNumber(mining.hashes_per_thread)],
+          ["Session hashes", fmtNumber(mining.session_hashes)],
+          ["Estimated time to block", seconds(mining.estimated_time_to_block_seconds)],
+          ["Session blocks", mining.session_blocks || 0],
+          ["Uptime", seconds(mining.uptime_seconds)],
+        ["Last block", mining.last_block_hash || "-"],
+        ["Last error", mining.last_error || "-"],
+        ["Last stop reason", mining.last_stop_reason || "-"],
+        ]} />
+        <section className="panel miningActivity">
+          <h3>Mining Activity</h3>
+          <div className="activityTicker">
+            <StatusDot ok={Boolean(mining.active_mining)} />
+            <strong>{mining.active_mining ? "Mining active..." : "Miner idle"}</strong>
+            <span>{mining.active_threads || 0} active thread workers</span>
+          </div>
+          <div className="activityStats">
+            <div><span>Hash attempts</span><strong>{fmtNumber(mining.session_hashes)}</strong></div>
+            <div><span>Last nonce</span><strong className="mono">{mining.last_nonce ?? "-"}</strong></div>
+            <div><span>Local H/s</span><strong>{fmtNumber(mining.local_hashps)}</strong></div>
+            <div><span>Hashes / thread</span><strong>{fmtNumber(mining.hashes_per_thread)}</strong></div>
+            <div><span>Accepted blocks</span><strong>{mining.accepted_blocks || 0}</strong></div>
+            <div><span>Rejected blocks</span><strong>{mining.rejected_blocks || 0}</strong></div>
+          </div>
+          <div className="activityFeed">
+          <div><span>{mining.active_mining ? "Mining active..." : `Mining stopped: ${mining.last_stop_reason || "idle"}`}</span><small>{seconds(mining.uptime_seconds)}</small></div>
+            <div><span>Thread workers: {mining.active_threads || 0}</span><small>{mining.thread_state || "stopped"}</small></div>
+            <div><span>Hashrate: {fmtNumber(mining.local_hashps)} H/s ({fmtNumber(mining.local_khps)} KH/s)</span><small>live</small></div>
+            <div><span>Profile selected: {title(selectedProfile)}</span><small>{threads} threads</small></div>
+            <div><span>Last nonce: {mining.last_nonce ?? "-"}</span><small>local miner</small></div>
+            <div><span>Session hashes: {fmtNumber(mining.session_hashes)}</span><small>hash attempts</small></div>
+            <div><span>{mining.accepted_blocks ? `Accepted block found: ${mining.last_block_hash || "recorded"}` : "No accepted blocks this session"}</span><small>{mining.accepted_blocks || 0} accepted</small></div>
+            <div><span>{mining.rejected_blocks ? `${mining.rejected_blocks} rejected blocks` : "No rejected blocks"}</span><small>{mining.stale_blocks || 0} stale</small></div>
+            <div><span>Current bits: {mining.current_bits || snap.blockchain?.current_bits || "-"}</span><small>difficulty</small></div>
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function NetworkPage({ snap }: PageProps) {
+  const peers = snap.peers || [];
+  const chain = snap.blockchain || {};
+  const dnsSeeds = chain.dns_seeds || snap.coin?.dns_seeds || [];
+  const addnodes = chain.manual_addnodes || snap.settings?.network?.nodes || [];
+  const outbound = Number(chain.outbound_peer_count ?? peers.filter((p: Dict) => p.outbound || p.direction === "outbound").length);
+  const inbound = Number(chain.inbound_peer_count ?? Math.max(0, peers.length - outbound));
+  const bestPeerHeight = Math.max(...peers.map((p: Dict) => Number(p.expected_sync_height || p.synced_blocks || p.starting_height || 0)), Number(chain.height || 0));
+  const wrongChain = peers.filter((p: Dict) => p.chain_id && p.chain_id !== snap.coin?.chain_id);
+  return (
+    <div className="page">
+      <div className="metricGrid">
+        <Metric label="Connected peers" value={peers.length} />
+        <Metric label="Outbound / inbound" value={`${outbound} / ${inbound}`} />
+        <Metric label="DNS seeds" value={`${dnsSeeds.length} configured`} />
+        <Metric label="Chain ID" value={snap.coin?.chain_id} mono copyable />
+        <Metric label="Local height" value={chain.height ?? "-"} />
+        <Metric label="Best peer height" value={bestPeerHeight} />
+        <Metric label="Best block" value={chain.bestblockhash || "-"} mono copyable />
+        <Metric label="Network KH/s" value={networkHashLabel(snap.chain_timing?.network_hashps)} />
+      </div>
+      <section className="panel">
+        <h3>Peers vs seeds</h3>
+        <p className="muted">DNS seeds are bootstrap helpers that help this wallet find peers. Peers are active node connections. This wallet cannot know the true total network size without crawler support.</p>
+        <div className="metricGrid compactMetrics">
+          <Metric label="Estimated total network nodes" value="Unavailable" />
+          <Metric label="Known peers" value={chain.known_peers_available ? chain.known_peer_count : "Unavailable"} />
+          <Metric label="Manual addnodes" value={addnodes.length} />
+          <Metric label="Health hint" value={peers.length >= 3 ? "3+ peers connected" : "Keep 3+ peers connected"} />
+        </div>
+        {peers.length === 0 && <Notice tone="warn" text="No peers connected. Use Settings > Network to Add Default Seeds or Reset to Automatic." />}
+        {wrongChain.length > 0 && <Notice tone="danger" text={`${wrongChain.length} peer(s) reported a different chain ID. Disconnect unknown nodes and use the default RC2 seeds.`} />}
+      </section>
+      <section className="panel">
+        <h3>Bootstrap sources</h3>
+        <div className="nodeList">
+          {dnsSeeds.map((s: string) => <div className="nodeRow" key={s}><strong>DNS seed</strong><span className="mono">{s}</span></div>)}
+          {addnodes.map((s: string) => <div className="nodeRow" key={s}><strong>Addnode</strong><span className="mono">{s}</span></div>)}
+          {dnsSeeds.length === 0 && addnodes.length === 0 && <p className="muted">No bootstrap sources configured.</p>}
+        </div>
+      </section>
+      <section className="panel scrollPanel">
+        <h3>Connected peers</h3>
+        <div className="table peerTable">
+          <div className="tr head"><span>Direction</span><span>Address</span><span>Ping</span><span>Height</span><span>Chain ID</span><span>Connected</span></div>
+          {peers.length === 0 && <p className="muted">No peers connected yet. The node is still usable locally while it looks for peers.</p>}
+          {peers.map((p: Dict, i: number) => (
+            <div className="tr" key={`${p.addr}-${i}`}>
+              <span>{p.direction || p.connection_type || "-"}</span>
+              <span className="mono">{p.addr || "-"}</span>
+              <span>{p.last_ping_ms ? `${Number(p.last_ping_ms).toFixed(1)} ms` : "-"}</span>
+              <span>{p.synced_blocks ?? p.starting_height ?? "-"}</span>
+              <span className="mono">{p.chain_id ? shortenMiddle(p.chain_id) : "-"}</span>
+              <span>{seconds(p.connected_for_seconds)}</span>
+            </div>
+          ))}
+        </div>
+        <p className="muted topGap">Peer metadata is self-reported by connected peers and is informational.</p>
+      </section>
+    </div>
+  );
+}
+
+function DiagnosticsPage({ snap, run }: PageProps) {
+  const [doctor, setDoctor] = useState<Dict | null>(null);
+  const [storage, setStorage] = useState<Dict | null>(null);
+  const [timing, setTiming] = useState<Dict | null>(snap.chain_timing || null);
+  const [raw, setRaw] = useState<Record<string, { status: "idle" | "loading" | "success" | "error"; result?: any; error?: string }>>({});
+  const [selectedRaw, setSelectedRaw] = useState("getinfo");
+  async function rawCall(name: string, fn: () => Promise<any>) {
+    setSelectedRaw(name);
+    setRaw((old) => ({ ...old, [name]: { status: "loading" } }));
+    try {
+      const result = await run(name, fn);
+      setRaw((old) => ({ ...old, [name]: { status: "success", result } }));
+    } catch (e) {
+      setRaw((old) => ({ ...old, [name]: { status: "error", error: cleanError(e) } }));
+    }
+  }
+  async function checkedCall(name: string, fn: () => Promise<any>, setter: (v: any) => void) {
+    setSelectedRaw(name);
+    setRaw((old) => ({ ...old, [name]: { status: "loading" } }));
+    try {
+      const result = await run(name, fn);
+      setter(result);
+      setRaw((old) => ({ ...old, [name]: { status: "success", result } }));
+    } catch (e) {
+      setRaw((old) => ({ ...old, [name]: { status: "error", error: cleanError(e) } }));
+    }
+  }
+  const current = raw[selectedRaw];
+  return (
+    <div className="page">
+      <div className="diagnosticButtons">
+        <button className={selectedRaw === "getinfo" ? "active" : ""} onClick={() => rawCall("getinfo", () => api().Snapshot())}>getinfo</button>
+        <button className={selectedRaw === "getblockchaininfo" ? "active" : ""} onClick={() => rawCall("getblockchaininfo", () => api().GetBlockchainInfo())}>getblockchaininfo</button>
+        <button className={selectedRaw === "getpeerinfo" ? "active" : ""} onClick={() => rawCall("getpeerinfo", () => api().GetPeerInfo())}>getpeerinfo</button>
+        <button className={selectedRaw === "getruntimeinfo" ? "active" : ""} onClick={() => rawCall("getruntimeinfo", () => api().Snapshot())}>getruntimeinfo</button>
+        <button className={selectedRaw === "doctor" ? "active" : ""} onClick={() => checkedCall("doctor", () => api().Doctor(), setDoctor)}>doctor</button>
+        <button className={selectedRaw === "checkstorage" ? "active" : ""} onClick={() => checkedCall("checkstorage", () => api().CheckStorage(), setStorage)}>checkstorage</button>
+        <button className={selectedRaw === "getchaintiming" ? "active" : ""} onClick={() => checkedCall("getchaintiming", () => api().GetChainTiming(), setTiming)}>getchaintiming</button>
+        <button className={selectedRaw === "getminerstatus" ? "active" : ""} onClick={() => rawCall("getminerstatus", () => api().GetMinerStatus())}>getminerstatus</button>
+        <button className={selectedRaw === "getrawmempool" ? "active" : ""} onClick={() => rawCall("getrawmempool", () => api().GetMempool())}>getrawmempool</button>
+      </div>
+      <div className="twoCol diagnosticsGrid">
+        <section className="panel">
+          <h3>Node health</h3>
+          <HealthList checks={doctor?.checks || []} />
+        </section>
+        <InfoPanel title="Runtime and storage" rows={[
+          ["Node", snap.node?.running ? "Running" : "Stopped"],
+          ["RPC", "Local wallet/CLI interface"],
+          ["Storage", storage?.ok ?? storage?.OK ?? snap.mining?.storage?.OK ?? "-"],
+          ["Data directory", snap.node?.data_dir || snap.settings?.dataDir],
+          ["Average block time", seconds(timing?.average_block_time_seconds)],
+          ["Network hash estimate", networkHashLabel(timing?.network_hashps)],
+        ]} />
+      </div>
+      <section className="advanced diagnosticsOutput">
+        <div className="rawHeader">
+          <div>
+            <h3>{selectedRaw}</h3>
+            <p className="muted">{current?.status === "loading" ? "Loading from internal node..." : current?.status === "success" ? "Success. Latest result shown below." : current?.status === "error" ? "Request failed. Error shown below." : "Click a diagnostics command to view output."}</p>
+          </div>
+          {current?.status === "success" && <button onClick={() => copy(JSON.stringify(current.result, null, 2))}><Copy size={14} /> Copy JSON</button>}
+        </div>
+        {current?.status === "loading" && <div className="rawState">Loading...</div>}
+        {current?.status === "error" && <Notice tone="danger" text={current.error || "Diagnostics request failed"} />}
+        {current?.status === "success" && <pre>{JSON.stringify(current.result, null, 2)}</pre>}
+        {!current && <pre>{JSON.stringify({ hint: "Diagnostics output will appear here.", available: ["getinfo", "getblockchaininfo", "getpeerinfo", "getminerstatus", "getrawmempool"] }, null, 2)}</pre>}
+      </section>
+    </div>
+  );
+}
+
+function SettingsPage({ snap, run }: PageProps) {
+  const [settings, setSettings] = useState<SettingsShape>({
+    dataDir: snap.settings?.dataDir || snap.node?.data_dir || "",
+    startNodeOnLaunch: Boolean(snap.settings?.startNodeOnLaunch),
+    stopNodeOnExit: Boolean(snap.settings?.stopNodeOnExit),
+    defaultThreads: Number(snap.settings?.defaultThreads || 1),
+    theme: snap.settings?.theme || "dark",
+    network: snap.settings?.network || { mode: "automatic", nodes: [] },
+    launchpad: snap.settings?.launchpad || { apiUrl: "http://127.0.0.1:8090" },
+  });
+  const [nodeInput, setNodeInput] = useState("");
+  const [testResults, setTestResults] = useState<Dict[]>([]);
+  const firstAddr = snap.wallet?.receive_addresses?.[0] || "";
+  const [split, setSplit] = useState({ from: firstAddr, total: "10", outputs: "10", fee: "0.00001000" });
+  const network = settings.network || { mode: "automatic", nodes: [] };
+  function setNetwork(next: Partial<{ mode: string; nodes: string[] }>) {
+    setSettings({ ...settings, network: { ...network, ...next } });
+  }
+  function addNodes(nodes: string[]) {
+    const merged = Array.from(new Set([...(network.nodes || []), ...nodes]));
+    setNetwork({ nodes: merged });
+  }
+  async function saveNetwork() {
+    const saved = await run("Save network settings", () => api().SaveNetworkSettings(network));
+    setNetwork({ mode: saved.mode, nodes: saved.nodes || [] });
+    await run("Reconnect peers", () => api().ReconnectPeers());
+  }
+  return (
+    <div className="page settingsPage">
+      <section className="panel">
+        <h3>Wallet settings</h3>
+        <Field label="Data directory">
+          <input value={settings.dataDir} onChange={(e) => setSettings({ ...settings, dataDir: e.target.value })} />
+        </Field>
+        <label className="check"><input type="checkbox" checked={settings.startNodeOnLaunch} onChange={(e) => setSettings({ ...settings, startNodeOnLaunch: e.target.checked })} /> Start node on wallet launch</label>
+        <label className="check"><input type="checkbox" checked={settings.stopNodeOnExit} onChange={(e) => setSettings({ ...settings, stopNodeOnExit: e.target.checked })} /> Stop node on wallet exit</label>
+        <Field label="Default mining threads">
+          <input type="number" min={1} value={settings.defaultThreads} onChange={(e) => setSettings({ ...settings, defaultThreads: Number(e.target.value) })} />
+        </Field>
+        <button className="primary wide" onClick={() => run("Save settings", () => api().SaveSettings(settings))}>Save settings</button>
+      </section>
+      <section className="panel networkSettings">
+        <h3>Network / Connections</h3>
+        <div className="segmented">
+          <button className={network.mode === "automatic" ? "active" : ""} onClick={() => setNetwork({ mode: "automatic" })}>Automatic</button>
+          <button className={network.mode === "addnode" ? "active" : ""} onClick={() => setNetwork({ mode: "addnode" })}>Add custom nodes</button>
+          <button className={network.mode === "connectonly" ? "active" : ""} onClick={() => setNetwork({ mode: "connectonly" })}>Connect only</button>
+        </div>
+        {network.mode === "connectonly" && <Notice tone="warn" text="This mode disables automatic peer discovery. Use only if you trust these nodes." />}
+        <div className="row">
+          <input value={nodeInput} onChange={(e) => setNodeInput(e.target.value)} placeholder="91.219.63.20:19555 or legacycoinseed.space" />
+          <button onClick={() => { if (nodeInput.trim()) { addNodes([nodeInput.trim()]); setNodeInput(""); } }}>Add node</button>
+        </div>
+        <div className="row">
+          <button onClick={() => addNodes(["legacycoinseed.space:19555", "legacycoinseed2.space:19555"])}>Add Default Seeds</button>
+          <button onClick={() => addNodes(["91.219.63.20:19555", "176.229.49.108:19555", "legacycoinseed.space:19555", "legacycoinseed2.space:19555"])}>Add Known Nodes</button>
+          <button onClick={() => setNetwork({ mode: "automatic", nodes: [] })}>Reset to Automatic</button>
+        </div>
+        <div className="nodeList">
+          {(network.nodes || []).length === 0 && <p className="muted">Automatic mode uses Legacy Coin DNS seeds.</p>}
+          {(network.nodes || []).map((node) => <div className="nodeRow" key={node}><span className="mono">{node}</span><button onClick={() => setNetwork({ nodes: network.nodes.filter((n) => n !== node) })}>Remove</button></div>)}
+        </div>
+        <div className="row">
+          <button onClick={async () => setTestResults(await run("Test connections", () => api().TestConfiguredNodes()))}>Test Connection</button>
+          <button className="primary" onClick={saveNetwork}>Save and Reconnect</button>
+        </div>
+        <div className="nodeResults">
+          {testResults.map((r) => <div key={r.node} className="nodeRow"><strong>{r.status}</strong><span>{r.node}</span><small>{r.message}</small></div>)}
+        </div>
+      </section>
+      <InfoPanel title="About" rows={[
+        ["Product", "Legacy Wallet 1.0.0"],
+        ["Core Engine", "Legacy Core 1.0.0"],
+        ["Network", "Legacy Coin Mainnet"],
+        ["Coin", "Legacy Coin / LBTC"],
+        ["P2P port", snap.coin?.p2p_port],
+        ["RPC port", `${snap.coin?.rpc_port}`],
+        ["Chain ID", snap.coin?.chain_id],
+        ["Genesis", snap.coin?.genesis_hash],
+      ]} />
+      <section className="panel">
+        <h3>Advanced Coin Tools</h3>
+        <p className="muted compactNote">Split Coins creates many wallet-owned UTXOs after confirmation. This helps send many transactions in one block without depending on unconfirmed change.</p>
+        <Field label="Source address">
+          <input value={split.from} onChange={(e) => setSplit({ ...split, from: e.target.value })} placeholder={firstAddr || "Legacy address"} />
+        </Field>
+        <div className="row">
+          <Field label="Total amount"><input value={split.total} onChange={(e) => setSplit({ ...split, total: e.target.value })} /></Field>
+          <Field label="Outputs"><input type="number" min={2} max={100} value={split.outputs} onChange={(e) => setSplit({ ...split, outputs: e.target.value })} /></Field>
+          <Field label="Fee"><input value={split.fee} onChange={(e) => setSplit({ ...split, fee: e.target.value })} /></Field>
+        </div>
+        <button className="primary wide" onClick={() => run("Split coins", () => api().SplitCoins(split.from, split.total, split.outputs, split.fee))}>Create split transaction</button>
+      </section>
+    </div>
+  );
+}
+
+type PageProps = {
+  snap: Dict;
+  run: <T>(label: string, fn: () => Promise<T>) => Promise<T>;
+  refresh: () => Promise<void>;
+};
+
+function Loading() {
+  return <div className="loading"><img src={legacyLogo} alt="" /><strong>Opening Legacy Wallet</strong><span>Starting the desktop backend...</span></div>;
+}
+
+function TitleBar() {
+  return (
+    <div className="titleBar">
+      <div className="titleIdentity"><img src={legacyLogo} alt="" /><strong>Legacy Wallet</strong><span>Mainnet</span></div>
+      <div className="windowButtons">
+        <button aria-label="Minimize" title="Minimize" onClick={() => api().WindowMinimise()}><span>_</span></button>
+        <button aria-label="Maximize" title="Maximize / restore" onClick={() => api().WindowToggleMaximise()}><span>□</span></button>
+        <button aria-label="Close" title="Close" className="close" onClick={() => api().Quit()}><span>×</span></button>
+      </div>
+    </div>
+  );
+}
+
+function StatusBar({ snap }: { snap: Dict | null }) {
+  const peers = snap?.blockchain?.peer_count ?? (snap?.peers || []).length ?? 0;
+  const height = snap?.blockchain?.height ?? "-";
+  return (
+    <footer className="statusBar">
+      <span>Legacy Mainnet</span>
+      <span>Height: {height}</span>
+      <span><StatusDot ok={Boolean(snap?.node?.running)} /> {snap?.node?.running ? "Synced/Syncing" : "Node offline"}</span>
+      <span>{peers} peers</span>
+      <span className="bars"><i /><i /><i /><i /></span>
+    </footer>
+  );
+}
+
+function Metric({ label, value, mono, icon, copyable }: { label: string; value: any; mono?: boolean; icon?: React.ReactNode; copyable?: boolean }) {
+  const shown = String(value ?? "-");
+  return <div className="metric"><span>{icon}{label}</span><strong className={mono ? "mono" : ""}>{copyable || isLongToken(shown) ? <CopyableValue value={shown} /> : shown}</strong></div>;
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return <label><span>{label}</span>{children}</label>;
+}
+
+function InfoPanel({ title, rows, flush = false }: { title: string; rows: [string, any][]; flush?: boolean }) {
+  return <section className={flush ? "" : "panel"}><h3>{title}</h3><div className="kv">{rows.map(([k, v]) => {
+    const shown = String(v ?? "-");
+    const long = isLongToken(shown);
+    return <div key={k}><span>{k}</span><strong className={long ? "mono" : ""}>{long ? <CopyableValue value={shown} /> : shown}</strong></div>;
+  })}</div></section>;
+}
+
+function ResultCard({ title, rows }: { title: string; rows: [string, any][] }) {
+  return <section className="panel result"><BadgeCheck /><InfoPanel title={title} rows={rows} flush /></section>;
+}
+
+function Notice({ text, tone }: { text: string; tone: "info" | "warn" | "danger" | "success" }) {
+  return <div className={`notice ${tone}`}><AlertTriangle size={18} />{text}</div>;
+}
+
+function StatusDot({ ok }: { ok: boolean }) {
+  return <span className={`statusDot ${ok ? "ok" : "bad"}`} />;
+}
+
+function AddressList({ addresses }: { addresses: string[] }) {
+  return <div className="addressList">{addresses.length === 0 ? <p className="muted">No receive address yet. Create one when you are ready to receive LBTC.</p> : addresses.map((a) => <div className="addressItem" key={a}><span className="mono"><CopyableValue value={a} /></span></div>)}</div>;
+}
+
+function ActivityGroup({ title, rows, empty }: { title: string; rows: Dict[]; empty: string }) {
+  return (
+    <section className="activityGroup">
+      <h4>{title}</h4>
+      {rows.length === 0 ? <p className="muted compactNote">{empty}</p> : rows.map((o: Dict, i: number) => (
+        <div className="activityRow" key={`${title}-${o.txid || o.outpoint || i}`}>
+          <div className="activityIcon">{o.direction === "sent" || o.direction === "self_transfer" ? <Send size={17} /> : o.direction === "mining_reward" ? <Pickaxe size={17} /> : <Coins size={17} />}</div>
+          <div>
+            <strong>{directionLabel(o.direction)} <span className={`statusPill ${o.status}`}>{o.status_label || titleCase(String(o.status || ""))}</span></strong>
+            <p className="mono">{o.txid ? <CopyableValue value={o.txid} /> : "pending txid"}</p>
+            {o.address && <p className="muted mono"><CopyableValue value={o.address} /></p>}
+          </div>
+          <div className="right">
+            <strong>{o.amount_lbtc ? lbtc(o.amount_lbtc) : fmtAmount(o.amount)}</strong>
+            {(o.direction === "sent" || o.direction === "self_transfer") && <span>Fee {o.fee_lbtc ? lbtc(o.fee_lbtc) : fmtAmount(o.fee)}</span>}
+            {o.direction === "self_transfer" && <span>Wallet output {o.change_lbtc ? lbtc(o.change_lbtc) : fmtAmount(o.change)}</span>}
+            <span>{o.confirmations || 0} confirmations</span>
+            {o.block_height ? <span>Height {o.block_height}</span> : <span>{o.mempool ? "Mempool" : "Unconfirmed"}</span>}
+          </div>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function HealthList({ checks }: { checks: Dict[] }) {
+  if (!checks.length) return <p className="muted">Run Doctor to check node, wallet, storage, and network health.</p>;
+  return <div className="healthList">{checks.map((c) => <div key={c.id || c.message}><StatusDot ok={Boolean(c.ok)} /><span>{c.message || c.id}</span></div>)}</div>;
+}
+
+function CopyableValue({ value }: { value: any }) {
+  const full = String(value ?? "-");
+  const [copied, setCopied] = useState(false);
+  const short = shortenMiddle(full);
+  async function doCopy(e: React.MouseEvent) {
+    e.stopPropagation();
+    await copy(full);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1200);
+  }
+  return (
+    <span className="copyableValue" title={full}>
+      <span>{short}</span>
+      {full !== "-" && <button type="button" aria-label="Copy full value" onClick={doCopy}><Copy size={12} />{copied ? "Copied" : ""}</button>}
+    </span>
+  );
+}
+
+function TransactionDetails({ tx }: { tx: Dict }) {
+  return (
+    <div className="txDetails">
+      <div className="kv">
+        <div><span>Txid</span><strong className="mono"><CopyableValue value={tx.txid} /></strong></div>
+        <div><span>Status</span><strong>{tx.status === "mempool" ? "Mempool / pending confirmation" : tx.status || "confirmed"}</strong></div>
+        <div><span>Block height</span><strong>{tx.block_height >= 0 ? tx.block_height : "Mempool"}</strong></div>
+        {tx.block_hash && <div><span>Block hash</span><strong className="mono"><CopyableValue value={tx.block_hash} /></strong></div>}
+        <div><span>Confirmations</span><strong>{tx.confirmations || 0}</strong></div>
+        <div><span>Coinbase</span><strong>{yesNo(tx.coinbase)}</strong></div>
+        {tx.wallet && <div><span>Wallet view</span><strong>{directionLabel(tx.wallet.direction)} / {tx.wallet.status_label}</strong></div>}
+      </div>
+      <h3>Outputs</h3>
+      <div className="table outputMini tableScroll smallScroll">
+        <div className="tr head"><span>Vout</span><span>Value</span><span>Script</span></div>
+        {(tx.outputs || []).map((o: Dict) => <div className="tr" key={o.vout}><span>{o.vout}</span><span>{o.value_lbtc ? lbtc(o.value_lbtc) : fmtAmount(o.value)}</span><span className="mono"><CopyableValue value={o.script_hex} /></span></div>)}
+      </div>
+      <h3>Inputs</h3>
+      <div className="table outputMini tableScroll smallScroll">
+        <div className="tr head"><span>Prev tx</span><span>Vout</span><span>Sequence</span></div>
+        {(tx.inputs || []).map((i: Dict, n: number) => <div className="tr" key={n}><span className="mono"><CopyableValue value={i.previous_txid} /></span><span>{i.vout}</span><span>{i.sequence}</span></div>)}
+      </div>
+    </div>
+  );
+}
+
+function sendStatusTitle(tx: Dict) {
+  if (tx.status === "confirmed") return "Sent";
+  if (tx.status === "pending") return "Pending confirmation";
+  if (tx.status === "local_only") return "Local only";
+  if (tx.status === "pending_broadcast") return "Pending broadcast";
+  if (tx.status === "failed") return "Failed";
+  return "Transaction created";
+}
+
+function sendStatusMessage(tx: Dict) {
+  if (tx.status === "pending") return "Transaction broadcast. Waiting for confirmation.";
+  if (tx.status === "local_only") return "Transaction is in your local mempool but has not been broadcast yet.";
+  if (tx.status === "pending_broadcast") return "Transaction was created but has not reached any peer yet. Keep the wallet online.";
+  if (tx.status === "confirmed") return "Transaction confirmed in a block.";
+  if (tx.status === "failed") return tx.last_error || "Transaction failed or was rejected.";
+  return "Transaction created.";
+}
+
+function directionLabel(v: any) {
+  if (v === "sent") return "Sent";
+  if (v === "received") return "Received";
+  if (v === "self_transfer") return "Self-transfer";
+  if (v === "mining_reward") return "Mining reward";
+  return titleCase(String(v || "Transaction"));
+}
+
+function syncLabel(chain: Dict, peers: Dict[]) {
+  const expected = Math.max(...peers.map((p) => Number(p.expected_sync_height || p.synced_blocks || 0)), Number(chain.height || 0));
+  if (!chain.height && chain.height !== 0) return "Starting";
+  if (expected > Number(chain.height)) return `${chain.height} / ${expected}`;
+  return "Current";
+}
+
+function fmtAmount(v: any) {
+  const n = Number(v || 0);
+  return Number.isFinite(n) ? formatHumanLBTC(n / 1e8) : String(v ?? "-");
+}
+
+function fmtNumber(v: any) {
+  const n = Number(v || 0);
+  if (!Number.isFinite(n)) return "-";
+  if (n >= 1000) return n.toLocaleString(undefined, { maximumFractionDigits: 1 });
+  return n.toLocaleString(undefined, { maximumFractionDigits: 3 });
+}
+
+function networkHashLabel(v: any) {
+  if (!v || v.status === "estimating" || String(v.note || "").includes("not enough")) return "Estimating";
+  const n = Number(v.khps);
+  if (!Number.isFinite(n) || n <= 0) return "Not enough blocks";
+  return `${fmtNumber(n)} KH/s`;
+}
+
+function lbtc(v: any) {
+  if (v === undefined || v === null || v === "") return "-";
+  const s = String(v).replace(/\s*LBTC$/i, "");
+  return formatHumanLBTC(s);
+}
+
+function formatHumanLBTC(v: any) {
+  const raw = String(v ?? "0").replace(/,/g, "").replace(/\s*LBTC$/i, "").trim();
+  const n = Number(raw || 0);
+  if (!Number.isFinite(n)) return String(v ?? "-");
+  const fixed = n.toFixed(8).replace(/\.?0+$/, "");
+  const [whole, frac] = fixed.split(".");
+  const grouped = Number(whole || 0).toLocaleString(undefined, { maximumFractionDigits: 0 });
+  return `${grouped}${frac ? `.${frac}` : ""} LBTC`;
+}
+
+function profileForThreads(threads: number, fallback: number) {
+  if (threads <= 1) return "eco";
+  if (threads === 4) return "balanced";
+  if (threads >= Math.max(12, fallback * 2)) return "stress";
+  if (threads >= Math.max(6, fallback)) return "performance";
+  return "custom";
+}
+
+function percent(v: any) {
+  const n = Number(v || 0);
+  if (!Number.isFinite(n)) return "0.000000%";
+  return `${n.toFixed(6)}%`;
+}
+
+function seconds(v: any) {
+  const n = Number(v || 0);
+  if (!Number.isFinite(n) || n <= 0) return "-";
+  if (n < 90) return `${Math.round(n)}s`;
+  if (n < 7200) return `${Math.round(n / 60)}m`;
+  return `${(n / 3600).toFixed(1)}h`;
+}
+
+function dateTime(v: any) {
+  const n = Number(v || 0);
+  if (!Number.isFinite(n) || n <= 0) return "-";
+  return new Date(n * 1000).toLocaleString();
+}
+
+function yesNo(v: any) {
+  return v ? "Yes" : "No";
+}
+
+function safeNum(v: string) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function title(v: string) {
+  return v.slice(0, 1).toUpperCase() + v.slice(1);
+}
+
+function titleCase(v: string) {
+  return v.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+async function copy(text: string) {
+  await navigator.clipboard?.writeText(text);
+}
+
+function cleanError(e: any) {
+  return String(e?.message || e).replace(/^Error:\s*/, "");
+}
+
+function isLongToken(v: string) {
+  return /^[A-Za-z0-9:_./\\-]{28,}$/.test(v);
+}
+
+function shortenMiddle(v: string, head = 12, tail = 10) {
+  if (!isLongToken(v) || v.length <= head + tail + 3) return v;
+  return `${v.slice(0, head)}...${v.slice(-tail)}`;
+}
+
+createRoot(document.getElementById("root")!).render(<App />);
