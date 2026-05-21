@@ -3,13 +3,6 @@
 Legacy Coin is a fair-launch UTXO proof-of-work network focused on full-node
 verification, CPU-accessible mining, and a simple desktop wallet experience.
 
-This repository is the public source for:
-
-- Legacy Core 1.0.0 source
-- Legacy Wallet 1.0.0 desktop source
-
-Legacy Pool and Legacy Explorer / Launchpad are maintained separately and are
-not included in this repository.
 
 ## RC2 Public Mainnet Reset
 
@@ -25,34 +18,10 @@ obsolete and must not be mixed with this release.
 | Chain ID | `legacy-mainnet-1.0.0-rc2-5b4c78e4` |
 | P2P port | `19555` |
 | RPC port | `19556` |
-| Message start | `a4 ac c6 4d` |
 | Genesis timestamp | `onecpuonevote Legacy Coin Public Mainnet 20/May/2026` |
-| Genesis time | `1779235200` |
-| Genesis bits | `207fffff` |
-| Post-genesis bits | `1f0fffff` |
-| Genesis nonce | `3` |
 | Genesis hash | `5b4c78e4556afcd51acf7b9eb2e387fbea2d1414e6042d80d38e6256987154f5` |
 | PoW | `LegacyCoinPoW, N=2048, r=32` |
-| PoW input | Serialized 80-byte Legacy block header |
-| Production yespower backend | `cgo-c-reference` |
 
-## Clean Upgrade Warning
-
-If you tested earlier builds, back up wallets, wallet backups, private keys, and
-seed phrases before changing any data.
-
-After backup, remove only old runtime chain/network data:
-
-- `blocks`
-- `chainstate`
-- `peers.dat`
-- mempool cache files
-
-Do not delete:
-
-- wallet backups
-- private keys
-- seed phrases
 
 ## Production PoW Requirement
 
@@ -201,13 +170,6 @@ legacycoin-cli getnetworkinfo
 legacycoin-cli getselfcheck
 legacycoin-cli getlaunchstatus
 ```
-
-## Clean Restart Runbook
-
-See:
-
-- `docs/RC2_CLEAN_RESTART_RUNBOOK.md`
-- `docs/PUBLIC_MAINNET_IDENTITY_RESET_RC2.md`
 
 ## Security
 
