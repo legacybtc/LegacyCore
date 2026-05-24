@@ -46,13 +46,13 @@ If you are a Linux node operator / miner:
    https://github.com/legacybtc/LegacyCore/releases
 
 2. Download:
-   `LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0-rc2.tar.gz`
+   `LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0.tar.gz`
 
 3. Extract and run:
 
    ```bash
-   tar -xzf LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0-rc2.tar.gz
-   cd LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0-rc2
+   tar -xzf LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0.tar.gz
+   cd LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0
    chmod +x legacycoind legacycoin-cli
    ./legacycoind run -seed-peers
    ```
@@ -72,7 +72,7 @@ From this `LegacyCore` repository/release:
 | User type | Download | What it does |
 |---|---|---|
 | Windows normal user | `LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.1.zip` | Desktop wallet + local node |
-| Linux node operator | `LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0-rc2.tar.gz` | Full node + CLI |
+| Linux node operator | `LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0.tar.gz` | Full node + CLI |
 | Developer | GitHub source or source ZIP | Build Core, CLI, and Wallet from source |
 
 Separate products, not included in this repository:
@@ -161,7 +161,7 @@ blocks.
 Warning:
 
 - Do not delete wallet files, private keys, or seed phrases.
-- If you tested old pre-RC2 builds, back up wallet first, then remove only old
+- If you tested old pre builds, back up wallet first, then remove only old
   runtime data:
   - `blocks`
   - `chainstate`
@@ -211,13 +211,13 @@ Full Windows build details are in `docs/WINDOWS_BUILD.md`.
 ## Linux Full Node: Download and Run
 
 1. Download:
-   `LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0-rc2.tar.gz`
+   `LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0.tar.gz`
 
 2. Extract:
 
    ```bash
-   tar -xzf LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0-rc2.tar.gz
-   cd LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0-rc2
+   tar -xzf LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0.tar.gz
+   cd LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0
    ```
 
 3. Make binaries executable:
@@ -276,7 +276,7 @@ Get-FileHash .\LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.1.zip -Algorithm SHA
 Linux:
 
 ```bash
-sha256sum LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0-rc2.tar.gz
+sha256sum LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0.tar.gz
 sha256sum -c SHA256SUMS.txt
 ```
 
