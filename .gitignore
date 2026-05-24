@@ -1,0 +1,6 @@
+.opencode
+legacycoind
+legacycoin-cli
+legacy-wallet
+legacy-wallet-genesis.dat
+dist/
