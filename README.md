@@ -120,16 +120,6 @@ Mining from the CLI is solo mining. Hashrate does not guarantee a block. Rewards
 only appear if your miner finds a block, and coinbase rewards mature after 100
 blocks.
 
-## Integration and Operator Docs
-
-- Pool integration: `docs/POOL_INTEGRATION.md`
-- Exchange integration: `docs/EXCHANGE_INTEGRATION.md`
-- RPC compatibility matrix: `docs/RPC_COMPATIBILITY.md`
-- Node operations: `docs/NODE_OPERATOR_GUIDE.md`
-- Mining guide: `docs/MINING_GUIDE.md`
-- Troubleshooting: `docs/TROUBLESHOOTING.md`
-- Windows build guide: `docs/WINDOWS_BUILD.md`
-
 ## Windows Desktop Wallet: Download and Run
 
 1. Download:
