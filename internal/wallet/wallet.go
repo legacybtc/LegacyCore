@@ -349,6 +349,91 @@ func (w *Wallet) Lock() error {
 	return nil
 }
 
+func (w *Wallet) ChangePassphrase(oldPassphrase, newPassphrase string) error {
+	if newPassphrase == "" {
+		return fmt.Errorf("empty new passphrase")
+	}
+	if err := w.Unlock(oldPassphrase, 0); err != nil {
+		return err
+	}
+	w.mu.Lock()
+	if !w.encrypted {
+		w.mu.Unlock()
+		return fmt.Errorf("wallet is not encrypted")
+	}
+	w.refreshMetadataLocked()
+	cipherHex, saltHex, nonceHex, err := encryptState(keyState{
+		Keys:            w.keys,
+		HybridKeys:      w.hybridKeys,
+		SeedHex:         w.seedHex,
+		NextIndex:       w.nextIndex,
+		ClassicKeyCount: w.classicCount,
+		HybridKeyCount:  w.hybridCount,
+		HasHDSeed:       w.hasHDSeed,
+	}, newPassphrase)
+	if err != nil {
+		return err
+	}
+	w.cipherHex = cipherHex
+	w.saltHex = saltHex
+	w.nonceHex = nonceHex
+	w.unlockPass = newPassphrase
+	w.mu.Unlock()
+	return w.persistLocked()
+}
+
+func (w *Wallet) RestorePlainBackup(path string) (map[string]int, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var s stored
+	if err := json.Unmarshal(b, &s); err != nil {
+		return nil, err
+	}
+	if s.Encrypted {
+		return nil, fmt.Errorf("encrypted backup restore requires restoring the wallet file manually after backing up the current wallet")
+	}
+	if err := w.requireUnlocked(); err != nil {
+		return nil, err
+	}
+	importedClassic := 0
+	importedHybrid := 0
+	w.mu.Lock()
+	if w.keys == nil {
+		w.keys = make(map[string]string)
+	}
+	for addr, key := range s.Keys {
+		if _, exists := w.keys[addr]; !exists {
+			importedClassic++
+		}
+		w.keys[addr] = key
+	}
+	if w.hybridKeys == nil {
+		w.hybridKeys = make(map[string]pqc.HybridPrivateBytes)
+	}
+	for addr, key := range s.HybridKeys {
+		if _, exists := w.hybridKeys[addr]; !exists {
+			importedHybrid++
+		}
+		w.hybridKeys[addr] = key
+	}
+	if w.seedHex == "" && s.SeedHex != "" {
+		w.seedHex = s.SeedHex
+	}
+	if s.NextIndex > w.nextIndex {
+		w.nextIndex = s.NextIndex
+	}
+	w.refreshMetadataLocked()
+	classicTotal := len(w.keys)
+	hybridTotal := len(w.hybridKeys)
+	w.mu.Unlock()
+	if err := w.persist(); err != nil {
+		return nil, err
+	}
+	return map[string]int{"classic_imported": importedClassic, "hybrid_imported": importedHybrid, "classic_total": classicTotal, "hybrid_total": hybridTotal}, nil
+}
+
 func (w *Wallet) SecurityInfo() map[string]any {
 	w.mu.RLock()
 	defer w.mu.RUnlock()

@@ -2,6 +2,7 @@ package wallet
 
 import (
 	"bytes"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -496,5 +497,66 @@ func TestEncryptedLockedWalletKeepsReadinessMetadata(t *testing.T) {
 	}
 	if info2["hdseed"] != true {
 		t.Fatalf("reopened locked hdseed metadata lost: %#v", info2)
+	}
+}
+
+func TestChangePassphraseKeepsWalletUnlockable(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.NewAddress(); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Encrypt("old-passphrase"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Unlock("old-passphrase", time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.ChangePassphrase("old-passphrase", "new-passphrase"); err != nil {
+		t.Fatal(err)
+	}
+	w.Lock()
+	if err := w.Unlock("old-passphrase", time.Minute); err == nil {
+		t.Fatalf("old passphrase should no longer unlock wallet")
+	}
+	if err := w.Unlock("new-passphrase", time.Minute); err != nil {
+		t.Fatalf("new passphrase did not unlock wallet: %v", err)
+	}
+}
+
+func TestRestorePlainBackupImportsKeysAdditively(t *testing.T) {
+	sourceDir := t.TempDir()
+	source, err := Open(sourceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	classic, err := source.NewAddress()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hybrid, err := source.NewHybridAddress()
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := target.RestorePlainBackup(filepath.Join(sourceDir, "wallet.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["classic_imported"] == 0 || result["hybrid_imported"] == 0 {
+		t.Fatalf("restore imported counts too low: %+v", result)
+	}
+	got := map[string]bool{}
+	for _, addr := range target.ListAddresses() {
+		got[addr] = true
+	}
+	if !got[classic] || !got[hybrid] {
+		t.Fatalf("restored wallet missing classic=%v hybrid=%v from %v", got[classic], got[hybrid], got)
 	}
 }

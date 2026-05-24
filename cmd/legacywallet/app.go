@@ -119,6 +119,22 @@ func (a *App) GetWalletSummary() (map[string]any, error) { return a.service.GetW
 
 func (a *App) GetBalance() (map[string]any, error) { return a.service.GetBalance() }
 
+func (a *App) EncryptWallet(passphrase string) (map[string]any, error) {
+	return a.service.EncryptWallet(passphrase)
+}
+
+func (a *App) UnlockWallet(passphrase string, timeoutSeconds int) (map[string]any, error) {
+	return a.service.UnlockWallet(passphrase, timeoutSeconds)
+}
+
+func (a *App) LockWallet() (map[string]any, error) {
+	return a.service.LockWallet()
+}
+
+func (a *App) ChangeWalletPassphrase(oldPassphrase, newPassphrase string) (map[string]any, error) {
+	return a.service.ChangeWalletPassphrase(oldPassphrase, newPassphrase)
+}
+
 func (a *App) GetNewAddress() (string, error) { return a.service.GetNewAddress() }
 
 func (a *App) ListReceiveAddresses() ([]string, error) { return a.service.ListReceiveAddresses() }
@@ -200,7 +216,17 @@ func (a *App) RebroadcastTransaction(txid string) (map[string]any, error) {
 	return a.service.RebroadcastTransaction(txid)
 }
 
+func (a *App) RemoveLocalPendingTransaction(txid string) (map[string]any, error) {
+	return a.service.RemoveLocalPendingTransaction(txid)
+}
+
 func (a *App) GetPeerInfo() ([]any, error) { return a.service.GetPeerInfo() }
+
+func (a *App) GetSyncStatus() (map[string]any, error) { return a.service.GetSyncStatus() }
+
+func (a *App) ForcePeerSync() (map[string]any, error) {
+	return a.service.ForcePeerSync("desktop wallet refresh")
+}
 
 func (a *App) GetMinerStatus() (map[string]any, error) { return a.service.GetMinerStatus() }
 
@@ -297,6 +323,14 @@ func (a *App) BackupWallet(dest string) (map[string]any, error) {
 	return a.service.BackupWallet(dest)
 }
 
+func (a *App) RestoreWalletBackup(path string) (map[string]any, error) {
+	return a.service.RestoreWalletBackup(path)
+}
+
+func (a *App) OpenDataDir() map[string]any {
+	return a.service.OpenDataDir()
+}
+
 func (a *App) GetExplorerSummary() (map[string]any, error) {
 	return a.service.GetExplorerSummary()
 }
@@ -342,6 +376,9 @@ func (a *App) Snapshot() map[string]any {
 	}
 	if peers, err := a.GetPeerInfo(); err == nil {
 		out["peers"] = peers
+	}
+	if syncStatus, err := a.GetSyncStatus(); err == nil {
+		out["sync"] = syncStatus
 	}
 	if mining, err := a.GetMinerStatus(); err == nil {
 		out["mining"] = mining

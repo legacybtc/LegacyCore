@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"legacycoin/legacy-go/internal/address"
 	"legacycoin/legacy-go/internal/amount"
 	"legacycoin/legacy-go/internal/blockchain"
 	"legacycoin/legacy-go/internal/chaincfg"
@@ -908,6 +909,56 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 			"confirmations": confirmations(s.chain.Tip(), idx),
 			"hex":           hex.EncodeToString(raw),
 		}, nil
+	case "getblockheader":
+		var args []json.RawMessage
+		if err := json.Unmarshal(params, &args); err != nil || len(args) < 1 {
+			return nil, &rpcError{Code: -32602, Message: "getblockheader expects block hash and optional verbose flag"}
+		}
+		var hash string
+		if err := json.Unmarshal(args[0], &hash); err != nil {
+			return nil, &rpcError{Code: -32602, Message: "invalid block hash"}
+		}
+		verbose := true
+		if len(args) > 1 {
+			if b, ok := parseBoolish(args[1]); ok {
+				verbose = b
+			}
+		}
+		block, idx, err := s.chain.BlockByHash(strings.TrimSpace(hash))
+		if err != nil {
+			return nil, blockLookupError(err)
+		}
+		if !verbose {
+			rawHeader, err := block.Header.Bytes()
+			if err != nil {
+				return nil, &rpcError{Code: -32603, Message: err.Error()}
+			}
+			return hex.EncodeToString(rawHeader), nil
+		}
+		nextHash := ""
+		if nextIdx, err := s.chain.IndexByHeight(idx.Height + 1); err == nil {
+			if nextBlock, _, nextErr := s.chain.BlockByHash(nextIdx.Hash); nextErr == nil && nextBlock.Header.PrevBlock.String() == idx.Hash {
+				nextHash = nextIdx.Hash
+			}
+		}
+		return map[string]any{
+			"hash":          idx.Hash,
+			"confirmations": confirmations(s.chain.Tip(), idx),
+			"height":        idx.Height,
+			"version":       block.Header.Version,
+			"versionHex":    fmt.Sprintf("%08x", uint32(block.Header.Version)),
+			"merkleroot":    block.Header.MerkleRoot.String(),
+			"time":          block.Header.Timestamp,
+			"bits":          fmt.Sprintf("%08x", block.Header.Bits),
+			"nonce":         block.Header.Nonce,
+			"previousblockhash": func() string {
+				if idx.Height == 0 {
+					return ""
+				}
+				return block.Header.PrevBlock.String()
+			}(),
+			"nextblockhash": nextHash,
+		}, nil
 	case "submitblock":
 		var args []string
 		if err := json.Unmarshal(params, &args); err != nil || len(args) != 1 {
@@ -921,8 +972,23 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		if err != nil {
 			return nil, &rpcError{Code: -22, Message: err.Error()}
 		}
-		if err := s.chain.ProcessBlock(block); err != nil {
-			return err.Error(), nil
+		result, err := s.chain.ProcessBlockWithResult(block)
+		if err != nil {
+			return submitBlockRejectCode(err), nil
+		}
+		switch result.Status {
+		case blockchain.BlockStatusDuplicate:
+			return "duplicate", nil
+		case blockchain.BlockStatusOrphan:
+			return "bad-prevblk", nil
+		case blockchain.BlockStatusSideChain:
+			return "inconclusive", nil
+		case blockchain.BlockStatusConnected:
+			// success (nil) below
+		default:
+			if !result.Connected || !result.BestChanged {
+				return "rejected", nil
+			}
 		}
 		if hash, err := s.chain.BlockHash(block); err == nil && s.p2p != nil {
 			// Announce the block by canonical Yespower block hash, not SHA256d.
@@ -956,17 +1022,116 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		if err != nil {
 			return nil, &rpcError{Code: -32603, Message: err.Error()}
 		}
+		previousHash := block.Header.PrevBlock.String()
+		transactions := blockTemplateTransactions(block, s.pool)
+		coinbaseValue := int64(0)
+		if len(block.Transactions) > 0 {
+			for _, out := range block.Transactions[0].TxOut {
+				coinbaseValue += out.Value
+			}
+		}
+		mempoolCount := 0
+		if s.pool != nil {
+			mempoolCount = s.pool.Count()
+		}
 		return map[string]any{
-			"height":       height,
-			"previoushash": block.Header.PrevBlock.String(),
-			"bits":         strconv.FormatUint(uint64(block.Header.Bits), 16),
-			"merkleroot":   block.Header.MerkleRoot.String(),
-			"time":         block.Header.Timestamp,
-			"transactions": len(block.Transactions),
-			"txids":        blockTxIDs(block),
-			"mempoolsize":  s.pool.Count(),
-			"hex":          hex.EncodeToString(raw),
+			"height":            height,
+			"version":           block.Header.Version,
+			"previoushash":      previousHash,
+			"previousblockhash": previousHash,
+			"bits":              fmt.Sprintf("%08x", block.Header.Bits),
+			"target":            compactTargetHex(block.Header.Bits),
+			"merkleroot":        block.Header.MerkleRoot.String(),
+			"time":              block.Header.Timestamp,
+			"curtime":           block.Header.Timestamp,
+			"transactions":      transactions,
+			"transaction_count": len(transactions),
+			"txids":             blockTxIDs(block),
+			"mempoolsize":       mempoolCount,
+			"coinbasevalue":     coinbaseValue,
+			"mutable":           []string{"time", "transactions", "prevblock"},
+			"submitold":         true,
+			"noncerange":        "00000000ffffffff",
+			"hex":               hex.EncodeToString(raw),
 		}, nil
+	case "getrawtransaction":
+		var args []json.RawMessage
+		if err := json.Unmarshal(params, &args); err != nil || len(args) < 1 {
+			return nil, &rpcError{Code: -32602, Message: "getrawtransaction expects txid and optional verbose flag"}
+		}
+		var txid string
+		if err := json.Unmarshal(args[0], &txid); err != nil {
+			return nil, &rpcError{Code: -32602, Message: "invalid txid"}
+		}
+		verbose := false
+		if len(args) > 1 {
+			if b, ok := parseBoolish(args[1]); ok {
+				verbose = b
+			}
+		}
+		lookup, err := s.lookupTransaction(txid)
+		if err != nil {
+			return nil, &rpcError{Code: -5, Message: "transaction not found"}
+		}
+		rawTx, err := lookup.Tx.Bytes()
+		if err != nil {
+			return nil, &rpcError{Code: -32603, Message: err.Error()}
+		}
+		if !verbose {
+			return hex.EncodeToString(rawTx), nil
+		}
+		return txVerboseResult(lookup), nil
+	case "gettransaction":
+		var args []json.RawMessage
+		if err := json.Unmarshal(params, &args); err != nil || len(args) < 1 {
+			return nil, &rpcError{Code: -32602, Message: "gettransaction expects txid"}
+		}
+		var txid string
+		if err := json.Unmarshal(args[0], &txid); err != nil {
+			return nil, &rpcError{Code: -32602, Message: "invalid txid"}
+		}
+		lookup, err := s.lookupTransaction(txid)
+		if err != nil {
+			return nil, &rpcError{Code: -5, Message: "transaction not found"}
+		}
+		rawTx, err := lookup.Tx.Bytes()
+		if err != nil {
+			return nil, &rpcError{Code: -32603, Message: err.Error()}
+		}
+		out := txVerboseResult(lookup)
+		out["hex"] = hex.EncodeToString(rawTx)
+		out["amount"] = int64(0)
+		out["fee"] = int64(0)
+		out["wallet"] = "limited"
+		out["comment"] = "Wallet-centric debit/credit breakdown is limited in this build."
+		return out, nil
+	case "decoderawtransaction":
+		var args []string
+		if err := json.Unmarshal(params, &args); err != nil || len(args) != 1 {
+			return nil, &rpcError{Code: -32602, Message: "decoderawtransaction expects transaction hex"}
+		}
+		raw, err := hex.DecodeString(strings.TrimSpace(args[0]))
+		if err != nil {
+			return nil, &rpcError{Code: -22, Message: err.Error()}
+		}
+		tx, err := wire.ReadTx(bytes.NewReader(raw))
+		if err != nil {
+			return nil, &rpcError{Code: -22, Message: err.Error()}
+		}
+		h, err := tx.TxHash()
+		if err != nil {
+			return nil, &rpcError{Code: -32603, Message: err.Error()}
+		}
+		lookup := &txLookupResult{
+			Tx:            tx,
+			TxID:          h.String(),
+			Confirmations: 0,
+			BlockHeight:   -1,
+			InMempool:     false,
+		}
+		out := txVerboseResult(lookup)
+		out["hex"] = strings.ToLower(strings.TrimSpace(args[0]))
+		return out, nil
 	case "sendrawtransaction":
 		var args []string
 		if err := json.Unmarshal(params, &args); err != nil || len(args) != 1 {
@@ -1125,6 +1290,8 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		return s.startMiner(ctx, params)
 	case "getpeerinfo":
 		return map[string]any{"count": s.p2p.PeerCount(), "outbound": s.p2p.OutboundCount(), "peers": s.p2p.PeerInfos()}, nil
+	case "getsyncstatus":
+		return s.p2p.SyncStatus(), nil
 	case "getconnectioncount":
 		return s.p2p.ConnectionCount(), nil
 	case "addnode":
@@ -1401,6 +1568,76 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		return "wallet locked", nil
 	case "getwalletinfo":
 		return s.wallet.SecurityInfo(), nil
+	case "getbalance":
+		var args []json.RawMessage
+		_ = json.Unmarshal(params, &args)
+		minConf := int32(1)
+		if len(args) == 1 {
+			var n int32
+			if err := json.Unmarshal(args[0], &n); err == nil {
+				minConf = n
+			}
+		}
+		if len(args) >= 2 {
+			var n int32
+			if err := json.Unmarshal(args[1], &n); err == nil {
+				minConf = n
+			}
+		}
+		var utxos []wallet.UTXOView
+		var err error
+		if minConf <= 0 {
+			utxos, err = s.wallet.ListUnspentForSpend(s.chain, s.pool)
+		} else {
+			utxos, err = s.wallet.ListUnspent(s.chain)
+		}
+		if err != nil {
+			return nil, &rpcError{Code: -32603, Message: err.Error()}
+		}
+		total := int64(0)
+		for _, u := range utxos {
+			if u.Locked {
+				continue
+			}
+			if minConf > 0 && u.Confirmations < minConf {
+				continue
+			}
+			total += u.Value
+		}
+		return total, nil
+	case "validateaddress":
+		var args []string
+		if err := json.Unmarshal(params, &args); err != nil || len(args) != 1 {
+			return nil, &rpcError{Code: -32602, Message: "validateaddress expects address"}
+		}
+		addr := strings.TrimSpace(args[0])
+		isValid := false
+		isHybrid := false
+		pubHashHex := ""
+		if version, payload, err := address.DecodeBase58Check(addr); err == nil && version == chaincfg.PublicKeyHashVersion && len(payload) == 20 {
+			isValid = true
+			pubHashHex = hex.EncodeToString(payload)
+		} else if payload, err := address.DecodeHybridAddress(addr); err == nil && len(payload) == 20 {
+			isValid = true
+			isHybrid = true
+			pubHashHex = hex.EncodeToString(payload)
+		}
+		ismine := false
+		for _, owned := range s.wallet.ListAddresses() {
+			if owned == addr {
+				ismine = true
+				break
+			}
+		}
+		return map[string]any{
+			"isvalid":         isValid,
+			"address":         addr,
+			"ismine":          ismine,
+			"iswatchonly":     false,
+			"isscript":        false,
+			"is_hybrid":       isHybrid,
+			"pubkey_hash_hex": pubHashHex,
+		}, nil
 	case "sethdseed":
 		var args []string
 		_ = json.Unmarshal(params, &args)
@@ -1663,6 +1900,206 @@ func blockLookupError(err error) *rpcError {
 	return &rpcError{Code: -5, Message: err.Error()}
 }
 
+func submitBlockRejectCode(err error) string {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, blockchain.ErrBadPrevBlock):
+		return "bad-prevblk"
+	case errors.Is(err, blockchain.ErrBadMerkleRoot):
+		return "bad-txnmrklroot"
+	case errors.Is(err, blockchain.ErrBadBits):
+		return "bad-diffbits"
+	case errors.Is(err, blockchain.ErrTimeTooOld):
+		return "time-too-old"
+	case errors.Is(err, blockchain.ErrTimeTooNew):
+		return "time-too-new"
+	case errors.Is(err, blockchain.ErrNoTransactions):
+		return "bad-blk-length"
+	case errors.Is(err, consensus.ErrHighHash):
+		return "high-hash"
+	case errors.Is(err, consensus.ErrTargetTooHigh):
+		return "bad-target"
+	default:
+		return "rejected"
+	}
+}
+
+type txLookupResult struct {
+	Tx            *wire.MsgTx
+	TxID          string
+	BlockHash     string
+	BlockHeight   int32
+	BlockTime     uint32
+	Confirmations int32
+	InMempool     bool
+}
+
+func (s *Server) lookupTransaction(txid string) (*txLookupResult, error) {
+	txid = strings.ToLower(strings.TrimSpace(txid))
+	if txid == "" {
+		return nil, fmt.Errorf("missing txid")
+	}
+	if s.pool != nil {
+		if tx, ok := s.pool.Lookup(txid); ok {
+			return &txLookupResult{
+				Tx:            tx,
+				TxID:          txid,
+				BlockHeight:   -1,
+				Confirmations: 0,
+				InMempool:     true,
+			}, nil
+		}
+	}
+	tip := s.chain.Tip()
+	if tip == nil {
+		return nil, os.ErrNotExist
+	}
+	for h := tip.Height; h >= 0; h-- {
+		idx, err := s.chain.IndexByHeight(h)
+		if err != nil {
+			continue
+		}
+		block, _, err := s.chain.BlockByHash(idx.Hash)
+		if err != nil {
+			continue
+		}
+		for _, tx := range block.Transactions {
+			hash, err := tx.TxHash()
+			if err != nil {
+				continue
+			}
+			if hash.String() == txid {
+				return &txLookupResult{
+					Tx:            tx,
+					TxID:          txid,
+					BlockHash:     idx.Hash,
+					BlockHeight:   idx.Height,
+					BlockTime:     idx.Time,
+					Confirmations: confirmations(tip, idx),
+					InMempool:     false,
+				}, nil
+			}
+		}
+	}
+	return nil, os.ErrNotExist
+}
+
+func txVerboseResult(lookup *txLookupResult) map[string]any {
+	if lookup == nil || lookup.Tx == nil {
+		return map[string]any{}
+	}
+	raw, _ := lookup.Tx.Bytes()
+	return map[string]any{
+		"txid":          lookup.TxID,
+		"hash":          lookup.TxID,
+		"size":          len(raw),
+		"version":       lookup.Tx.Version,
+		"locktime":      lookup.Tx.LockTime,
+		"vin":           txVinRows(lookup.Tx),
+		"vout":          txVoutRows(lookup.Tx),
+		"confirmations": lookup.Confirmations,
+		"blockhash":     lookup.BlockHash,
+		"blockheight":   lookup.BlockHeight,
+		"time":          lookup.BlockTime,
+		"blocktime":     lookup.BlockTime,
+		"in_mempool":    lookup.InMempool,
+	}
+}
+
+func txVinRows(tx *wire.MsgTx) []map[string]any {
+	if tx == nil {
+		return []map[string]any{}
+	}
+	out := make([]map[string]any, 0, len(tx.TxIn))
+	for _, in := range tx.TxIn {
+		if in.PreviousOutPoint.Index == ^uint32(0) && in.PreviousOutPoint.Hash == (chainhash.Hash{}) {
+			out = append(out, map[string]any{
+				"coinbase": hex.EncodeToString(in.SignatureScript),
+				"sequence": in.Sequence,
+			})
+			continue
+		}
+		out = append(out, map[string]any{
+			"txid": in.PreviousOutPoint.Hash.String(),
+			"vout": in.PreviousOutPoint.Index,
+			"scriptSig": map[string]any{
+				"hex": hex.EncodeToString(in.SignatureScript),
+			},
+			"sequence": in.Sequence,
+		})
+	}
+	return out
+}
+
+func txVoutRows(tx *wire.MsgTx) []map[string]any {
+	if tx == nil {
+		return []map[string]any{}
+	}
+	out := make([]map[string]any, 0, len(tx.TxOut))
+	for i, vout := range tx.TxOut {
+		row := map[string]any{
+			"n":                i,
+			"value_base_units": vout.Value,
+			"value":            float64(vout.Value) / 1e8,
+			"scriptPubKey": map[string]any{
+				"hex":  hex.EncodeToString(vout.PkScript),
+				"type": scriptType(vout.PkScript),
+			},
+		}
+		if addr := decodeOutputAddress(vout.PkScript); addr != "" {
+			row["scriptPubKey"].(map[string]any)["address"] = addr
+			row["scriptPubKey"].(map[string]any)["addresses"] = []string{addr}
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
+func scriptType(pkScript []byte) string {
+	switch {
+	case script.IsPayToPubKeyHash(pkScript):
+		return "pubkeyhash"
+	case script.IsPayToHybridPubKeyHash(pkScript):
+		return "hybridpubkeyhash"
+	default:
+		return "nonstandard"
+	}
+}
+
+func decodeOutputAddress(pkScript []byte) string {
+	switch {
+	case script.IsPayToPubKeyHash(pkScript) && len(pkScript) >= 23:
+		return address.EncodeBase58Check(chaincfg.PublicKeyHashVersion, pkScript[3:23])
+	case script.IsPayToHybridPubKeyHash(pkScript) && len(pkScript) >= 23:
+		return address.HybridPrefix + address.EncodeBase58Check(address.HybridVersion, pkScript[3:23])
+	default:
+		return ""
+	}
+}
+
+func parseBoolish(raw json.RawMessage) (bool, bool) {
+	var b bool
+	if err := json.Unmarshal(raw, &b); err == nil {
+		return b, true
+	}
+	var n int
+	if err := json.Unmarshal(raw, &n); err == nil {
+		return n != 0, true
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		s = strings.TrimSpace(strings.ToLower(s))
+		switch s {
+		case "1", "true", "yes", "on":
+			return true, true
+		case "0", "false", "no", "off":
+			return false, true
+		}
+	}
+	return false, false
+}
+
 func confirmations(tip *blockchain.BlockIndex, idx *blockchain.BlockIndex) int32 {
 	if tip == nil || tip.Height < idx.Height || idx.Height < 0 {
 		return 0
@@ -1680,6 +2117,60 @@ func blockTxIDs(block *wire.MsgBlock) []string {
 		out = append(out, h.String())
 	}
 	return out
+}
+
+func blockTemplateTransactions(block *wire.MsgBlock, pool *mempool.Pool) []map[string]any {
+	entries := []mempool.Entry{}
+	if pool != nil {
+		entries = pool.Entries()
+	}
+	return blockTemplateTransactionsFromEntries(block, entries)
+}
+
+func blockTemplateTransactionsFromEntries(block *wire.MsgBlock, entries []mempool.Entry) []map[string]any {
+	if block == nil || len(block.Transactions) <= 1 {
+		return []map[string]any{}
+	}
+	feesByTxID := map[string]mempool.Entry{}
+	for _, entry := range entries {
+		feesByTxID[entry.TxID] = entry
+	}
+	out := make([]map[string]any, 0, len(block.Transactions)-1)
+	for _, tx := range block.Transactions[1:] { // exclude coinbase
+		raw, err := tx.Bytes()
+		if err != nil {
+			continue
+		}
+		h, err := tx.TxHash()
+		if err != nil {
+			continue
+		}
+		txid := h.String()
+		fee := int64(0)
+		size := len(raw)
+		if e, ok := feesByTxID[txid]; ok {
+			fee = e.Fee
+			if e.Size > 0 {
+				size = e.Size
+			}
+		}
+		out = append(out, map[string]any{
+			"data": hex.EncodeToString(raw),
+			"hash": txid,
+			"txid": txid,
+			"fee":  fee,
+			"size": size,
+		})
+	}
+	return out
+}
+
+func compactTargetHex(bits uint32) string {
+	target := consensus.CompactToBig(bits)
+	if target == nil || target.Sign() <= 0 {
+		return strings.Repeat("0", 64)
+	}
+	return fmt.Sprintf("%064x", target)
 }
 
 func writeResponse(w http.ResponseWriter, resp response) {

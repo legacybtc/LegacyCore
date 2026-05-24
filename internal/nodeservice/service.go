@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
@@ -43,22 +44,28 @@ type Service struct {
 	err     error
 	started time.Time
 
-	minerMu            sync.Mutex
-	minerActive        bool
-	minerCancel        context.CancelFunc
-	minerThreads       int
-	minerBlocks        int64
-	minerLastHash      string
-	minerLastError     string
-	minerLastNonce     uint32
-	minerLocalHashPS   float64
-	minerStarted       time.Time
-	minerStaleBlocks   int64
-	minerRejectBlocks  int64
-	minerRewardHashHex string
-	minerRewardAddress string
-	minerSessionHashes uint64
-	minerStopReason    string
+	minerMu                 sync.Mutex
+	minerActive             bool
+	minerCancel             context.CancelFunc
+	minerThreads            int
+	minerBlocks             int64
+	minerLastHash           string
+	minerLastError          string
+	minerLastNonce          uint32
+	minerLocalHashPS        float64
+	minerStarted            time.Time
+	minerLoopRunning        bool
+	minerEnabled            bool
+	minerPausedReason       string
+	minerLastTemplate       time.Time
+	minerLastTemplateHeight int32
+	minerLastRecovery       string
+	minerStaleBlocks        int64
+	minerRejectBlocks       int64
+	minerRewardHashHex      string
+	minerRewardAddress      string
+	minerSessionHashes      uint64
+	minerStopReason         string
 }
 
 const (
@@ -282,6 +289,8 @@ func (s *Service) GetBlockchainInfo() (map[string]any, error) {
 	} else if nextBits != 0 {
 		bits = fmt.Sprintf("%08x", nextBits)
 	}
+	syncStatus := n.P2P().SyncStatus()
+	syncHealth, _ := syncStatus["health"].(map[string]any)
 	return map[string]any{
 		"height":                 height,
 		"blocks":                 height,
@@ -302,6 +311,16 @@ func (s *Service) GetBlockchainInfo() (map[string]any, error) {
 		"next_required_bits":     fmt.Sprintf("%08x", nextBits),
 		"target_spacing_seconds": int64(chaincfg.TargetSpacing.Seconds()),
 		"last_block_age_seconds": age,
+		"sync_status":            syncStatus["status"],
+		"sync_message":           syncStatus["message"],
+		"best_peer_height":       syncStatus["best_peer_height"],
+		"blocks_behind":          syncStatus["blocks_behind"],
+		"last_sync_error":        syncStatus["last_sync_error"],
+		"last_block_reject":      syncStatus["last_block_reject"],
+		"sync_stalled":           syncStatus["sync_stalled"],
+		"p2p_loop_running":       syncHealth["p2p_loop_running"],
+		"sync_loop_running":      syncHealth["sync_loop_running"],
+		"ui_last_rpc_poll_time":  time.Now().Unix(),
 	}, nil
 }
 
@@ -362,6 +381,56 @@ func (s *Service) GetWalletSummary() (map[string]any, error) {
 }
 
 func (s *Service) GetBalance() (map[string]any, error) { return s.GetWalletSummary() }
+
+func (s *Service) EncryptWallet(passphrase string) (map[string]any, error) {
+	n, err := s.current()
+	if err != nil {
+		return nil, err
+	}
+	if err := n.Wallet().Encrypt(passphrase); err != nil {
+		return nil, err
+	}
+	return n.Wallet().SecurityInfo(), nil
+}
+
+func (s *Service) UnlockWallet(passphrase string, timeoutSeconds int) (map[string]any, error) {
+	n, err := s.current()
+	if err != nil {
+		return nil, err
+	}
+	if timeoutSeconds < 0 {
+		timeoutSeconds = 0
+	}
+	if timeoutSeconds == 0 {
+		timeoutSeconds = 900
+	}
+	if err := n.Wallet().Unlock(passphrase, time.Duration(timeoutSeconds)*time.Second); err != nil {
+		return nil, err
+	}
+	return n.Wallet().SecurityInfo(), nil
+}
+
+func (s *Service) LockWallet() (map[string]any, error) {
+	n, err := s.current()
+	if err != nil {
+		return nil, err
+	}
+	if err := n.Wallet().Lock(); err != nil {
+		return nil, err
+	}
+	return n.Wallet().SecurityInfo(), nil
+}
+
+func (s *Service) ChangeWalletPassphrase(oldPassphrase, newPassphrase string) (map[string]any, error) {
+	n, err := s.current()
+	if err != nil {
+		return nil, err
+	}
+	if err := n.Wallet().ChangePassphrase(oldPassphrase, newPassphrase); err != nil {
+		return nil, err
+	}
+	return n.Wallet().SecurityInfo(), nil
+}
 
 func (s *Service) GetNewAddress() (string, error) {
 	n, err := s.current()
@@ -768,10 +837,55 @@ func (s *Service) GetPeerInfo() ([]any, error) {
 			row["local_bestblockhash"] = tip.Hash
 			row["expected_sync_height"] = p.SyncedBlocks
 			row["peer_metadata_note"] = "Peer metadata is self-reported by connected peers and should be treated as informational."
+			status := "ok"
+			tone := "good"
+			peerHeight := p.SyncedBlocks
+			if peerHeight == 0 {
+				peerHeight = p.StartingHeight
+			}
+			if p.LastBlockReject != "" {
+				status = "block rejected"
+				tone = "bad"
+			} else if p.LastSyncError != "" {
+				status = "sync error"
+				tone = "warn"
+			} else if peerHeight < tip.Height {
+				status = "peer behind local node"
+				tone = "warn"
+			} else if p.LastHeightUpdateAgoSeconds >= 900 {
+				status = "stale peer metadata"
+				tone = "warn"
+			} else if peerHeight > tip.Height {
+				status = "requesting"
+				tone = "warn"
+			}
+			row["peer_status"] = status
+			row["peer_status_tone"] = tone
+			row["peer_behind_local"] = peerHeight < tip.Height
+			row["peer_height_gap"] = int(tip.Height - peerHeight)
+			if peerHeight > tip.Height {
+				row["peer_height_gap"] = int(peerHeight - tip.Height)
+			}
 		}
 		out = append(out, row)
 	}
 	return out, nil
+}
+
+func (s *Service) GetSyncStatus() (map[string]any, error) {
+	n, err := s.current()
+	if err != nil {
+		return nil, err
+	}
+	return n.P2P().SyncStatus(), nil
+}
+
+func (s *Service) ForcePeerSync(reason string) (map[string]any, error) {
+	n, err := s.current()
+	if err != nil {
+		return nil, err
+	}
+	return n.P2P().ForceSync(reason), nil
 }
 
 func (s *Service) GetChainTiming() (map[string]any, error) {
@@ -883,34 +997,49 @@ func (s *Service) GetMinerStatus() (map[string]any, error) {
 			eta = float64(chaincfg.TargetSpacing.Seconds()) * nh / s.minerLocalHashPS
 		}
 	}
+	miningNow := s.minerEnabled && s.minerPausedReason == "" && s.minerLoopRunning
+	activeThreads := 0
+	threadState := "configured_only"
+	if miningNow {
+		activeThreads = s.minerThreads
+		threadState = "active"
+	} else if s.minerEnabled && s.minerPausedReason != "" {
+		threadState = "paused"
+	}
 	return map[string]any{
-		"mining_enabled":                  s.minerActive,
-		"active_mining":                   s.minerActive,
-		"configured_threads":              s.minerThreads,
-		"active_threads":                  map[bool]int{true: s.minerThreads, false: 0}[s.minerActive],
-		"effective_threads":               s.minerThreads,
-		"thread_state":                    map[bool]string{true: "active", false: "configured_only"}[s.minerActive],
-		"local_hashps":                    s.minerLocalHashPS,
-		"local_khps":                      localKHPS,
-		"session_hashes":                  s.minerSessionHashes,
-		"hashes_per_thread":               hashesPerThread,
-		"network_hashps":                  network,
-		"estimated_time_to_block_seconds": eta,
-		"accepted_blocks":                 s.minerBlocks,
-		"session_blocks":                  s.minerBlocks,
-		"stale_blocks":                    s.minerStaleBlocks,
-		"rejected_blocks":                 s.minerRejectBlocks,
-		"last_block_hash":                 s.minerLastHash,
-		"last_nonce":                      s.minerLastNonce,
-		"last_error":                      s.minerLastError,
-		"last_stop_reason":                s.minerStopReason,
-		"uptime_seconds":                  uptime,
-		"mining_pubkey_hash":              s.minerRewardHashHex,
-		"active_mining_address":           s.minerRewardAddress,
-		"current_bits":                    currentBits,
-		"peers":                           n.P2P().PeerCount(),
-		"storage":                         n.Chain().StorageHealth(),
-		"profiles":                        []string{"eco", "balanced", "performance", "stress"},
+		"mining_enabled":                    s.minerEnabled,
+		"active_mining":                     miningNow,
+		"miner_loop_running":                s.minerLoopRunning,
+		"mining_paused_reason":              s.minerPausedReason,
+		"last_template_refresh_time":        unixOrZero(s.minerLastTemplate),
+		"last_template_refresh_ago_seconds": secondsSince(s.minerLastTemplate),
+		"last_mined_template_height":        s.minerLastTemplateHeight,
+		"watchdog_last_recovery_action":     s.minerLastRecovery,
+		"configured_threads":                s.minerThreads,
+		"active_threads":                    activeThreads,
+		"effective_threads":                 s.minerThreads,
+		"thread_state":                      threadState,
+		"local_hashps":                      s.minerLocalHashPS,
+		"local_khps":                        localKHPS,
+		"session_hashes":                    s.minerSessionHashes,
+		"hashes_per_thread":                 hashesPerThread,
+		"network_hashps":                    network,
+		"estimated_time_to_block_seconds":   eta,
+		"accepted_blocks":                   s.minerBlocks,
+		"session_blocks":                    s.minerBlocks,
+		"stale_blocks":                      s.minerStaleBlocks,
+		"rejected_blocks":                   s.minerRejectBlocks,
+		"last_block_hash":                   s.minerLastHash,
+		"last_nonce":                        s.minerLastNonce,
+		"last_error":                        s.minerLastError,
+		"last_stop_reason":                  s.minerStopReason,
+		"uptime_seconds":                    uptime,
+		"mining_pubkey_hash":                s.minerRewardHashHex,
+		"active_mining_address":             s.minerRewardAddress,
+		"current_bits":                      currentBits,
+		"peers":                             n.P2P().PeerCount(),
+		"storage":                           n.Chain().StorageHealth(),
+		"profiles":                          []string{"eco", "balanced", "performance", "stress"},
 	}, nil
 }
 
@@ -940,6 +1069,12 @@ func (s *Service) StartMiner(threads int) (map[string]any, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s.minerActive = true
+	s.minerEnabled = true
+	s.minerLoopRunning = true
+	s.minerPausedReason = ""
+	s.minerLastTemplate = time.Time{}
+	s.minerLastTemplateHeight = 0
+	s.minerLastRecovery = ""
 	s.minerCancel = cancel
 	s.minerThreads = threads
 	s.minerBlocks = 0
@@ -968,6 +1103,9 @@ func (s *Service) StopMiner() (map[string]any, error) {
 		cancel()
 	}
 	s.minerActive = false
+	s.minerEnabled = false
+	s.minerLoopRunning = false
+	s.minerPausedReason = ""
 	s.minerCancel = nil
 	s.minerLastError = "stopped"
 	s.minerStopReason = "stopped by user"
@@ -1191,6 +1329,9 @@ func (s *Service) ListWalletTransactions() ([]map[string]any, error) {
 	}
 	updated := false
 	for i, rec := range records {
+		if rec.Status == "removed" {
+			continue
+		}
 		rec = s.reconcileWalletTx(n, rec)
 		records[i] = rec
 		updated = true
@@ -1216,6 +1357,30 @@ func (s *Service) ListWalletTransactions() ([]map[string]any, error) {
 		return ti > tj
 	})
 	return rows, nil
+}
+
+func (s *Service) RemoveLocalPendingTransaction(txid string) (map[string]any, error) {
+	txid = strings.TrimSpace(txid)
+	if txid == "" {
+		return nil, fmt.Errorf("txid required")
+	}
+	records, _ := s.loadWalletTxJournal()
+	found := false
+	for i := range records {
+		if records[i].TxID == txid {
+			records[i].Status = "removed"
+			records[i].Mempool = false
+			records[i].LastError = "Removed from local pending view by user. This does not cancel a network transaction."
+			found = true
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("local pending transaction not found")
+	}
+	if err := s.saveWalletTxJournal(records); err != nil {
+		return nil, err
+	}
+	return map[string]any{"txid": txid, "status": "removed", "message": "Removed from local pending view. This does not cancel a transaction already broadcast to peers."}, nil
 }
 
 func (s *Service) SearchExplorer(query string) (map[string]any, error) {
@@ -1630,6 +1795,7 @@ func walletTxToMap(rec walletTxRecord) map[string]any {
 		"pending_broadcast": "Pending broadcast",
 		"failed":            "Failed",
 		"immature":          "Immature",
+		"removed":           "Removed locally",
 	}[rec.Status]
 	if statusLabel == "" {
 		statusLabel = rec.Status
@@ -1914,13 +2080,47 @@ func (s *Service) BackupWallet(dest string) (map[string]any, error) {
 	if err := os.WriteFile(dest, data, 0600); err != nil {
 		return nil, fmt.Errorf("write wallet backup: %w", err)
 	}
-	return map[string]any{"backup": dest, "ok": true}, nil
+	var check storedWalletProbe
+	_ = json.Unmarshal(data, &check)
+	keyCount := len(check.Keys) + len(check.HybridKeys)
+	return map[string]any{"backup": dest, "ok": true, "readable": true, "key_count": keyCount, "encrypted": check.Encrypted}, nil
+}
+
+type storedWalletProbe struct {
+	Keys       map[string]string `json:"keys,omitempty"`
+	HybridKeys map[string]any    `json:"hybrid_keys,omitempty"`
+	Encrypted  bool              `json:"encrypted,omitempty"`
+}
+
+func (s *Service) RestoreWalletBackup(path string) (map[string]any, error) {
+	n, err := s.current()
+	if err != nil {
+		return nil, err
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, fmt.Errorf("backup path required")
+	}
+	result, err := n.Wallet().RestorePlainBackup(path)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]any{"ok": true, "path": path, "message": "Wallet backup imported additively. Restart or rescan after sync if balances are not visible yet."}
+	for k, v := range result {
+		out[k] = v
+	}
+	return out, nil
+}
+
+func (s *Service) OpenDataDir() map[string]any {
+	return map[string]any{"data_dir": s.dataDir, "message": "Open this folder in Explorer. Back up wallet files before deleting runtime data."}
 }
 
 func (s *Service) minerLoop(ctx context.Context, n *node.Node, pubHash []byte, threads int) {
 	defer func() {
 		s.minerMu.Lock()
 		s.minerActive = false
+		s.minerLoopRunning = false
 		s.minerCancel = nil
 		if s.minerStopReason == "" {
 			s.minerStopReason = "miner loop exited"
@@ -1941,13 +2141,35 @@ func (s *Service) minerLoop(ctx context.Context, n *node.Node, pubHash []byte, t
 			s.minerMu.Unlock()
 			return
 		}
-		result, err := mining.MineBlock(ctx, n.Chain(), n.Mempool(), pow.YespowerHasher{Personalization: chaincfg.MainNet.YespowerPers}, pubHash, threads, func(p mining.Progress) {
+		if reason := s.miningPauseReason(n); reason != "" {
+			s.minerMu.Lock()
+			s.minerPausedReason = reason
+			s.minerLastRecovery = "paused mining: " + reason
+			s.minerMu.Unlock()
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(10 * time.Second):
+				continue
+			}
+		}
+		s.minerMu.Lock()
+		s.minerPausedReason = ""
+		s.minerLastTemplate = time.Now()
+		if tip := n.Chain().Tip(); tip != nil {
+			s.minerLastTemplateHeight = tip.Height
+		}
+		s.minerLoopRunning = true
+		s.minerMu.Unlock()
+		epochCtx, cancelEpoch := context.WithTimeout(ctx, 30*time.Second)
+		result, err := mining.MineBlock(epochCtx, n.Chain(), n.Mempool(), pow.YespowerHasher{Personalization: chaincfg.MainNet.YespowerPers}, pubHash, threads, func(p mining.Progress) {
 			s.minerMu.Lock()
 			s.minerLocalHashPS = p.Rate
 			s.minerSessionHashes = p.Attempts
 			s.minerLastNonce = p.Nonce
 			s.minerMu.Unlock()
 		})
+		cancelEpoch()
 		if err != nil {
 			if ctx.Err() != nil {
 				s.minerMu.Lock()
@@ -1956,6 +2178,12 @@ func (s *Service) minerLoop(ctx context.Context, n *node.Node, pubHash []byte, t
 				}
 				s.minerMu.Unlock()
 				return
+			}
+			if errors.Is(err, context.DeadlineExceeded) {
+				s.minerMu.Lock()
+				s.minerLastRecovery = "refreshed mining template after watchdog interval"
+				s.minerMu.Unlock()
+				continue
 			}
 			s.minerMu.Lock()
 			s.minerLastError = err.Error()
@@ -1972,4 +2200,35 @@ func (s *Service) minerLoop(ctx context.Context, n *node.Node, pubHash []byte, t
 		s.minerLastError = ""
 		s.minerMu.Unlock()
 	}
+}
+
+func (s *Service) miningPauseReason(n *node.Node) string {
+	if n.P2P().PeerCount() == 0 {
+		return "no peers"
+	}
+	status := n.P2P().SyncStatus()
+	if behind, _ := status["behind"].(bool); behind {
+		return "syncing"
+	}
+	if stalled, _ := status["sync_stalled"].(bool); stalled {
+		return "node stale"
+	}
+	if winfo := n.Wallet().SecurityInfo(); winfo["locked"] == true {
+		return "wallet locked"
+	}
+	return ""
+}
+
+func unixOrZero(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.Unix()
+}
+
+func secondsSince(t time.Time) float64 {
+	if t.IsZero() {
+		return -1
+	}
+	return time.Since(t).Seconds()
 }

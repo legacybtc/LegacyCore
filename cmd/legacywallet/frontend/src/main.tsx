@@ -53,6 +53,10 @@ type Backend = {
   Quit(): Promise<void>;
   GetBlockchainInfo(): Promise<Dict>;
   GetWalletSummary(): Promise<Dict>;
+  EncryptWallet(passphrase: string): Promise<Dict>;
+  UnlockWallet(passphrase: string, timeoutSeconds: number): Promise<Dict>;
+  LockWallet(): Promise<Dict>;
+  ChangeWalletPassphrase(oldPassphrase: string, newPassphrase: string): Promise<Dict>;
   GetNewAddress(): Promise<string>;
   ListReceiveAddresses(): Promise<string[]>;
   GetDefaultAddress(): Promise<string>;
@@ -67,7 +71,10 @@ type Backend = {
   GetTransactionStatus(txid: string): Promise<Dict>;
   ListPendingTransactions(): Promise<Dict[]>;
   RebroadcastTransaction(txid: string): Promise<Dict>;
+  RemoveLocalPendingTransaction(txid: string): Promise<Dict>;
   GetPeerInfo(): Promise<any[]>;
+  GetSyncStatus(): Promise<Dict>;
+  ForcePeerSync(): Promise<Dict>;
   GetMinerStatus(): Promise<Dict>;
   StartMiner(threads: number): Promise<Dict>;
   StopMiner(): Promise<Dict>;
@@ -81,6 +88,8 @@ type Backend = {
   Doctor(): Promise<Dict>;
   CheckStorage(): Promise<Dict>;
   BackupWallet(dest: string): Promise<Dict>;
+  RestoreWalletBackup(path: string): Promise<Dict>;
+  OpenDataDir(): Promise<Dict>;
   GetExplorerSummary(): Promise<Dict>;
   GetSupplyInfo(): Promise<Dict>;
   GetRecentBlocks(limit: number): Promise<Dict[]>;
@@ -123,12 +132,31 @@ function App() {
   const [tab, setTab] = useState("overview");
   const [toast, setToast] = useState("");
   const [busy, setBusy] = useState(false);
+  const [displayMode, setDisplayMode] = useState<"comfortable" | "compact">(() => (localStorage.getItem("legacy-display-mode") as any) || "compact");
+  const [advancedMode, setAdvancedMode] = useState(() => localStorage.getItem("legacy-advanced-mode") === "1");
 
   async function refresh() {
     try {
       setSnap(await api().Snapshot());
     } catch (e) {
       setToast(cleanError(e));
+    }
+  }
+
+  async function forceRefresh() {
+    setBusy(true);
+    try {
+      try {
+        await api().ForcePeerSync();
+      } catch {
+        // Snapshot below will show the node/RPC error if the node is offline.
+      }
+      setSnap(await api().Snapshot());
+      setToast("Live refresh complete");
+    } catch (e) {
+      setToast(cleanError(e));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -172,9 +200,19 @@ function App() {
 
   const running = Boolean(snap?.node?.running);
   const walletLocked = Boolean(snap?.wallet?.wallet?.locked);
+  function toggleDisplayMode() {
+    const next = displayMode === "compact" ? "comfortable" : "compact";
+    setDisplayMode(next);
+    localStorage.setItem("legacy-display-mode", next);
+  }
+  function toggleAdvancedMode() {
+    const next = !advancedMode;
+    setAdvancedMode(next);
+    localStorage.setItem("legacy-advanced-mode", next ? "1" : "0");
+  }
 
   return (
-    <main className="appWindow">
+    <main className={`appWindow ${displayMode === "compact" ? "compactMode" : "comfortableMode"} ${advancedMode ? "advancedMode" : ""}`}>
       <TitleBar />
       <div className="shell">
         <aside className="sidebar">
@@ -205,11 +243,13 @@ function App() {
         <section className="workspace">
           <header>
             <div>
-              <p className="eyebrow">Legacy Wallet 1.0.0</p>
+              <p className="eyebrow">Legacy Wallet 1.0.1</p>
               <h2>{tabs.find(([id]) => id === tab)?.[2] || "Overview"}</h2>
             </div>
             <div className="toolbar">
-              <button className="iconText" onClick={refresh} disabled={busy}><RefreshCw size={16} /> Refresh</button>
+              <button onClick={toggleDisplayMode}>{displayMode === "compact" ? "Compact" : "Comfortable"}</button>
+              <button className={advancedMode ? "active" : ""} onClick={toggleAdvancedMode}>Advanced</button>
+              <button className="iconText" onClick={forceRefresh} disabled={busy}><RefreshCw size={16} /> Refresh</button>
               <button className="primary" onClick={() => run("Start node", () => api().StartNode())} disabled={busy || running}>
                 <Play size={16} /> Start Node
               </button>
@@ -219,6 +259,7 @@ function App() {
             </div>
           </header>
           {snap?.node?.error && <Notice tone="danger" text={`${snap.node.error}. Please close the old Legacy Core node and restart Legacy Wallet.`} />}
+          {snap?.sync?.sync_stalled && <Notice tone="warn" text="Sync appears stalled. Retrying peer sync..." />}
           {page}
           {toast && <div className="toast" onClick={() => setToast("")}>{toast}</div>}
         </section>
@@ -276,6 +317,7 @@ function Overview({ snap }: PageProps) {
   const chain = snap.blockchain || {};
   const wallet = snap.wallet || {};
   const mining = snap.mining || {};
+  const sync = snap.sync || {};
   return (
     <div className="page">
       <div className="heroPanel compactHero">
@@ -314,6 +356,12 @@ function Overview({ snap }: PageProps) {
           <div><span>Sync Progress</span><strong>{syncLabel(chain, snap.peers || [])}</strong></div>
         </div>
       </section>
+      {sync.behind && (
+        <Notice
+          tone="warn"
+          text={`${sync.message || "Node is behind peers. Waiting for blocks / requesting blocks."} Local height ${sync.local_height}; best peer height ${sync.best_peer_height}. ${sync.last_block_reject ? `Last reject: ${sync.last_block_reject}` : sync.last_sync_error ? `Last sync error: ${sync.last_sync_error}` : ""}`}
+        />
+      )}
       <div className="twoCol">
         <section className="panel">
           <h3>Recent Activity</h3>
@@ -342,7 +390,11 @@ function WalletPage({ snap, run, refresh }: PageProps) {
   const w = snap.wallet || {};
   const security = w.wallet || {};
   const [address, setAddress] = useState("");
+  const [passphrase, setPassphrase] = useState("");
+  const [newPassphrase, setNewPassphrase] = useState("");
+  const [unlockSeconds, setUnlockSeconds] = useState(900);
   const current = address || (w.receive_addresses || [])[Math.max(0, (w.receive_addresses || []).length - 1)] || "";
+  const encryptionState = security.encrypted ? (security.locked ? "Encrypted + locked" : "Encrypted + unlocked") : "Unencrypted";
   return (
     <div className="page">
       <div className="metricGrid">
@@ -354,18 +406,35 @@ function WalletPage({ snap, run, refresh }: PageProps) {
         <Metric label="Pending external incoming" value={w.pending_external_incoming_lbtc ? lbtc(w.pending_external_incoming_lbtc) : fmtAmount(w.pending_external_incoming)} />
         <Metric label="Immature" value={w.immature_lbtc ? lbtc(w.immature_lbtc) : fmtAmount(w.immature)} />
         <Metric label="Total" value={w.total_lbtc ? lbtc(w.total_lbtc) : fmtAmount(w.total)} />
-        <Metric label="Encryption" value={security.encrypted ? "Encrypted" : "Unencrypted"} icon={security.locked ? <Lock /> : <Unlock />} />
+        <Metric label="Encryption" value={encryptionState} icon={security.locked ? <Lock /> : <Unlock />} />
       </div>
       {Number(w.safe_pending_change || 0) > 0 && <Notice tone="info" text="Safe pending change can be used for another transaction. It confirms after its parent transaction confirms." />}
       {Number(w.locked_pending_change || 0) > 0 && <Notice tone="warn" text="Some pending change is already used by child transactions and cannot be spent again." />}
       <div className="twoCol">
-        <InfoPanel title="Wallet security" rows={[
-          ["Locked", yesNo(security.locked)],
-          ["Encrypted", yesNo(security.encrypted)],
-          ["Classic key count", security.classic_key_count ?? "-"],
-          ["Hybrid key count", security.hybrid_key_count ?? "-"],
-          ["Backup reminder", "Back up before receiving funds."],
-        ]} />
+        <section className="panel">
+          <h3>Wallet security</h3>
+          <div className="kv">
+            <div><span>Status</span><strong>{encryptionState}</strong></div>
+            <div><span>Classic key count</span><strong>{security.classic_key_count ?? "-"}</strong></div>
+            <div><span>Hybrid key count</span><strong>{security.hybrid_key_count ?? "-"}</strong></div>
+          </div>
+          {!security.encrypted && <Notice tone="warn" text="Encrypting protects wallet keys at rest. Back up first. If you forget the passphrase, funds cannot be recovered." />}
+          <Field label={security.encrypted ? "Current passphrase" : "Passphrase"}>
+            <input type="password" value={passphrase} onChange={(e) => setPassphrase(e.target.value)} placeholder="Wallet passphrase" />
+          </Field>
+          {security.encrypted && <Field label="New passphrase">
+            <input type="password" value={newPassphrase} onChange={(e) => setNewPassphrase(e.target.value)} placeholder="Only for change passphrase" />
+          </Field>}
+          {security.encrypted && <Field label="Unlock seconds">
+            <input type="number" min={60} value={unlockSeconds} onChange={(e) => setUnlockSeconds(Number(e.target.value))} />
+          </Field>}
+          <div className="row">
+            {!security.encrypted && <button className="primary" disabled={!passphrase} onClick={async () => { await run("Encrypt wallet", () => api().EncryptWallet(passphrase)); setPassphrase(""); await refresh(); }}>Encrypt wallet</button>}
+            {security.encrypted && security.locked && <button className="primary" disabled={!passphrase} onClick={async () => { await run("Unlock wallet", () => api().UnlockWallet(passphrase, unlockSeconds)); setPassphrase(""); await refresh(); }}>Unlock</button>}
+            {security.encrypted && !security.locked && <button onClick={async () => { await run("Lock wallet", () => api().LockWallet()); await refresh(); }}>Lock</button>}
+            {security.encrypted && <button disabled={!passphrase || !newPassphrase} onClick={async () => { await run("Change passphrase", () => api().ChangeWalletPassphrase(passphrase, newPassphrase)); setPassphrase(""); setNewPassphrase(""); await refresh(); }}>Change passphrase</button>}
+          </div>
+        </section>
         <section className="panel">
           <h3>Current receive address</h3>
           <div className="addressBox">{current ? <CopyableValue value={current} /> : "Generate an address to receive LBTC"}</div>
@@ -629,17 +698,32 @@ function TokenCards({ tokens, empty }: { tokens: Dict[]; empty: string }) {
   return <div className="tokenDeskGrid">{tokens.length ? tokens.map((t) => <div className="tokenDeskCard" key={t.token_id}><strong>{t.name || "Unnamed"} <span>{t.ticker || ""}</span></strong><p>{t.description || "Legacy Token v0.1"}</p><small>ID {shortenMiddle(String(t.token_id || ""))} | Supply {t.total_supply || "-"} | Holders {t.holders ?? "-"}</small><small>Creator {shortenMiddle(String(t.creator || ""))}</small></div>) : <Notice tone="info" text={empty} />}</div>;
 }
 
-function ActivityPage({ snap }: PageProps) {
+function ActivityPage({ snap, run, refresh }: PageProps) {
   const txs = Array.isArray(snap.transactions) ? snap.transactions : [];
   const [filter, setFilter] = useState("all");
+  const [search, setSearch] = useState("");
+  const [sortOrder, setSortOrder] = useState<"newest" | "oldest">("newest");
   const pending = txs.filter((t: Dict) => ["pending", "local_only", "pending_broadcast"].includes(String(t.status)));
   const sent = txs.filter((t: Dict) => t.direction === "sent");
   const received = txs.filter((t: Dict) => t.direction === "received");
   const selfTransfers = txs.filter((t: Dict) => t.direction === "self_transfer");
   const miningRewards = txs.filter((t: Dict) => t.direction === "mining_reward");
-  const failed = txs.filter((t: Dict) => t.status === "failed");
-  const recent = [...txs].sort((a: Dict, b: Dict) => Number(b.timestamp || 0) - Number(a.timestamp || 0)).slice(0, 12);
-  const filtered = filter === "all" ? recent : filter === "pending" ? pending : filter === "sent" ? sent : filter === "received" ? received : filter === "self_transfer" ? selfTransfers : filter === "mining_reward" ? miningRewards : failed;
+  const confirmed = txs.filter((t: Dict) => Number(t.confirmations || 0) > 0 || t.status === "confirmed");
+  const failed = txs.filter((t: Dict) => ["failed", "stale", "removed"].includes(String(t.status)));
+  const base = filter === "all" ? txs : filter === "pending" ? pending : filter === "confirmed" ? confirmed : filter === "sent" ? sent : filter === "received" ? received : filter === "self_transfer" ? selfTransfers : filter === "mining_reward" ? miningRewards : failed;
+  const q = search.trim().toLowerCase();
+  const filtered = base
+    .filter((t: Dict) => !q || [t.txid, t.address, t.status, t.direction, t.status_label].some((v) => String(v || "").toLowerCase().includes(q)))
+    .sort((a: Dict, b: Dict) => (sortOrder === "newest" ? Number(b.timestamp || 0) - Number(a.timestamp || 0) : Number(a.timestamp || 0) - Number(b.timestamp || 0)))
+    .slice(0, 200);
+  async function retry(txid: string) {
+    await run("Retry broadcast", () => api().RebroadcastTransaction(txid));
+    await refresh();
+  }
+  async function remove(txid: string) {
+    await run("Remove local pending record", () => api().RemoveLocalPendingTransaction(txid));
+    await refresh();
+  }
   return (
     <div className="page activityPage">
       <section className="panel activityGroups">
@@ -654,11 +738,16 @@ function ActivityPage({ snap }: PageProps) {
         </div>
         <div className="segmented">
           {[
-            ["all", "All"], ["sent", "Sent"], ["received", "Received"], ["self_transfer", "Self-transfer"], ["mining_reward", "Mining rewards"], ["pending", "Pending"], ["failed", "Failed"],
+            ["all", "All"], ["sent", "Sent"], ["received", "Received"], ["self_transfer", "Self-transfer"], ["mining_reward", "Mining rewards"], ["pending", "Pending"], ["confirmed", "Confirmed"], ["failed", "Failed / stale"],
           ].map(([id, label]) => <button key={id} className={filter === id ? "active" : ""} onClick={() => setFilter(id)}>{label}</button>)}
         </div>
+        <div className="row">
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search address, txid, or status" />
+          <button className={sortOrder === "newest" ? "active" : ""} onClick={() => setSortOrder("newest")}>Newest</button>
+          <button className={sortOrder === "oldest" ? "active" : ""} onClick={() => setSortOrder("oldest")}>Oldest</button>
+        </div>
         <div className="activityGroupList">
-          <ActivityGroup title={filter === "all" ? "Recent activity" : titleCase(filter.replace("_", " "))} rows={filtered} empty="No matching wallet transactions." />
+          <ActivityGroup title={filter === "all" ? "Recent activity" : titleCase(filter.replace("_", " "))} rows={filtered} empty="No matching wallet transactions." onRetry={retry} onRemove={remove} />
         </div>
       </section>
     </div>
@@ -804,18 +893,26 @@ function ExplorerPage({ snap, run }: PageProps) {
   );
 }
 
-function BackupPage({ snap, run }: PageProps) {
+function BackupPage({ snap, run, refresh }: PageProps) {
   const [dest, setDest] = useState("");
-  const [result, setResult] = useState<{ ok: boolean; path?: string; message?: string } | null>(null);
+  const [restorePath, setRestorePath] = useState("");
+  const [result, setResult] = useState<Dict | null>(null);
+  const [restoreResult, setRestoreResult] = useState<Dict | null>(null);
   const suggested = `${snap.settings?.dataDir || "."}\\backups\\legacy-wallet-backup-${new Date().toISOString().slice(0, 10)}.json`;
   async function backup() {
     setResult(null);
     try {
       const res = await run("Backup wallet", () => api().BackupWallet(dest));
-      setResult({ ok: Boolean(res?.ok), path: res?.backup || dest, message: "Wallet backup created." });
+      setResult({ ...res, ok: Boolean(res?.ok), path: res?.backup || dest, message: "Wallet backup created and verified readable." });
     } catch (err: any) {
       setResult({ ok: false, path: dest, message: String(err?.message || err || "Backup failed") });
     }
+  }
+  async function restore() {
+    setRestoreResult(null);
+    const res = await run("Restore wallet backup", () => api().RestoreWalletBackup(restorePath));
+    setRestoreResult(res);
+    await refresh();
   }
   return (
     <div className="page twoCol backupPage">
@@ -829,13 +926,23 @@ function BackupPage({ snap, run }: PageProps) {
           <button onClick={() => setDest(suggested)}>Use suggested path</button>
           <button className="primary" disabled={!dest.trim()} onClick={backup}><Download size={16} /> Create local backup</button>
         </div>
+        <button onClick={async () => setResult(await api().OpenDataDir())}>Show data folder path</button>
+      </section>
+      <section className="panel">
+        <h3>Restore Wallet</h3>
+        <Notice tone="warn" text="Back up the current wallet first. Restore imports keys additively when possible and never prints private keys to logs." />
+        <Field label="Backup file to restore">
+          <input value={restorePath} onChange={(e) => setRestorePath(e.target.value)} placeholder="C:\\Backups\\legacy-wallet-backup.json" />
+        </Field>
+        <button className="primary" disabled={!restorePath.trim()} onClick={restore}>Restore / import backup</button>
+        {restoreResult && <pre className="object-view small">{JSON.stringify(restoreResult, null, 2)}</pre>}
       </section>
       <section className="panel">
         <h3>Backup result</h3>
         {result ? (
           <>
             <Notice tone={result.ok ? "success" : "danger"} text={result.message || (result.ok ? "Backup created." : "Backup failed.")} />
-            <InfoPanel title="Latest backup" rows={[["Status", result.ok ? "Success" : "Failed"], ["Path", result.path || dest]]} flush />
+            <InfoPanel title="Latest backup" rows={[["Status", result.ok ? "Success" : "Failed"], ["Path", result.path || dest], ["Readable", yesNo(result.readable)], ["Key count", result.key_count ?? "-"], ["Encrypted", yesNo(result.encrypted)]]} flush />
           </>
         ) : <p className="muted">Choose a local file path and run backup. The backup stays on this computer only.</p>}
       </section>
@@ -861,7 +968,8 @@ function MiningPage({ snap, run }: PageProps) {
   return (
     <div className="page miningPage">
       <div className="metricGrid miningMetrics">
-        <Metric label="Mining" value={mining.active_mining ? "Running" : "Stopped"} />
+        <Metric label="Mining" value={mining.active_mining ? "Running" : mining.mining_enabled ? "Paused" : "Stopped"} />
+        <Metric label="Mining safety" value={mining.mining_paused_reason ? `Paused: ${mining.mining_paused_reason}` : "Safe"} />
         <Metric label="Threads" value={`${mining.active_threads || 0} active / ${mining.configured_threads || threads} set`} />
         <Metric label="Local KH/s" value={fmtNumber(mining.local_khps)} />
         <Metric label="Network KH/s" value={networkHashLabel(mining.network_hashps)} />
@@ -886,6 +994,12 @@ function MiningPage({ snap, run }: PageProps) {
       <div className="miningLower">
         <InfoPanel title="Miner session" rows={[
           ["Thread state", mining.thread_state || "stopped"],
+          ["Loop running", yesNo(mining.miner_loop_running)],
+          ["Paused reason", mining.mining_paused_reason || "-"],
+          ["Template height", mining.last_mined_template_height || "-"],
+          ["Last template refresh", mining.last_template_refresh_time ? dateTime(mining.last_template_refresh_time) : "-"],
+          ["Template age", seconds(mining.last_template_refresh_ago_seconds)],
+          ["Watchdog action", mining.watchdog_last_recovery_action || "-"],
           ["Active mining address", mining.active_mining_address || "Created when miner starts"],
           ["Pubkey hash", mining.mining_pubkey_hash || "-"],
           ["Configured threads", mining.configured_threads || threads],
@@ -902,9 +1016,10 @@ function MiningPage({ snap, run }: PageProps) {
         ]} />
         <section className="panel miningActivity">
           <h3>Mining Activity</h3>
+          {mining.mining_paused_reason && <Notice tone="warn" text={`Mining is paused because ${mining.mining_paused_reason}. It will resume automatically when safe.`} />}
           <div className="activityTicker">
             <StatusDot ok={Boolean(mining.active_mining)} />
-            <strong>{mining.active_mining ? "Mining active..." : "Miner idle"}</strong>
+            <strong>{mining.active_mining ? "Mining active..." : mining.mining_enabled ? "Mining paused" : "Miner idle"}</strong>
             <span>{mining.active_threads || 0} active thread workers</span>
           </div>
           <div className="activityStats">
@@ -932,65 +1047,165 @@ function MiningPage({ snap, run }: PageProps) {
   );
 }
 
-function NetworkPage({ snap }: PageProps) {
+function NetworkPage({ snap, run, refresh }: PageProps) {
   const peers = snap.peers || [];
   const chain = snap.blockchain || {};
+  const sync = snap.sync || {};
+  const health = sync.health || {};
   const dnsSeeds = chain.dns_seeds || snap.coin?.dns_seeds || [];
   const addnodes = chain.manual_addnodes || snap.settings?.network?.nodes || [];
+  const [nodeInput, setNodeInput] = useState("");
   const outbound = Number(chain.outbound_peer_count ?? peers.filter((p: Dict) => p.outbound || p.direction === "outbound").length);
   const inbound = Number(chain.inbound_peer_count ?? Math.max(0, peers.length - outbound));
   const bestPeerHeight = Math.max(...peers.map((p: Dict) => Number(p.expected_sync_height || p.synced_blocks || p.starting_height || 0)), Number(chain.height || 0));
   const wrongChain = peers.filter((p: Dict) => p.chain_id && p.chain_id !== snap.coin?.chain_id);
+  const netHash = networkHashLabel(snap.chain_timing?.network_hashps);
+  const state = walletSyncState(snap);
+  const networkSettings = snap.settings?.network || { mode: "automatic", nodes: [] };
+  async function reconnect() {
+    await run("Reconnect seeds", () => api().ReconnectPeers());
+    await run("Force peer sync", () => api().ForcePeerSync());
+    await refresh();
+  }
+  async function addNode() {
+    const node = nodeInput.trim();
+    if (!node) return;
+    const nodes = Array.from(new Set([...(networkSettings.nodes || []), node]));
+    await run("Add node", () => api().SaveNetworkSettings({ mode: "addnode", nodes }));
+    await run("Reconnect peers", () => api().ReconnectPeers());
+    setNodeInput("");
+    await refresh();
+  }
+  async function removeNode(node: string) {
+    const nodes = (networkSettings.nodes || []).filter((n: string) => n !== node);
+    await run("Remove node", () => api().SaveNetworkSettings({ mode: nodes.length ? "addnode" : "automatic", nodes }));
+    await refresh();
+  }
   return (
-    <div className="page">
-      <div className="metricGrid">
-        <Metric label="Connected peers" value={peers.length} />
-        <Metric label="Outbound / inbound" value={`${outbound} / ${inbound}`} />
-        <Metric label="DNS seeds" value={`${dnsSeeds.length} configured`} />
-        <Metric label="Chain ID" value={snap.coin?.chain_id} mono copyable />
-        <Metric label="Local height" value={chain.height ?? "-"} />
-        <Metric label="Best peer height" value={bestPeerHeight} />
-        <Metric label="Best block" value={chain.bestblockhash || "-"} mono copyable />
-        <Metric label="Network KH/s" value={networkHashLabel(snap.chain_timing?.network_hashps)} />
+    <div className="page networkPageRedesign">
+      <div className="networkStatusStrip">
+        <Metric label="Direct P2P connections" value={peers.length} />
+        <Metric label="Sync" value={state.label} />
+        <Metric label="Height" value={chain.height ?? "-"} />
+        <Metric label="Estimated Network KH/s" value={netHash} />
+        <Metric label="Inbound / Outbound" value={`${inbound} / ${outbound}`} />
       </div>
-      <section className="panel">
-        <h3>Peers vs seeds</h3>
-        <p className="muted">DNS seeds are bootstrap helpers that help this wallet find peers. Peers are active node connections. This wallet cannot know the true total network size without crawler support.</p>
-        <div className="metricGrid compactMetrics">
-          <Metric label="Estimated total network nodes" value="Unavailable" />
-          <Metric label="Known peers" value={chain.known_peers_available ? chain.known_peer_count : "Unavailable"} />
-          <Metric label="Manual addnodes" value={addnodes.length} />
-          <Metric label="Health hint" value={peers.length >= 3 ? "3+ peers connected" : "Keep 3+ peers connected"} />
-        </div>
-        {peers.length === 0 && <Notice tone="warn" text="No peers connected. Use Settings > Network to Add Default Seeds or Reset to Automatic." />}
-        {wrongChain.length > 0 && <Notice tone="danger" text={`${wrongChain.length} peer(s) reported a different chain ID. Disconnect unknown nodes and use the default RC2 seeds.`} />}
+
+      <section className="networkConfidence">
+        <span>This wallet is directly connected to {peers.length} node{peers.length === 1 ? "" : "s"}. This is not the total network size.</span>
+        <span>Network KH/s is estimated from recent blocks. Miners may exist beyond this wallet's direct connections.</span>
       </section>
-      <section className="panel">
-        <h3>Bootstrap sources</h3>
-        <div className="nodeList">
-          {dnsSeeds.map((s: string) => <div className="nodeRow" key={s}><strong>DNS seed</strong><span className="mono">{s}</span></div>)}
-          {addnodes.map((s: string) => <div className="nodeRow" key={s}><strong>Addnode</strong><span className="mono">{s}</span></div>)}
-          {dnsSeeds.length === 0 && addnodes.length === 0 && <p className="muted">No bootstrap sources configured.</p>}
+
+      <div className="networkActionRow">
+        <button onClick={async () => { await run("Refresh network", () => api().ForcePeerSync()); await refresh(); }}>Refresh</button>
+        <button onClick={reconnect}>Reconnect seeds</button>
+        <input value={nodeInput} onChange={(e) => setNodeInput(e.target.value)} placeholder="Add node host:19555" />
+        <button className="primary" disabled={!nodeInput.trim()} onClick={addNode}>Add node</button>
+        <button onClick={() => setNodeInput("Open P2P port 19555; never expose RPC 19556")}>Port 19555 help</button>
+      </div>
+
+      {(sync.behind || sync.sync_stalled || peers.length === 0 || wrongChain.length > 0) && (
+        <div className="networkAlerts">
+          {sync.behind && <Notice tone="warn" text={sync.message || "Node is behind peers. Waiting for blocks / requesting blocks."} />}
+          {sync.sync_stalled && <Notice tone="danger" text="Sync appears stalled. Refresh or Reconnect seeds forces another peer sync request." />}
+          {peers.length === 0 && <Notice tone="danger" text="No direct P2P connections. Reconnect seeds or add a manual node." />}
+          {wrongChain.length > 0 && <Notice tone="danger" text={`${wrongChain.length} peer(s) reported a different chain ID. Disconnect unknown nodes and use the default RC2 seeds.`} />}
+          {sync.watchdog_last_action && <Notice tone={sync.sync_stalled ? "danger" : "info"} text={`Sync watchdog: ${String(sync.watchdog_last_action)}`} />}
         </div>
-      </section>
-      <section className="panel scrollPanel">
-        <h3>Connected peers</h3>
-        <div className="table peerTable">
-          <div className="tr head"><span>Direction</span><span>Address</span><span>Ping</span><span>Height</span><span>Chain ID</span><span>Connected</span></div>
+      )}
+
+      <section className="panel directPeerPanel">
+        <div className="sectionHead">
+          <h3>Direct connections</h3>
+          <small>Total network nodes: unavailable without crawler support</small>
+        </div>
+        <div className="table peerTableRedesign">
+          <div className="tr head"><span>Address</span><span>Type</span><span>Direction</span><span>Ping</span><span>Height</span><span>Status</span><span>Connected</span></div>
           {peers.length === 0 && <p className="muted">No peers connected yet. The node is still usable locally while it looks for peers.</p>}
           {peers.map((p: Dict, i: number) => (
             <div className="tr" key={`${p.addr}-${i}`}>
+              <span className="mono"><CopyableValue value={p.addr || "-"} /></span>
+              <span>{peerType(p, dnsSeeds, addnodes)}</span>
               <span>{p.direction || p.connection_type || "-"}</span>
-              <span className="mono">{p.addr || "-"}</span>
               <span>{p.last_ping_ms ? `${Number(p.last_ping_ms).toFixed(1)} ms` : "-"}</span>
               <span>{p.synced_blocks ?? p.starting_height ?? "-"}</span>
-              <span className="mono">{p.chain_id ? shortenMiddle(p.chain_id) : "-"}</span>
+              <span className={`peerStatus ${p.peer_status_tone || "good"}`}>{peerStatusText(p, chain)}</span>
               <span>{seconds(p.connected_for_seconds)}</span>
             </div>
           ))}
         </div>
-        <p className="muted topGap">Peer metadata is self-reported by connected peers and is informational.</p>
       </section>
+
+      <div className="networkCollapses">
+        <details className="advanced">
+          <summary>Bootstrap sources</summary>
+          <div className="nodeList compactNodeList">
+            {dnsSeeds.map((s: string) => <div className="nodeRow" key={s}><strong>DNS seed</strong><span className="mono">{s}</span></div>)}
+            {addnodes.map((s: string) => <div className="nodeRow" key={s}><strong>Manual addnode</strong><span className="mono">{s}</span><button onClick={() => removeNode(s)}>Remove</button></div>)}
+            {dnsSeeds.length === 0 && addnodes.length === 0 && <p className="muted">No bootstrap sources configured.</p>}
+          </div>
+        </details>
+        <details className="advanced">
+          <summary>Known peers</summary>
+          <InfoPanel title="Known peers" rows={[
+            ["Known peers cached", chain.known_peers_available ? chain.known_peer_count : "Unavailable"],
+            ["Total network nodes", "Unavailable without crawler support"],
+            ["Crawler support", "Not enabled in wallet"],
+          ]} flush />
+        </details>
+        <details className="advanced advancedOnly">
+          <summary>Sync health</summary>
+          <div className="metricGrid compactMetrics">
+            <Metric label="P2P loop" value={health.p2p_loop_running ? "Running" : "Stopped"} />
+            <Metric label="Sync loop" value={health.sync_loop_running ? "Running" : "Stopped"} />
+            <Metric label="Sync watchdog" value={sync.watchdog_running ? "Running" : "Stopped"} />
+            <Metric label="Node uptime" value={seconds(health.node_uptime_seconds)} />
+            <Metric label="Last peer message" value={seconds(health.last_peer_message_ago_seconds)} />
+            <Metric label="Last sync request" value={seconds(health.last_p2p_sync_request_ago_seconds)} />
+            <Metric label="Last headers received" value={seconds(sync.last_header_received_age ?? health.last_header_received_ago_seconds)} />
+            <Metric label="Last blocks received" value={seconds(sync.last_block_received_age ?? health.last_block_received_ago_seconds)} />
+            <Metric label="Last getheaders sent" value={seconds(sync.last_getheaders_sent_age ?? health.last_getheaders_sent_ago_seconds)} />
+            <Metric label="Last getblocks sent" value={seconds(sync.last_getblocks_sent_age ?? health.last_getblocks_sent_ago_seconds)} />
+            <Metric label="Syncing peers" value={sync.syncing_peer_count ?? 0} />
+            <Metric label="Stale peers" value={sync.stale_peer_count ?? 0} />
+            <Metric label="Last block connected" value={seconds(health.last_successful_block_connect_ago_seconds)} />
+            <Metric label="Last height change" value={seconds(health.last_height_change_ago_seconds)} />
+            <Metric label="Watchdog reconnects" value={sync.watchdog_reconnect_count ?? health.watchdog_reconnect_count ?? 0} />
+            <Metric label="Last watchdog tick" value={seconds(health.last_watchdog_tick_ago_seconds)} />
+            <Metric label="Last UI poll" value={dateTime(chain.ui_last_rpc_poll_time)} />
+          </div>
+          <p className="muted compactNote">Last watchdog action: {sync.watchdog_last_action || health.watchdog_last_action || "-"}</p>
+        </details>
+        <details className="advanced advancedOnly">
+          <summary>Advanced peer diagnostics</summary>
+          <div className="advancedPeerList">
+            {peers.map((p: Dict, i: number) => (
+              <div className="peerDiag" key={`${p.addr}-diag-${i}`}>
+                <strong className="mono"><CopyableValue value={p.addr || "-"} /></strong>
+                <span>Chain ID: {p.chain_id || "-"}</span>
+                <span>Last block: {p.last_received_block_hash ? `${shortenMiddle(p.last_received_block_hash)} / ${p.last_block_status || "-"}` : "-"}</span>
+                <span>Last metadata update: {seconds(p.last_peer_metadata_update_ago_seconds ?? p.last_height_update_ago_seconds)}</span>
+                <span>Last height update: {seconds(p.last_height_update_ago_seconds)}</span>
+                <span>Last peer message: {seconds(p.last_seen_ago_seconds)}</span>
+                <span>Last sync request: {seconds(p.last_sync_request_ago_seconds)}</span>
+                <span>Last sync error: {p.last_sync_error || "-"}</span>
+              </div>
+            ))}
+            {peers.length === 0 && <p className="muted">No active peer diagnostics.</p>}
+          </div>
+        </details>
+        <details className="advanced">
+          <summary>Network explanation</summary>
+          <div className="networkExplain">
+            <p><strong>Direct P2P connections</strong> are active connections from this wallet only.</p>
+            <p><strong>DNS seeds</strong> are bootstrap helpers, not a count of users or miners.</p>
+            <p><strong>Known peers</strong> are locally discovered or cached addresses and may not be online.</p>
+            <p><strong>Estimated Network KH/s</strong> comes from recent block difficulty/timing, not from this wallet's peer count.</p>
+            <p><strong>Total network nodes</strong> are unavailable without crawler support. The wallet does not fake this number.</p>
+            <p>To help the network, keep P2P port 19555 open. Never expose RPC port 19556 publicly.</p>
+          </div>
+        </details>
+      </div>
     </div>
   );
 }
@@ -1138,7 +1353,7 @@ function SettingsPage({ snap, run }: PageProps) {
         </div>
       </section>
       <InfoPanel title="About" rows={[
-        ["Product", "Legacy Wallet 1.0.0"],
+        ["Product", "Legacy Wallet 1.0.1"],
         ["Core Engine", "Legacy Core 1.0.0"],
         ["Network", "Legacy Coin Mainnet"],
         ["Coin", "Legacy Coin / LBTC"],
@@ -1190,15 +1405,40 @@ function TitleBar() {
 function StatusBar({ snap }: { snap: Dict | null }) {
   const peers = snap?.blockchain?.peer_count ?? (snap?.peers || []).length ?? 0;
   const height = snap?.blockchain?.height ?? "-";
+  const state = walletSyncState(snap);
+  const mining = snap?.mining || {};
+  const miningLabel = mining.active_mining ? "Mining running" : mining.mining_paused_reason ? `Mining paused: ${mining.mining_paused_reason}` : mining.mining_enabled ? "Mining paused" : "Mining idle";
   return (
-    <footer className="statusBar">
+    <footer className={`statusBar ${state.tone}`}>
       <span>Legacy Mainnet</span>
       <span>Height: {height}</span>
-      <span><StatusDot ok={Boolean(snap?.node?.running)} /> {snap?.node?.running ? "Synced/Syncing" : "Node offline"}</span>
-      <span>{peers} peers</span>
+      <span><StatusDot ok={state.tone === "good"} /> {state.label}</span>
+      <span>{peers} direct peer{Number(peers) === 1 ? "" : "s"}</span>
+      <span>{miningLabel}</span>
       <span className="bars"><i /><i /><i /><i /></span>
     </footer>
   );
+}
+
+function walletSyncState(snap: Dict | null): { label: string; tone: "good" | "warn" | "bad" | "idle" } {
+  if (!snap?.node?.running) return { label: "Node stopped", tone: "idle" };
+  const peers = Number(snap?.blockchain?.peer_count ?? (snap?.peers || []).length ?? 0);
+  const sync = snap?.sync || {};
+  const syncStatus = String(sync.status || "").toLowerCase();
+  if (syncStatus === "no_peers") return { label: "No peers", tone: "bad" };
+  if (syncStatus === "stalled") return { label: "Stalled", tone: "bad" };
+  if (syncStatus === "syncing" || syncStatus === "behind") {
+    const behind = Number(sync.blocks_behind || 0);
+    return { label: behind > 0 ? `Behind ${behind} blocks` : "Syncing", tone: "warn" };
+  }
+  if (syncStatus === "current") return { label: "Synced", tone: "good" };
+  if (peers === 0) return { label: "No peers", tone: "bad" };
+  if (sync.sync_stalled) return { label: "Stalled", tone: "bad" };
+  if (sync.behind) {
+    const behind = Number(sync.blocks_behind || 0);
+    return { label: behind > 0 ? `Behind ${behind} blocks` : "Syncing", tone: "warn" };
+  }
+  return { label: "Synced", tone: "good" };
 }
 
 function Metric({ label, value, mono, icon, copyable }: { label: string; value: any; mono?: boolean; icon?: React.ReactNode; copyable?: boolean }) {
@@ -1234,7 +1474,7 @@ function AddressList({ addresses }: { addresses: string[] }) {
   return <div className="addressList">{addresses.length === 0 ? <p className="muted">No receive address yet. Create one when you are ready to receive LBTC.</p> : addresses.map((a) => <div className="addressItem" key={a}><span className="mono"><CopyableValue value={a} /></span></div>)}</div>;
 }
 
-function ActivityGroup({ title, rows, empty }: { title: string; rows: Dict[]; empty: string }) {
+function ActivityGroup({ title, rows, empty, onRetry, onRemove }: { title: string; rows: Dict[]; empty: string; onRetry?: (txid: string) => void; onRemove?: (txid: string) => void }) {
   return (
     <section className="activityGroup">
       <h4>{title}</h4>
@@ -1252,6 +1492,12 @@ function ActivityGroup({ title, rows, empty }: { title: string; rows: Dict[]; em
             {o.direction === "self_transfer" && <span>Wallet output {o.change_lbtc ? lbtc(o.change_lbtc) : fmtAmount(o.change)}</span>}
             <span>{o.confirmations || 0} confirmations</span>
             {o.block_height ? <span>Height {o.block_height}</span> : <span>{o.mempool ? "Mempool" : "Unconfirmed"}</span>}
+            {o.txid && ["pending_broadcast", "local_only", "failed", "stale"].includes(String(o.status)) && (
+              <span className="row miniActions">
+                {onRetry && <button onClick={() => onRetry(o.txid)}>Retry broadcast</button>}
+                {onRemove && <button onClick={() => onRemove(o.txid)}>Hide local</button>}
+              </span>
+            )}
           </div>
         </div>
       ))}
@@ -1332,6 +1578,30 @@ function directionLabel(v: any) {
   if (v === "self_transfer") return "Self-transfer";
   if (v === "mining_reward") return "Mining reward";
   return titleCase(String(v || "Transaction"));
+}
+
+function peerType(peer: Dict, seeds: string[], addnodes: string[]) {
+  const addr = String(peer.addr || "").toLowerCase();
+  const direction = String(peer.direction || peer.connection_type || "").toLowerCase();
+  const host = addr.split(":")[0];
+  if (direction.includes("inbound")) return "Inbound peer";
+  if (addnodes.some((n) => String(n).toLowerCase().includes(host) || addr.includes(String(n).toLowerCase()))) return "Manual addnode";
+  if (seeds.some((s) => String(s).toLowerCase().includes(host) || addr.includes(String(s).toLowerCase()))) return "DNS seed target";
+  if (direction.includes("outbound")) return "Direct peer";
+  return "Unknown";
+}
+
+function peerStatusText(peer: Dict, chain: Dict) {
+  if (peer.peer_status) return String(peer.peer_status);
+  if (peer.last_block_reject) return "block rejected";
+  if (peer.last_sync_error) return "sync error";
+  const local = Number(chain.height || 0);
+  const height = Number(peer.synced_blocks ?? peer.starting_height ?? 0);
+  const heightAge = Number(peer.last_height_update_ago_seconds ?? peer.last_peer_metadata_update_ago_seconds ?? 0);
+  if (height > 0 && height < local) return "peer behind local node";
+  if (heightAge >= 900) return "stale peer metadata";
+  if (height > local) return "requesting";
+  return "ok";
 }
 
 function syncLabel(chain: Dict, peers: Dict[]) {

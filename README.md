@@ -1,192 +1,343 @@
 # Legacy Coin / LBTC
 
-Legacy Coin is a fair-launch UTXO Proof-of-Work network focused on full-node verification, CPU-accessible mining, and simple desktop wallet ownership.
+Legacy Coin is a fair-launch UTXO proof-of-work network focused on local
+ownership: run a node, hold keys locally, mine with CPU, and verify the network
+from your own computer.
 
-Legacy Coin is launching in the early Bitcoin spirit: source first, full node first, local keys, CPU-accessible mining, and real users running real software.
+This public `LegacyCore` repository contains:
 
----
+- `legacycoind` source: Legacy Core full node
+- `legacycoin-cli` source: command-line RPC client
+- `Legacy Wallet` desktop source: Windows-first desktop wallet built with Wails
+- shared `internal/` packages, configs, scripts, and build files
 
-## Fair Launch Statement
-
-Legacy Coin / LBTC is intended as a public Proof-of-Work network with:
-
-- no premine
-- no ICO
-- no private sale
-- no dev tax
-- no founder allocation
-- no hidden insider mining window
-
----
+This repository does **not** include the mining pool, public explorer, or
+Launchpad service source. Those are separate products/repositories.
 
 ## Quick Start
 
-### Windows normal users
+If you are a normal Windows user:
 
-1. Go to GitHub Releases:
-
-   <https://github.com/legacybtc/LegacyCore/releases>
+1. Go to Releases:
+   https://github.com/legacybtc/LegacyCore/releases
 
 2. Download:
-
-   ```text
-   LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.0.zip
-   ```
+   `LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.1-infrastructure-ready.zip`
 
 3. Extract the ZIP.
 
 4. Open the extracted folder.
 
 5. Double-click:
+   `START_HERE.bat`
 
-   ```text
-   START_HERE.bat
-   ```
-
-6. Legacy Wallet will start a local Legacy Core node automatically.
+6. Legacy Wallet will start the local Legacy Core node automatically.
 
 7. Wait for:
-
    - Mainnet status
-   - synced / syncing status
+   - synced/syncing status
    - connected peers
 
-8. Go to **Receive** and create/copy a receive address.
+8. Go to `Receive` and create/copy a receive address.
 
-9. Back up your wallet/private keys before using real funds.
+If you are a Linux node operator / miner:
 
-### Linux users
+1. Go to Releases:
+   https://github.com/legacybtc/LegacyCore/releases
 
-The Linux Core/CLI binary package is coming soon.
+2. Download:
+   `LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0-rc2.tar.gz`
 
-For now, Linux users should build from source using the instructions below.
+3. Extract and run:
 
-The stable Linux path right now is:
+   ```bash
+   tar -xzf LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0-rc2.tar.gz
+   cd LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0-rc2
+   chmod +x legacycoind legacycoin-cli
+   ./legacycoind run -seed-peers
+   ```
 
-```bash
-legacycoind + legacycoin-cli
-```
+4. In another terminal:
 
-Linux desktop GUI/Wails builds are experimental until packaged and tested across Linux distributions.
-
----
+   ```bash
+   ./legacycoin-cli getnetworkinfo
+   ./legacycoin-cli getblockcount
+   ./legacycoin-cli getpeerinfo
+   ```
 
 ## What Should I Download?
 
-| User type | Recommended path | What it does |
+From this `LegacyCore` repository/release:
+
+| User type | Download | What it does |
 |---|---|---|
-| Windows normal user | `LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.0.zip` from Releases | Desktop wallet + local node |
-| Linux node operator | Build from source for now | Full node + CLI |
-| Linux miner | Build from source for now | Node + CLI mining/control path |
-| Developer | GitHub source | Build and inspect source |
-| Pool operator | Separate pool package/repo | Mining pool server |
-| Explorer operator | Separate explorer package/repo | Explorer/index service |
-| Launchpad user/operator | Separate Launchpad package/repo | Token/Launchpad app |
+| Windows normal user | `LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.1-infrastructure-ready.zip` | Desktop wallet + local node |
+| Linux node operator | `LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0-rc2.tar.gz` | Full node + CLI |
+| Developer | GitHub source or source ZIP | Build Core, CLI, and Wallet from source |
 
-If you only want to use LBTC and you are on Windows, start with the Windows desktop wallet.
+Separate products, not included in this repository:
 
-If you want to run infrastructure, run Legacy Core / CLI.
+| User type | Product | Where it belongs |
+|---|---|---|
+| Miner / pool operator | Legacy Pool | Separate `LegacyPool` repository/package |
+| Explorer operator | Legacy Explorer / Launchpad service | Separate explorer/launchpad repository/package |
+
+If you only want to use LBTC, download the Windows desktop wallet.
+
+If you want to run infrastructure, use the Linux node package.
 
 If you are unsure, start with the Windows desktop wallet.
 
----
+## Windows ZIP: Headless Node and CLI Miner
+
+The Windows wallet ZIP also includes the headless Core daemon and CLI. This works
+from the extracted release folder without Go, GCC, MSYS2, npm, Wails, or any
+developer tools.
+
+First PowerShell:
+
+```powershell
+.\legacycoind.exe params
+.\legacycoind.exe run -seed-peers
+```
+
+Second PowerShell:
+
+```powershell
+.\legacycoin-cli.exe getblockcount
+.\legacycoin-cli.exe getsyncstatus
+.\legacycoin-cli.exe getpeerinfo
+.\legacycoin-cli.exe getnetworkinfo
+.\legacycoin-cli.exe getminingaddress
+.\legacycoin-cli.exe setminerthreads 4
+.\legacycoin-cli.exe startminer
+.\legacycoin-cli.exe getminerstatus
+.\legacycoin-cli.exe stopminer
+.\legacycoin-cli.exe stop
+```
+
+Mining from the CLI is solo mining. Hashrate does not guarantee a block. Rewards
+only appear if your miner finds a block, and coinbase rewards mature after 100
+blocks.
+
+## Integration and Operator Docs
+
+- Pool integration: `docs/POOL_INTEGRATION.md`
+- Exchange integration: `docs/EXCHANGE_INTEGRATION.md`
+- RPC compatibility matrix: `docs/RPC_COMPATIBILITY.md`
+- Node operations: `docs/NODE_OPERATOR_GUIDE.md`
+- Mining guide: `docs/MINING_GUIDE.md`
+- Troubleshooting: `docs/TROUBLESHOOTING.md`
+- Windows build guide: `docs/WINDOWS_BUILD.md`
 
 ## Windows Desktop Wallet: Download and Run
 
-1. Download the official Windows ZIP from GitHub Releases:
+1. Download:
+   `LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.1-infrastructure-ready.zip`
 
-   ```text
-   LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.0.zip
-   ```
-
-2. Right-click ZIP -> **Extract All**.
+2. Right-click ZIP -> Extract All.
 
 3. Open the extracted folder.
 
 4. Double-click:
-
-   ```text
-   START_HERE.bat
-   ```
+   `START_HERE.bat`
 
 5. If Windows SmartScreen appears:
-
    - verify SHA256 first
-   - click **More Info**
-   - click **Run Anyway** only if the checksum matches the official GitHub release
+   - click `More Info`
+   - click `Run Anyway` only if checksum matches the official GitHub release
 
 6. Wallet should open and start the local node.
 
-7. Check the wallet status area:
-
+7. Check the bottom/status area:
    - Network: Mainnet
    - Height
    - Peers
-   - Sync status
 
-8. Go to **Receive** and create/copy a receive address.
+8. Go to `Receive` and create/copy a receive address.
 
 9. Back up wallet/private keys before using real funds.
 
-Important:
+Warning:
 
-- Do not delete wallet files, private keys, backups, or seed phrases.
-- Do not run binaries from unofficial mirrors.
-- Do not bypass SmartScreen warnings for modified or mismatched files.
-- RPC port `19556` must not be exposed publicly.
+- Do not delete wallet files, private keys, or seed phrases.
+- If you tested old pre-RC2 builds, back up wallet first, then remove only old
+  runtime data:
+  - `blocks`
+  - `chainstate`
+  - `peers.dat`
+  - mempool cache
+- Do not delete:
+  - wallet backups
+  - private keys
+  - seed phrases
 
----
+## Windows Source Build from GitHub
 
-## Linux Core / CLI: Build From Source and Run
+Normal users should use the release ZIP. Source builds are for developers and
+require Go, Node.js, and MSYS2 UCRT64 GCC because production yespower uses CGO.
 
-### Dependencies
+Clone:
 
-Debian/Ubuntu:
-
-```bash
-sudo apt update
-sudo apt install -y build-essential gcc g++ make git curl pkg-config ca-certificates nodejs npm
-```
-
-Install Go 1.22+ if it is not already installed.
-
-### Clone
-
-```bash
+```powershell
 git clone https://github.com/legacybtc/LegacyCore.git
 cd LegacyCore
 ```
 
-### Build wallet frontend first
+Check your build environment:
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File scripts\check-windows-build-env.ps1
+```
+
+Build:
+
+```powershell
+.\build-windows.bat
+```
+
+Common build errors:
+
+- `pattern all:frontend/dist: no matching files found`: build the wallet
+  frontend first with `npm install` and `npm run build` in
+  `cmd\legacywallet\frontend`.
+- `cgo: C compiler "gcc" not found`: install MSYS2 UCRT64 GCC with
+  `C:\msys64\usr\bin\pacman.exe -S --needed mingw-w64-ucrt-x86_64-gcc`.
+- `yespower backend: pure-go-experimental`: CGO/GCC was not used. Public
+  production binaries must show `yespower backend: cgo-c-reference`.
+
+Full Windows build details are in `docs/WINDOWS_BUILD.md`.
+
+## Linux Full Node: Download and Run
+
+1. Download:
+   `LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0-rc2.tar.gz`
+
+2. Extract:
+
+   ```bash
+   tar -xzf LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0-rc2.tar.gz
+   cd LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0-rc2
+   ```
+
+3. Make binaries executable:
+
+   ```bash
+   chmod +x legacycoind legacycoin-cli
+   ```
+
+4. Verify params:
+
+   ```bash
+   ./legacycoind params
+   ```
+
+   Expected:
+
+   ```text
+   message start: a4 ac c6 4d
+   genesis hash: 5b4c78e4556afcd51acf7b9eb2e387fbea2d1414e6042d80d38e6256987154f5
+   yespower backend: cgo-c-reference
+   ```
+
+5. Start node:
+
+   ```bash
+   ./legacycoind run -seed-peers
+   ```
+
+6. Open second terminal:
+
+   ```bash
+   ./legacycoin-cli getnetworkinfo
+   ./legacycoin-cli getblockcount
+   ./legacycoin-cli getpeerinfo
+   ```
+
+7. Force-connect if needed:
+
+   ```bash
+   ./legacycoind run -connect legacycoinseed.space:19555
+   ./legacycoind run -connect legacycoinseed2.space:19555
+   ```
+
+8. RPC should stay local/private. Do not expose port `19556` publicly.
+
+## Verify SHA256 Checksums
+
+Only run binaries if checksums match the official GitHub release.
+
+Windows PowerShell:
+
+```powershell
+Get-FileHash .\LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.1-infrastructure-ready.zip -Algorithm SHA256
+```
+
+Linux:
 
 ```bash
-cd cmd/legacywallet/frontend
+sha256sum LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0-rc2.tar.gz
+sha256sum -c SHA256SUMS.txt
+```
+
+Initial Windows builds may be unsigned and may trigger Microsoft SmartScreen.
+Verify SHA256 checksums from the official release before running. If the
+checksum matches the official release, Windows users may click `More Info`,
+then `Run Anyway`.
+
+Do not bypass warnings for unofficial mirrors, modified files, or mismatched
+checksums.
+
+## Build From Source on Windows
+
+Use release binaries if you only want to run the wallet/node. Build from source
+if you are reviewing the code, contributing, or creating your own build.
+
+Requirements:
+
+- Git for Windows
+- Go 1.22 or newer
+- Node.js LTS
+- Wails v2
+- MSYS2 / MinGW-w64 with `gcc`, `g++`, and `windres` for CGO/C yespower
+  production builds
+
+Clone:
+
+```powershell
+git clone https://github.com/legacybtc/LegacyCore.git
+cd LegacyCore
+```
+
+Build wallet frontend first:
+
+```powershell
+cd cmd\legacywallet\frontend
 npm install
 npm run build
-cd ../../..
+cd ..\..\..
 ```
 
-### Build and test Core/CLI
+Build/test:
 
-```bash
-export CGO_ENABLED=1
+```powershell
+$env:CGO_ENABLED="1"
 go test ./...
 go vet ./...
-go build -trimpath -o legacycoind ./cmd/legacycoind
-go build -trimpath -o legacycoin-cli ./cmd/legacycoin-cli
+go build -trimpath -o legacycoind.exe .\cmd\legacycoind
+go build -trimpath -o legacycoin-cli.exe .\cmd\legacycoin-cli
+go build -trimpath -o legacy-wallet-internal.exe .\cmd\legacywallet
 ```
 
-### Verify params
+Check params:
 
-```bash
-./legacycoind params
+```powershell
+.\legacycoind.exe params
 ```
 
-Expected output must include:
+Expected:
 
 ```text
-message start: a4 ac c6 4d
-genesis hash: 5b4c78e4556afcd51acf7b9eb2e387fbea2d1414e6042d80d38e6256987154f5
 yespower backend: cgo-c-reference
 ```
 
@@ -196,128 +347,66 @@ If it shows:
 yespower backend: pure-go-experimental
 ```
 
-then that build is **not** a public production mining/validation build.
+then the build is only for source sanity testing and not for public production
+binaries.
 
-### Run node
+Build Wails desktop wallet:
 
-```bash
-./legacycoind run -seed-peers
+```powershell
+cd cmd\legacywallet
+wails build -platform windows/amd64 -skipbindings
 ```
 
-Open a second terminal:
+## Build From Source on Linux
+
+Dependencies:
 
 ```bash
-./legacycoin-cli getnetworkinfo
-./legacycoin-cli getblockcount
-./legacycoin-cli getpeerinfo
+sudo apt update
+sudo apt install -y build-essential gcc g++ make git curl pkg-config ca-certificates nodejs npm
 ```
 
-If you have 0 peers, try force-connect:
+Clone:
 
 ```bash
-./legacycoind run -connect legacycoinseed.space:19555
-./legacycoind run -connect legacycoinseed2.space:19555
+git clone https://github.com/legacybtc/LegacyCore.git
+cd LegacyCore
 ```
 
-### Firewall
-
-If you can accept incoming P2P connections, open P2P port:
-
-```bash
-sudo ufw allow 19555/tcp
-```
-
-Never expose RPC publicly:
-
-```bash
-sudo ufw deny 19556/tcp
-```
-
----
-
-## Linux Desktop GUI Status
-
-The Linux desktop GUI is not the primary release path yet.
-
-Do **not** run the GUI as only `npm run` from the frontend folder and expect it to behave like the full desktop wallet. That only runs/builds the frontend UI. The real desktop wallet requires the Wails/Go backend bridge.
-
-For experimental Linux GUI testing:
+Build wallet frontend first:
 
 ```bash
 cd cmd/legacywallet/frontend
 npm install
 npm run build
 cd ../../..
+```
 
+Build/test:
+
+```bash
 export CGO_ENABLED=1
-cd cmd/legacywallet
-wails dev
+go test ./...
+go vet ./...
+go build -trimpath -o legacycoind ./cmd/legacycoind
+go build -trimpath -o legacycoin-cli ./cmd/legacycoin-cli
+go build -trimpath -o legacy-wallet-internal ./cmd/legacywallet
 ```
 
-Or build:
+Check params:
 
 ```bash
-wails build -platform linux/amd64 -skipbindings
+./legacycoind params
 ```
 
-Linux Wails builds may require GTK/WebKit native dependencies. Until the Linux GUI is officially packaged and tested, use Core/CLI on Linux.
-
----
-
-## Verify SHA256 Checksums
-
-Only run release binaries if checksums match the official GitHub Release.
-
-Windows PowerShell:
-
-```powershell
-Get-FileHash .\LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.0-rc2.zip -Algorithm SHA256
-```
-
-Linux:
-
-```bash
-sha256sum <downloaded-file>
-sha256sum -c SHA256SUMS.txt
-```
-
-Initial Windows builds may be unsigned and may trigger Microsoft SmartScreen. If the checksum matches the official release, Windows users may click:
+Expected:
 
 ```text
-More Info -> Run Anyway
+yespower backend: cgo-c-reference
 ```
 
-Do not bypass warnings for unofficial mirrors, modified files, or mismatched checksums.
-
----
-
-## Solo Mining FAQ
-
-### Is mining solo or pool?
-
-Default wallet/node mining is solo mining unless you are using a working pool.
-
-### Why is my balance still 0?
-
-Solo mining has no partial rewards. Your balance stays 0 until your machine actually finds a valid block.
-
-### Does hashrate guarantee a block?
-
-No. Proof-of-Work is probability, not a timer. More hashrate increases your chance, but it does not guarantee a reward in a specific hour or day.
-
-### When can I spend mined coins?
-
-Coinbase rewards mature after 100 blocks.
-
-### Can multiple machines mine to the same address?
-
-Yes. Multiple machines can mine to the same receive address. That increases total work/chance, but it is still solo mining unless you use a pool. Same address means same payout destination; it does not create shared partial rewards.
-
-### What does 0 peers mean?
-
-If your node has 0 peers, it is isolated. Mining with 0 peers will not help the public chain. Connect to peers first.
-
----
+Note: Linux desktop GUI/Wails builds may require GTK/WebKit native dependencies
+and are not the primary release path right now.
 
 ## Run Commands / Node Status
 
@@ -329,11 +418,9 @@ Common commands:
 ./legacycoin-cli getinfo
 ./legacycoin-cli getnetworkinfo
 ./legacycoin-cli getblockcount
-./legacycoin-cli getbestblockhash
 ./legacycoin-cli getpeerinfo
 ./legacycoin-cli getselfcheck
 ./legacycoin-cli getlaunchstatus
-./legacycoin-cli getsyncstatus
 ```
 
 Useful status fields:
@@ -343,11 +430,7 @@ Useful status fields:
 - best block hash
 - chain ID
 - mempool size
-- mining status
 - yespower backend
-- sync status
-
----
 
 ## RPC Cookie/Auth Troubleshooting
 
@@ -359,7 +442,7 @@ Start node first:
 ./legacycoind run -seed-peers
 ```
 
-When no `rpcuser` / `rpcpassword` is configured, `legacycoind` creates an RPC cookie in the active data directory.
+When no `rpcuser` / `rpcpassword` is configured, `legacycoind` creates:
 
 Linux:
 
@@ -373,13 +456,7 @@ Windows:
 %APPDATA%\LegacyCoin\.cookie
 ```
 
-Custom data directory:
-
-```text
-<datadir>/.cookie
-```
-
-Then CLI should work from another terminal on the same machine:
+Then CLI should work:
 
 ```bash
 ./legacycoin-cli getnetworkinfo
@@ -422,82 +499,9 @@ Supported CLI flags:
 
 Friendly errors:
 
-- `RPC cookie not found`: start `legacycoind` first or configure `rpcuser`/`rpcpassword`.
+- `RPC cookie not found`: start `legacycoind` first or configure
+  `rpcuser`/`rpcpassword`.
 - `RPC unauthorized`: check `rpcuser`/`rpcpassword` or `.cookie` file.
-
-RPC safety:
-
-- Keep RPC bound to `127.0.0.1`.
-- Do not expose RPC port `19556` publicly.
-- Public peers and miners should use P2P/pool endpoints, not wallet RPC.
-
----
-
-## Stuck Sync / Safe Resync
-
-If the wallet shows something like:
-
-```text
-Node is behind peers
-Sync: 340 / 349
-```
-
-first give it time to request blocks. If it stays stuck, perform a safe resync.
-
-### Windows safe resync
-
-1. Close Legacy Wallet / `legacycoind`.
-
-2. Back up your data folder first.
-
-   PowerShell:
-
-   ```powershell
-   Copy-Item "$env:APPDATA\LegacyCoin" "$env:USERPROFILE\Desktop\LegacyCoin-backup-before-resync" -Recurse
-   ```
-
-3. Open:
-
-   ```powershell
-   explorer "$env:APPDATA\LegacyCoin"
-   ```
-
-4. Delete only runtime chain/network data if present:
-
-   ```text
-   blocks
-   index
-   undo
-   utxo
-   chainstate
-   .cookie
-   peers.dat
-   mempool
-   mempool.dat
-   *.log
-   ```
-
-5. Keep wallet/private data:
-
-   ```text
-   backups
-   wallet
-   wallet-transactions
-   legacycoin.conf
-   wallet.dat
-   wallet.db
-   wallet.json
-   keys
-   seed
-   ```
-
-6. Restart the wallet and let it resync.
-
-Do not delete wallet files, backups, private keys, or seed phrases.
-
-A future sync fix will improve missing-parent/orphan recovery so users should not normally need to wipe runtime chain data.
-
----
 
 ## Mainnet Parameters
 
@@ -505,8 +509,6 @@ A future sync fix will improve missing-parent/orphan recovery so users should no
 |---|---|
 | Coin | Legacy Coin |
 | Ticker | LBTC |
-| Core | Legacy Core 1.0.0 |
-| Wallet | Legacy Wallet 1.0.0 |
 | Network | Legacy Coin Mainnet |
 | Chain ID | `legacy-mainnet-1.0.0-rc2-5b4c78e4` |
 | P2P port | `19555` |
@@ -521,53 +523,42 @@ A future sync fix will improve missing-parent/orphan recovery so users should no
 | PoW | `LegacyCoinPoW, N=2048, r=32` |
 | PoW input | Serialized 80-byte Legacy block header |
 | Production yespower backend | `cgo-c-reference` |
-| Difficulty | Dark Gravity Wave v3 |
-| Target spacing | 10 minutes |
-| Initial subsidy | 50 LBTC |
-| Halving interval | 210,000 blocks |
-| Max supply target | 21,000,000 LBTC |
-| Coinbase maturity | 100 blocks |
-| P2PKH version | 48 |
-| WIF version | 176 |
-| DNS seeds | `legacycoinseed.space`, `legacycoinseed2.space` |
-
----
-
-## Production PoW Requirement
-
-Public RC2 binaries that validate blocks, mine blocks, validate pool shares, or submit blocks must be built with CGO enabled and the bundled C yespower backend.
-
-Expected verification output:
-
-```text
-yespower backend: cgo-c-reference
-```
-
-The pure-Go yespower path is experimental/debug only unless byte-for-byte parity with the C reference path is proven.
-
-Do not publish production mining, pool, or submitblock-capable binaries that report the pure-Go backend.
-
----
 
 ## Security Warnings
 
-Legacy Core RPC must remain local/private unless the operator has configured proper authentication, TLS, and firewall rules.
+Legacy Core RPC must remain local/private unless the operator has configured
+proper authentication, TLS, and firewall rules. Do not expose wallet RPC methods
+to the public internet.
 
-Do not expose wallet RPC methods to the public internet.
+Public binaries that validate blocks, mine blocks, validate pool shares, or
+submit blocks must be built with CGO enabled and the bundled C yespower backend.
+The pure-Go yespower path is experimental/debug only unless byte-for-byte parity
+with the C reference path is proven.
 
-If you tested earlier builds, back up wallets, wallet backups, private keys, and seed phrases before changing any data.
+If you tested earlier builds, back up wallets, wallet backups, private keys, and
+seed phrases before changing any data.
+
+After backup, remove only old runtime chain/network data:
+
+- `blocks`
+- `chainstate`
+- `peers.dat`
+- mempool cache files
+
+Do not delete:
+
+- wallet backups
+- private keys
+- seed phrases
 
 User responsibility:
 
-- verify checksums
-- keep private keys and wallet backups offline/secure
-- do not run binaries from unofficial mirrors
-- do not expose RPC port `19556` publicly
-- do not mix old pre-RC2 chain data with this release
+- Verify checksums.
+- Keep private keys and wallet backups offline/secure.
+- Do not run binaries from unofficial mirrors.
+- Do not expose RPC port `19556` publicly.
 
 See `SECURITY.md` for vulnerability reporting and release security checks.
-
----
 
 ## License
 

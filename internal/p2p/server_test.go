@@ -13,6 +13,7 @@ import (
 	"legacycoin/legacy-go/internal/blockchain"
 	"legacycoin/legacy-go/internal/chaincfg"
 	"legacycoin/legacy-go/internal/chainhash"
+	"legacycoin/legacy-go/internal/genesis"
 	"legacycoin/legacy-go/internal/storage"
 	"legacycoin/legacy-go/internal/wire"
 )
@@ -161,5 +162,213 @@ func TestRequestUnknownBlockInvSendsGetData(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("requestUnknownBlocks did not return")
+	}
+}
+
+func TestRequestSyncFromPeerIfBehindSendsHeadersAndBlocks(t *testing.T) {
+	params := chaincfg.MainNet
+	genesisBlock, err := genesis.NewBlock(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	genesisHash, err := p2pTestHasher{}.HashHeader(genesisBlock.Header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params.GenesisHash = genesisHash.String()
+
+	chain, err := blockchain.New(params, p2pTestHasher{}, storage.NewFileStore(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.EnsureGenesis(); err != nil {
+		t.Fatal(err)
+	}
+	s := New(params, chain, nil, log.New(io.Discard, "", 0))
+
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	p := &peer{conn: serverConn, remote: "pipe-test", height: 3, lastSeen: time.Now(), lastPong: time.Now()}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- s.requestSyncFromPeerIfBehind(p, false)
+	}()
+
+	_ = clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	first, err := wire.ReadMessage(clientConn, params.MessageStart)
+	if err != nil {
+		t.Fatalf("read first sync request: %v", err)
+	}
+	if first.Command != wire.CommandGetHeaders {
+		t.Fatalf("first command=%s want %s", first.Command, wire.CommandGetHeaders)
+	}
+	second, err := wire.ReadMessage(clientConn, params.MessageStart)
+	if err != nil {
+		t.Fatalf("read second sync request: %v", err)
+	}
+	if second.Command != wire.CommandGetBlocks {
+		t.Fatalf("second command=%s want %s", second.Command, wire.CommandGetBlocks)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("requestSyncFromPeerIfBehind: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("requestSyncFromPeerIfBehind did not return")
+	}
+}
+
+func TestRequestSyncFromPeerIfBehindForceBypassesThrottle(t *testing.T) {
+	params := chaincfg.MainNet
+	genesisBlock, err := genesis.NewBlock(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	genesisHash, err := p2pTestHasher{}.HashHeader(genesisBlock.Header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params.GenesisHash = genesisHash.String()
+
+	chain, err := blockchain.New(params, p2pTestHasher{}, storage.NewFileStore(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.EnsureGenesis(); err != nil {
+		t.Fatal(err)
+	}
+	s := New(params, chain, nil, log.New(io.Discard, "", 0))
+
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	p := &peer{conn: serverConn, remote: "pipe-test", height: 3, lastSeen: time.Now(), lastPong: time.Now(), lastSyncRequest: time.Now()}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- s.requestSyncFromPeerIfBehind(p, true)
+	}()
+
+	_ = clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	first, err := wire.ReadMessage(clientConn, params.MessageStart)
+	if err != nil {
+		t.Fatalf("read forced sync request: %v", err)
+	}
+	if first.Command != wire.CommandGetHeaders {
+		t.Fatalf("first command=%s want %s", first.Command, wire.CommandGetHeaders)
+	}
+	second, err := wire.ReadMessage(clientConn, params.MessageStart)
+	if err != nil {
+		t.Fatalf("read forced second sync request: %v", err)
+	}
+	if second.Command != wire.CommandGetBlocks {
+		t.Fatalf("second command=%s want %s", second.Command, wire.CommandGetBlocks)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("forced requestSyncFromPeerIfBehind: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("forced requestSyncFromPeerIfBehind did not return")
+	}
+}
+
+func TestSyncStatusIncludesLoopHealth(t *testing.T) {
+	params := chaincfg.MainNet
+	genesisBlock, err := genesis.NewBlock(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	genesisHash, err := p2pTestHasher{}.HashHeader(genesisBlock.Header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params.GenesisHash = genesisHash.String()
+
+	chain, err := blockchain.New(params, p2pTestHasher{}, storage.NewFileStore(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.EnsureGenesis(); err != nil {
+		t.Fatal(err)
+	}
+	s := New(params, chain, nil, log.New(io.Discard, "", 0))
+	s.setP2PRunning(true)
+	s.setSyncRunning(true)
+	s.noteSyncBeat()
+	s.noteSyncRequest()
+	s.notePeerMessage()
+
+	status := s.SyncStatus()
+	health, ok := status["health"].(map[string]any)
+	if !ok {
+		t.Fatalf("health missing or wrong type: %#v", status["health"])
+	}
+	if health["p2p_loop_running"] != true {
+		t.Fatalf("p2p_loop_running=%v want true", health["p2p_loop_running"])
+	}
+	if health["sync_loop_running"] != true {
+		t.Fatalf("sync_loop_running=%v want true", health["sync_loop_running"])
+	}
+	if got := health["last_p2p_sync_request_ago_seconds"].(float64); got < 0 {
+		t.Fatalf("last_p2p_sync_request_ago_seconds=%v", got)
+	}
+	if got := health["last_peer_message_ago_seconds"].(float64); got < 0 {
+		t.Fatalf("last_peer_message_ago_seconds=%v", got)
+	}
+}
+
+func TestPeerHeightMetadataUpdatesOnBestChainBlock(t *testing.T) {
+	p := &peer{height: 411, lastHeightUpdate: time.Now().Add(-20 * time.Minute)}
+	p.setLastBlockResult(blockchain.BlockProcessResult{
+		Hash:          "new-tip",
+		NewBestHeight: 419,
+		BestChanged:   true,
+		Connected:     true,
+		Status:        blockchain.BlockStatusConnected,
+	})
+
+	p.lastMu.Lock()
+	height := p.height
+	age := time.Since(p.lastHeightUpdate)
+	errText := p.lastSyncError
+	p.lastMu.Unlock()
+
+	if height != 419 {
+		t.Fatalf("height=%d want 419", height)
+	}
+	if age > time.Second {
+		t.Fatalf("lastHeightUpdate age=%s, want fresh", age)
+	}
+	if errText != "" {
+		t.Fatalf("lastSyncError=%q want empty", errText)
+	}
+}
+
+func TestPeerSetAdvertisedHeightRefreshesMetadataWithoutLoweringHeight(t *testing.T) {
+	p := &peer{height: 411, lastHeightUpdate: time.Now().Add(-20 * time.Minute)}
+	p.setAdvertisedHeight(430)
+	p.lastMu.Lock()
+	gotHeight := p.height
+	age := time.Since(p.lastHeightUpdate)
+	p.lastMu.Unlock()
+	if gotHeight != 430 {
+		t.Fatalf("height=%d want 430", gotHeight)
+	}
+	if age > time.Second {
+		t.Fatalf("lastHeightUpdate age=%s want fresh", age)
+	}
+
+	p.setAdvertisedHeight(420)
+	p.lastMu.Lock()
+	gotHeight = p.height
+	p.lastMu.Unlock()
+	if gotHeight != 430 {
+		t.Fatalf("height downgraded to %d; expected to keep 430", gotHeight)
 	}
 }

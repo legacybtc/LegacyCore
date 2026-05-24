@@ -111,6 +111,35 @@ type sideBlockNode struct {
 	block  *wire.MsgBlock
 }
 
+type BlockProcessStatus string
+
+const (
+	BlockStatusConnected BlockProcessStatus = "connected"
+	BlockStatusDuplicate BlockProcessStatus = "duplicate"
+	BlockStatusSideChain BlockProcessStatus = "side-chain"
+	BlockStatusOrphan    BlockProcessStatus = "orphan"
+)
+
+type BlockProcessResult struct {
+	Hash             string             `json:"hash"`
+	PrevHash         string             `json:"prev_hash"`
+	CalculatedHeight int32              `json:"calculated_height"`
+	ParentKnown      bool               `json:"parent_known"`
+	ParentActive     bool               `json:"parent_active"`
+	ExtendsActiveTip bool               `json:"extends_active_tip"`
+	Duplicate        bool               `json:"duplicate"`
+	SideChain        bool               `json:"side_chain"`
+	Orphan           bool               `json:"orphan"`
+	Connected        bool               `json:"connected"`
+	BestChanged      bool               `json:"best_changed"`
+	OldBestHeight    int32              `json:"old_best_height"`
+	OldBestHash      string             `json:"old_best_hash"`
+	NewBestHeight    int32              `json:"new_best_height"`
+	NewBestHash      string             `json:"new_best_hash"`
+	Status           BlockProcessStatus `json:"status"`
+	Reason           string             `json:"reason,omitempty"`
+}
+
 var nowUnix = func() uint32 {
 	return uint32(time.Now().UTC().Unix())
 }
@@ -152,6 +181,11 @@ func New(params chaincfg.Params, hasher pow.Hasher, store Store) (*Chain, error)
 }
 
 func (c *Chain) ProcessBlock(block *wire.MsgBlock) error {
+	_, err := c.ProcessBlockWithResult(block)
+	return err
+}
+
+func (c *Chain) ProcessBlockWithResult(block *wire.MsgBlock) (BlockProcessResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.processBlockLocked(block)
@@ -265,22 +299,54 @@ func (c *Chain) connectBlockLocked(block *wire.MsgBlock) error {
 	return nil
 }
 
-func (c *Chain) processBlockLocked(block *wire.MsgBlock) error {
+func (c *Chain) processBlockLocked(block *wire.MsgBlock) (BlockProcessResult, error) {
+	result := BlockProcessResult{
+		CalculatedHeight: -1,
+		OldBestHeight:    -1,
+		NewBestHeight:    -1,
+	}
+	if c.tip != nil {
+		result.OldBestHeight = c.tip.Height
+		result.OldBestHash = c.tip.Hash
+		result.NewBestHeight = c.tip.Height
+		result.NewBestHash = c.tip.Hash
+	}
 	hash, err := c.hasher.HashHeader(block.Header)
 	if err != nil {
-		return err
+		return result, err
 	}
 	hashStr := hash.String()
+	result.Hash = hashStr
+	result.PrevHash = block.Header.PrevBlock.String()
 	if c.HasBlock(hashStr) {
-		return nil
+		result.Duplicate = true
+		result.Status = BlockStatusDuplicate
+		result.Reason = "block already stored"
+		if h, ok := c.activeHeight(hashStr); ok {
+			result.CalculatedHeight = h
+			result.ParentKnown = true
+			result.ParentActive = true
+		} else if h, ok := c.indexedHeight(hashStr); ok {
+			result.CalculatedHeight = h
+			result.ParentKnown = true
+		}
+		return result, nil
 	}
 	if _, ok := c.orphanByHash[hashStr]; ok {
-		return nil
+		result.Duplicate = true
+		result.Orphan = true
+		result.Status = BlockStatusDuplicate
+		result.Reason = "orphan already stored"
+		return result, nil
 	}
 	if c.tip != nil && c.tip.Hash != "" {
 		parent := block.Header.PrevBlock.String()
 		if parent != c.tip.Hash {
 			if parentHeight, ok := c.activeHeight(parent); ok {
+				result.ParentKnown = true
+				result.ParentActive = true
+				result.SideChain = true
+				result.CalculatedHeight = parentHeight + 1
 				c.sideBlocks[hashStr] = &sideBlockNode{
 					hash:   hashStr,
 					parent: parent,
@@ -288,11 +354,23 @@ func (c *Chain) processBlockLocked(block *wire.MsgBlock) error {
 					block:  block,
 				}
 				if err := c.tryActivateSideChainLocked(hashStr); err != nil {
-					return err
+					return result, err
 				}
-				return nil
+				result.finish(c.tip)
+				if result.BestChanged && result.NewBestHash == hashStr {
+					result.Connected = true
+					result.Status = BlockStatusConnected
+					result.Reason = "side branch became active best chain"
+				} else {
+					result.Status = BlockStatusSideChain
+					result.Reason = "stored as side-chain block; active best chain not updated"
+				}
+				return result, nil
 			}
 			if parentHeight, ok := c.indexedHeight(parent); ok {
+				result.ParentKnown = true
+				result.SideChain = true
+				result.CalculatedHeight = parentHeight + 1
 				c.sideBlocks[hashStr] = &sideBlockNode{
 					hash:   hashStr,
 					parent: parent,
@@ -300,11 +378,23 @@ func (c *Chain) processBlockLocked(block *wire.MsgBlock) error {
 					block:  block,
 				}
 				if err := c.tryActivateSideChainLocked(hashStr); err != nil {
-					return err
+					return result, err
 				}
-				return nil
+				result.finish(c.tip)
+				if result.BestChanged && result.NewBestHash == hashStr {
+					result.Connected = true
+					result.Status = BlockStatusConnected
+					result.Reason = "stored branch became active best chain"
+				} else {
+					result.Status = BlockStatusSideChain
+					result.Reason = "stored as side-chain block; active best chain not updated"
+				}
+				return result, nil
 			}
 			if parentNode, ok := c.sideBlocks[parent]; ok {
+				result.ParentKnown = true
+				result.SideChain = true
+				result.CalculatedHeight = parentNode.height + 1
 				c.sideBlocks[hashStr] = &sideBlockNode{
 					hash:   hashStr,
 					parent: parent,
@@ -312,19 +402,50 @@ func (c *Chain) processBlockLocked(block *wire.MsgBlock) error {
 					block:  block,
 				}
 				if err := c.tryActivateSideChainLocked(hashStr); err != nil {
-					return err
+					return result, err
 				}
-				return nil
+				result.finish(c.tip)
+				if result.BestChanged && result.NewBestHash == hashStr {
+					result.Connected = true
+					result.Status = BlockStatusConnected
+					result.Reason = "side branch became active best chain"
+				} else {
+					result.Status = BlockStatusSideChain
+					result.Reason = "stored as side-chain block; active best chain not updated"
+				}
+				return result, nil
 			}
+			result.Orphan = true
+			result.Status = BlockStatusOrphan
+			result.Reason = "parent unknown"
 			c.addOrphanLocked(hashStr, parent, block)
-			return nil
+			result.finish(c.tip)
+			return result, nil
 		}
+		result.ParentKnown = true
+		result.ParentActive = true
+		result.ExtendsActiveTip = true
+		result.CalculatedHeight = c.tip.Height + 1
+	} else {
+		result.CalculatedHeight = 0
 	}
 	if err := c.connectBlockLocked(block); err != nil {
-		return err
+		return result, err
 	}
 	c.acceptOrphanChildrenLocked(hashStr)
-	return nil
+	result.Connected = true
+	result.Status = BlockStatusConnected
+	result.Reason = "extends active best chain"
+	result.finish(c.tip)
+	return result, nil
+}
+
+func (r *BlockProcessResult) finish(tip *BlockIndex) {
+	if tip != nil {
+		r.NewBestHeight = tip.Height
+		r.NewBestHash = tip.Hash
+	}
+	r.BestChanged = r.OldBestHeight != r.NewBestHeight || r.OldBestHash != r.NewBestHash
 }
 
 func (c *Chain) acceptOrphanChildrenLocked(parentHash string) {

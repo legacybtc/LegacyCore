@@ -39,6 +39,9 @@ var (
 	peerPingInterval     = 30 * time.Second
 	peerPongTimeout      = 90 * time.Second
 	peerReconnectEvery   = 15 * time.Second
+	syncWatchdogEvery    = 45 * time.Second
+	syncStaleThreshold   = 10 * time.Minute
+	peerStaleThreshold   = 15 * time.Minute
 )
 
 const (
@@ -47,24 +50,34 @@ const (
 )
 
 type peer struct {
-	conn      net.Conn
-	outbound  bool
-	remote    string
-	writeMu   sync.Mutex
-	lastMu    sync.Mutex
-	connected time.Time
-	lastSeen  time.Time
-	lastPong  time.Time
-	lastPing  time.Time
-	lastRTT   time.Duration
-	minRTT    time.Duration
-	version   int32
-	subver    string
-	height    int32
-	chainID   string
-	banScore  int
-	bytesSent uint64
-	bytesRecv uint64
+	conn             net.Conn
+	outbound         bool
+	remote           string
+	writeMu          sync.Mutex
+	lastMu           sync.Mutex
+	connected        time.Time
+	lastSeen         time.Time
+	lastPong         time.Time
+	lastHeightUpdate time.Time
+	lastPing         time.Time
+	lastRTT          time.Duration
+	minRTT           time.Duration
+	version          int32
+	subver           string
+	height           int32
+	chainID          string
+	banScore         int
+	bytesSent        uint64
+	bytesRecv        uint64
+	lastSyncRequest  time.Time
+	lastSyncError    string
+	lastBlockReject  string
+	lastLocatorTip   string
+	lastBlockHash    string
+	lastBlockPrev    string
+	lastBlockHeight  int32
+	lastBestUpdate   string
+	lastBlockReason  string
 }
 
 type Server struct {
@@ -103,6 +116,23 @@ type Server struct {
 	rejectMu      sync.Mutex
 	rejectCounts  map[string]int
 	rejectLastLog map[string]time.Time
+	healthMu      sync.Mutex
+	startedAt     time.Time
+	p2pRunning    bool
+	syncRunning   bool
+	watchdogRun   bool
+	lastSyncBeat  time.Time
+	lastSyncReq   time.Time
+	lastPeerMsg   time.Time
+	lastHeaderMsg time.Time
+	lastBlockMsg  time.Time
+	lastGetHeader time.Time
+	lastGetBlock  time.Time
+	lastWatchdog  time.Time
+	lastWdAction  string
+	wdReconnects  int64
+	lastBlockConn time.Time
+	lastHeightChg time.Time
 	wg            sync.WaitGroup
 }
 
@@ -178,23 +208,34 @@ func (s *Server) SetPrettyLogging(enabled bool, heartbeat bool, compact bool, sh
 }
 
 type PeerInfo struct {
-	Addr                string  `json:"addr"`
-	Direction           string  `json:"direction"`
-	Outbound            bool    `json:"outbound"`
-	ConnectedForSeconds int64   `json:"connected_for_seconds"`
-	LastSeenAgoSeconds  float64 `json:"last_seen_ago_seconds"`
-	LastPongAgoSeconds  float64 `json:"last_pong_ago_seconds"`
-	LastPingMS          float64 `json:"last_ping_ms"`
-	MinPingMS           float64 `json:"min_ping_ms"`
-	Version             int32   `json:"version"`
-	SubVer              string  `json:"subver"`
-	SyncedBlocks        int32   `json:"synced_blocks"`
-	StartingHeight      int32   `json:"starting_height"`
-	ChainID             string  `json:"chain_id"`
-	BanScore            int     `json:"ban_score"`
-	BytesSent           uint64  `json:"bytes_sent"`
-	BytesRecv           uint64  `json:"bytes_recv"`
-	ConnectionType      string  `json:"connection_type"`
+	Addr                             string  `json:"addr"`
+	Direction                        string  `json:"direction"`
+	Outbound                         bool    `json:"outbound"`
+	ConnectedForSeconds              int64   `json:"connected_for_seconds"`
+	LastSeenAgoSeconds               float64 `json:"last_seen_ago_seconds"`
+	LastPongAgoSeconds               float64 `json:"last_pong_ago_seconds"`
+	LastHeightUpdateAgoSeconds       float64 `json:"last_height_update_ago_seconds"`
+	LastPeerMetadataUpdateAgoSeconds float64 `json:"last_peer_metadata_update_ago_seconds"`
+	LastPingMS                       float64 `json:"last_ping_ms"`
+	MinPingMS                        float64 `json:"min_ping_ms"`
+	Version                          int32   `json:"version"`
+	SubVer                           string  `json:"subver"`
+	SyncedBlocks                     int32   `json:"synced_blocks"`
+	StartingHeight                   int32   `json:"starting_height"`
+	ChainID                          string  `json:"chain_id"`
+	BanScore                         int     `json:"ban_score"`
+	BytesSent                        uint64  `json:"bytes_sent"`
+	BytesRecv                        uint64  `json:"bytes_recv"`
+	ConnectionType                   string  `json:"connection_type"`
+	LastSyncRequestAgoSeconds        float64 `json:"last_sync_request_ago_seconds"`
+	LastSyncError                    string  `json:"last_sync_error,omitempty"`
+	LastBlockReject                  string  `json:"last_block_reject,omitempty"`
+	LastLocatorTip                   string  `json:"last_locator_tip,omitempty"`
+	LastReceivedBlockHash            string  `json:"last_received_block_hash,omitempty"`
+	LastReceivedBlockPrev            string  `json:"last_received_block_prev,omitempty"`
+	LastReceivedBlockHeight          int32   `json:"last_received_block_height,omitempty"`
+	LastBestChainUpdate              string  `json:"last_best_chain_update,omitempty"`
+	LastBlockReason                  string  `json:"last_block_reason,omitempty"`
 }
 
 func (s *Server) PeerInfos() []PeerInfo {
@@ -206,6 +247,7 @@ func (s *Server) PeerInfos() []PeerInfo {
 		connected := p.connected
 		seen := p.lastSeen
 		pong := p.lastPong
+		heightUpdate := p.lastHeightUpdate
 		rtt := p.lastRTT
 		minRTT := p.minRTT
 		version := p.version
@@ -215,32 +257,388 @@ func (s *Server) PeerInfos() []PeerInfo {
 		banScore := p.banScore
 		bytesSent := p.bytesSent
 		bytesRecv := p.bytesRecv
+		lastSyncRequest := p.lastSyncRequest
+		lastSyncError := p.lastSyncError
+		lastBlockReject := p.lastBlockReject
+		lastLocatorTip := p.lastLocatorTip
+		lastBlockHash := p.lastBlockHash
+		lastBlockPrev := p.lastBlockPrev
+		lastBlockHeight := p.lastBlockHeight
+		lastBestUpdate := p.lastBestUpdate
+		lastBlockReason := p.lastBlockReason
 		p.lastMu.Unlock()
+		lastSyncAgo := float64(-1)
+		if !lastSyncRequest.IsZero() {
+			lastSyncAgo = now.Sub(lastSyncRequest).Seconds()
+		}
 		direction := "inbound"
 		if p.outbound {
 			direction = "outbound"
 		}
 		out = append(out, PeerInfo{
-			Addr:                p.remote,
-			Direction:           direction,
-			Outbound:            p.outbound,
-			ConnectedForSeconds: int64(now.Sub(connected).Seconds()),
-			LastSeenAgoSeconds:  now.Sub(seen).Seconds(),
-			LastPongAgoSeconds:  now.Sub(pong).Seconds(),
-			LastPingMS:          float64(rtt.Microseconds()) / 1000,
-			MinPingMS:           float64(minRTT.Microseconds()) / 1000,
-			Version:             version,
-			SubVer:              subver,
-			StartingHeight:      height,
-			SyncedBlocks:        height,
-			ChainID:             chainID,
-			BanScore:            banScore,
-			BytesSent:           bytesSent,
-			BytesRecv:           bytesRecv,
-			ConnectionType:      direction + "-full-relay",
+			Addr:                             p.remote,
+			Direction:                        direction,
+			Outbound:                         p.outbound,
+			ConnectedForSeconds:              int64(now.Sub(connected).Seconds()),
+			LastSeenAgoSeconds:               now.Sub(seen).Seconds(),
+			LastPongAgoSeconds:               now.Sub(pong).Seconds(),
+			LastHeightUpdateAgoSeconds:       secondsSince(heightUpdate),
+			LastPeerMetadataUpdateAgoSeconds: secondsSince(heightUpdate),
+			LastPingMS:                       float64(rtt.Microseconds()) / 1000,
+			MinPingMS:                        float64(minRTT.Microseconds()) / 1000,
+			Version:                          version,
+			SubVer:                           subver,
+			StartingHeight:                   height,
+			SyncedBlocks:                     height,
+			ChainID:                          chainID,
+			BanScore:                         banScore,
+			BytesSent:                        bytesSent,
+			BytesRecv:                        bytesRecv,
+			ConnectionType:                   direction + "-full-relay",
+			LastSyncRequestAgoSeconds:        lastSyncAgo,
+			LastSyncError:                    lastSyncError,
+			LastBlockReject:                  lastBlockReject,
+			LastLocatorTip:                   lastLocatorTip,
+			LastReceivedBlockHash:            lastBlockHash,
+			LastReceivedBlockPrev:            lastBlockPrev,
+			LastReceivedBlockHeight:          lastBlockHeight,
+			LastBestChainUpdate:              lastBestUpdate,
+			LastBlockReason:                  lastBlockReason,
 		})
 	}
 	return out
+}
+
+func (s *Server) BestPeerHeight() int32 {
+	best := int32(-1)
+	for _, p := range s.snapshotPeers() {
+		p.lastMu.Lock()
+		height := p.height
+		p.lastMu.Unlock()
+		if height > best {
+			best = height
+		}
+	}
+	return best
+}
+
+func (s *Server) SyncStatus() map[string]any {
+	localHeight := int32(-1)
+	localHash := ""
+	if tip := s.chain.Tip(); tip != nil {
+		localHeight = tip.Height
+		localHash = tip.Hash
+	}
+	peers := s.snapshotPeers()
+	bestPeerHeight := int32(-1)
+	stalePeerCount := 0
+	syncingPeerCount := 0
+	now := time.Now()
+	for _, p := range peers {
+		p.lastMu.Lock()
+		height := p.height
+		lastSeen := p.lastSeen
+		lastHeightUpdate := p.lastHeightUpdate
+		p.lastMu.Unlock()
+		if height > bestPeerHeight {
+			bestPeerHeight = height
+		}
+		if height > localHeight {
+			syncingPeerCount++
+		}
+		heightStale := !lastHeightUpdate.IsZero() && now.Sub(lastHeightUpdate) > peerStaleThreshold
+		msgStale := !lastSeen.IsZero() && now.Sub(lastSeen) > peerStaleThreshold
+		if heightStale || msgStale {
+			stalePeerCount++
+		}
+	}
+	if bestPeerHeight < 0 {
+		bestPeerHeight = localHeight
+	}
+	behind := bestPeerHeight > localHeight
+	status := "current"
+	message := "Local node is at or ahead of connected peers."
+	if behind {
+		status = "syncing"
+		message = "Node is behind peers. Waiting for blocks / requesting blocks."
+	}
+	lastError := ""
+	lastReject := ""
+	lastLocatorTip := ""
+	lastBlockHash := ""
+	lastBlockPrev := ""
+	lastBlockHeight := int32(-1)
+	lastBestUpdate := ""
+	lastBlockReason := ""
+	for _, p := range peers {
+		p.lastMu.Lock()
+		if p.lastSyncError != "" && lastError == "" {
+			lastError = p.lastSyncError
+		}
+		if p.lastBlockReject != "" && lastReject == "" {
+			lastReject = p.lastBlockReject
+		}
+		if p.lastLocatorTip != "" && lastLocatorTip == "" {
+			lastLocatorTip = p.lastLocatorTip
+		}
+		if p.lastBlockHash != "" && lastBlockHash == "" {
+			lastBlockHash = p.lastBlockHash
+			lastBlockPrev = p.lastBlockPrev
+			lastBlockHeight = p.lastBlockHeight
+			lastBestUpdate = p.lastBestUpdate
+			lastBlockReason = p.lastBlockReason
+		}
+		p.lastMu.Unlock()
+	}
+	health := s.healthSnapshot()
+	syncStalled := false
+	peerCount := len(peers)
+	lastHeightChangeAge, _ := health["last_height_change_ago_seconds"].(float64)
+	lastSyncReqAge, _ := health["last_p2p_sync_request_ago_seconds"].(float64)
+	lastHeaderAge, _ := health["last_header_received_ago_seconds"].(float64)
+	lastBlockAge, _ := health["last_block_received_ago_seconds"].(float64)
+	lastPeerMsgAge, _ := health["last_peer_message_ago_seconds"].(float64)
+	noUsefulChainData := peerCount > 0 &&
+		lastHeaderAge > syncStaleThreshold.Seconds() &&
+		lastBlockAge > syncStaleThreshold.Seconds() &&
+		(behind || syncingPeerCount > 0 || stalePeerCount > 0)
+	if behind {
+		if lastHeightChangeAge > 90 {
+			syncStalled = true
+		}
+		if lastSyncReqAge > 45 {
+			syncStalled = true
+		}
+	}
+	if noUsefulChainData {
+		syncStalled = true
+	}
+	if peerCount == 0 {
+		status = "no_peers"
+		message = "No peers connected. Reconnecting seeds / addnodes."
+	} else if syncStalled {
+		status = "stalled"
+		message = "Node appears stalled. Reconnecting peers / requesting blocks."
+	}
+	if syncStalled {
+		message = "Node appears stalled. Reconnecting peers / requesting blocks."
+	}
+	return map[string]any{
+		"status":                          status,
+		"message":                         message,
+		"local_height":                    localHeight,
+		"local_best_hash":                 localHash,
+		"best_peer_height":                bestPeerHeight,
+		"behind":                          behind,
+		"blocks_behind":                   max32(0, bestPeerHeight-localHeight),
+		"last_requested_locator_tip_hash": lastLocatorTip,
+		"last_received_block_hash":        lastBlockHash,
+		"last_received_block_prev_hash":   lastBlockPrev,
+		"last_received_block_height":      lastBlockHeight,
+		"last_best_chain_update":          lastBestUpdate,
+		"last_block_reason":               lastBlockReason,
+		"last_sync_error":                 lastError,
+		"last_block_reject":               lastReject,
+		"sync_stalled":                    syncStalled,
+		"peer_count":                      peerCount,
+		"stale_peer_count":                stalePeerCount,
+		"syncing_peer_count":              syncingPeerCount,
+		"watchdog_running":                health["watchdog_running"],
+		"last_watchdog_tick":              health["last_watchdog_tick_time"],
+		"watchdog_last_action":            health["watchdog_last_action"],
+		"watchdog_reconnect_count":        health["watchdog_reconnect_count"],
+		"last_height_change_age":          lastHeightChangeAge,
+		"last_header_received_age":        lastHeaderAge,
+		"last_block_received_age":         lastBlockAge,
+		"last_getheaders_sent_age":        health["last_getheaders_sent_ago_seconds"],
+		"last_getblocks_sent_age":         health["last_getblocks_sent_ago_seconds"],
+		"last_peer_message_age":           lastPeerMsgAge,
+		"no_useful_chain_data":            noUsefulChainData,
+		"health":                          health,
+	}
+}
+
+func (s *Server) ForceSync(reason string) map[string]any {
+	if strings.TrimSpace(reason) == "" {
+		reason = "manual refresh"
+	}
+	s.noteSyncRequest()
+	s.log.Printf("p2p force sync requested: %s", reason)
+	if s.PeerCount() == 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		s.noteWatchdogAction("force sync with no peers: reconnecting bootstrap peers")
+		s.connectSeeds(ctx)
+		cancel()
+	}
+	s.requestSyncFromAheadPeers(true)
+	return s.SyncStatus()
+}
+
+func (s *Server) setP2PRunning(running bool) {
+	now := time.Now()
+	s.healthMu.Lock()
+	if running && s.startedAt.IsZero() {
+		s.startedAt = now
+		if s.lastHeightChg.IsZero() {
+			s.lastHeightChg = now
+		}
+	}
+	s.p2pRunning = running
+	s.healthMu.Unlock()
+}
+
+func (s *Server) setSyncRunning(running bool) {
+	now := time.Now()
+	s.healthMu.Lock()
+	s.syncRunning = running
+	if running {
+		s.lastSyncBeat = now
+	}
+	s.healthMu.Unlock()
+}
+
+func (s *Server) setWatchdogRunning(running bool) {
+	now := time.Now()
+	s.healthMu.Lock()
+	s.watchdogRun = running
+	if running {
+		s.lastWatchdog = now
+	}
+	s.healthMu.Unlock()
+}
+
+func (s *Server) noteSyncBeat() {
+	s.healthMu.Lock()
+	s.lastSyncBeat = time.Now()
+	s.healthMu.Unlock()
+}
+
+func (s *Server) noteSyncRequest() {
+	s.healthMu.Lock()
+	s.lastSyncReq = time.Now()
+	s.healthMu.Unlock()
+}
+
+func (s *Server) notePeerMessage() {
+	s.healthMu.Lock()
+	s.lastPeerMsg = time.Now()
+	s.healthMu.Unlock()
+}
+
+func (s *Server) noteHeaderMessage() {
+	s.healthMu.Lock()
+	s.lastHeaderMsg = time.Now()
+	s.healthMu.Unlock()
+}
+
+func (s *Server) noteBlockMessage() {
+	s.healthMu.Lock()
+	s.lastBlockMsg = time.Now()
+	s.healthMu.Unlock()
+}
+
+func (s *Server) noteGetHeadersSent() {
+	s.healthMu.Lock()
+	s.lastGetHeader = time.Now()
+	s.healthMu.Unlock()
+}
+
+func (s *Server) noteGetBlocksSent() {
+	s.healthMu.Lock()
+	s.lastGetBlock = time.Now()
+	s.healthMu.Unlock()
+}
+
+func (s *Server) noteWatchdogTick() {
+	s.healthMu.Lock()
+	s.lastWatchdog = time.Now()
+	s.healthMu.Unlock()
+}
+
+func (s *Server) noteWatchdogAction(action string) {
+	s.healthMu.Lock()
+	s.lastWdAction = action
+	s.healthMu.Unlock()
+}
+
+func (s *Server) addWatchdogReconnects(n int64) {
+	if n <= 0 {
+		return
+	}
+	s.healthMu.Lock()
+	s.wdReconnects += n
+	s.healthMu.Unlock()
+}
+
+func (s *Server) noteBlockConnected() {
+	now := time.Now()
+	s.healthMu.Lock()
+	s.lastBlockConn = now
+	s.lastHeightChg = now
+	s.healthMu.Unlock()
+}
+
+func (s *Server) healthSnapshot() map[string]any {
+	s.healthMu.Lock()
+	startedAt := s.startedAt
+	p2pRunning := s.p2pRunning
+	syncRunning := s.syncRunning
+	watchdogRunning := s.watchdogRun
+	lastSyncBeat := s.lastSyncBeat
+	lastSyncReq := s.lastSyncReq
+	lastPeerMsg := s.lastPeerMsg
+	lastHeaderMsg := s.lastHeaderMsg
+	lastBlockMsg := s.lastBlockMsg
+	lastGetHeader := s.lastGetHeader
+	lastGetBlock := s.lastGetBlock
+	lastWatchdog := s.lastWatchdog
+	lastWatchdogAction := s.lastWdAction
+	watchdogReconnectCount := s.wdReconnects
+	lastBlockConn := s.lastBlockConn
+	lastHeightChg := s.lastHeightChg
+	s.healthMu.Unlock()
+	return map[string]any{
+		"node_uptime_seconds":                       secondsSince(startedAt),
+		"p2p_loop_running":                          p2pRunning,
+		"sync_loop_running":                         syncRunning,
+		"watchdog_running":                          watchdogRunning,
+		"last_sync_loop_beat_time":                  unixOrZero(lastSyncBeat),
+		"last_sync_loop_beat_ago_seconds":           secondsSince(lastSyncBeat),
+		"last_p2p_sync_request_time":                unixOrZero(lastSyncReq),
+		"last_p2p_sync_request_ago_seconds":         secondsSince(lastSyncReq),
+		"last_peer_message_time":                    unixOrZero(lastPeerMsg),
+		"last_peer_message_ago_seconds":             secondsSince(lastPeerMsg),
+		"last_header_received_time":                 unixOrZero(lastHeaderMsg),
+		"last_header_received_ago_seconds":          secondsSince(lastHeaderMsg),
+		"last_block_received_time":                  unixOrZero(lastBlockMsg),
+		"last_block_received_ago_seconds":           secondsSince(lastBlockMsg),
+		"last_getheaders_sent_time":                 unixOrZero(lastGetHeader),
+		"last_getheaders_sent_ago_seconds":          secondsSince(lastGetHeader),
+		"last_getblocks_sent_time":                  unixOrZero(lastGetBlock),
+		"last_getblocks_sent_ago_seconds":           secondsSince(lastGetBlock),
+		"last_watchdog_tick_time":                   unixOrZero(lastWatchdog),
+		"last_watchdog_tick_ago_seconds":            secondsSince(lastWatchdog),
+		"watchdog_last_action":                      lastWatchdogAction,
+		"watchdog_reconnect_count":                  watchdogReconnectCount,
+		"last_successful_block_connect_time":        unixOrZero(lastBlockConn),
+		"last_successful_block_connect_ago_seconds": secondsSince(lastBlockConn),
+		"last_height_change_time":                   unixOrZero(lastHeightChg),
+		"last_height_change_ago_seconds":            secondsSince(lastHeightChg),
+	}
+}
+
+func unixOrZero(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.Unix()
+}
+
+func secondsSince(t time.Time) float64 {
+	if t.IsZero() {
+		return -1
+	}
+	return time.Since(t).Seconds()
 }
 
 func (s *Server) SetBootstrapPeers(peers []string) {
@@ -322,6 +720,8 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	}
 	s.listener = ln
+	s.setP2PRunning(true)
+	defer s.setP2PRunning(false)
 	s.log.Printf("Legacy Coin P2P listening on %s", ln.Addr())
 
 	s.wg.Add(1)
@@ -343,10 +743,62 @@ func (s *Server) Start(ctx context.Context) error {
 		s.seedLoop(ctx)
 	}()
 
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.superviseSyncLoop(ctx)
+	}()
+
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.superviseWatchdogLoop(ctx)
+	}()
+
 	<-ctx.Done()
 	_ = ln.Close()
 	s.wg.Wait()
 	return nil
+}
+
+func (s *Server) superviseSyncLoop(ctx context.Context) {
+	for ctx.Err() == nil {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					s.setSyncRunning(false)
+					s.log.Printf("p2p sync loop recovered after panic: %v", r)
+				}
+			}()
+			s.syncLoop(ctx)
+		}()
+		if ctx.Err() != nil {
+			return
+		}
+		s.setSyncRunning(false)
+		s.log.Printf("p2p sync loop stopped unexpectedly; restarting")
+		time.Sleep(time.Second)
+	}
+}
+
+func (s *Server) superviseWatchdogLoop(ctx context.Context) {
+	for ctx.Err() == nil {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					s.setWatchdogRunning(false)
+					s.log.Printf("p2p sync watchdog recovered after panic: %v", r)
+				}
+			}()
+			s.watchdogLoop(ctx)
+		}()
+		if ctx.Err() != nil {
+			return
+		}
+		s.setWatchdogRunning(false)
+		s.log.Printf("p2p sync watchdog stopped unexpectedly; restarting")
+		time.Sleep(time.Second)
+	}
 }
 
 func (s *Server) acceptLoop(ctx context.Context, ln net.Listener) {
@@ -383,6 +835,150 @@ func (s *Server) seedLoop(ctx context.Context) {
 			s.connectSeeds(ctx)
 		}
 	}
+}
+
+func (s *Server) syncLoop(ctx context.Context) {
+	s.setSyncRunning(true)
+	defer s.setSyncRunning(false)
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.noteSyncBeat()
+			s.requestSyncFromAheadPeers(false)
+		}
+	}
+}
+
+func (s *Server) watchdogLoop(ctx context.Context) {
+	s.setWatchdogRunning(true)
+	defer s.setWatchdogRunning(false)
+	ticker := time.NewTicker(syncWatchdogEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.noteWatchdogTick()
+			s.watchdogStep(ctx)
+		}
+	}
+}
+
+func (s *Server) watchdogStep(ctx context.Context) {
+	peers := s.snapshotPeers()
+	if len(peers) == 0 {
+		s.noteWatchdogAction("no peers detected; reconnecting bootstrap peers")
+		s.connectSeeds(ctx)
+		return
+	}
+
+	localHeight := int32(-1)
+	if tip := s.chain.Tip(); tip != nil {
+		localHeight = tip.Height
+	}
+	bestPeerHeight := s.BestPeerHeight()
+	behind := bestPeerHeight > localHeight
+	health := s.healthSnapshot()
+	lastHeightChangeAge, _ := health["last_height_change_ago_seconds"].(float64)
+	lastHeaderAge, _ := health["last_header_received_ago_seconds"].(float64)
+	lastBlockAge, _ := health["last_block_received_ago_seconds"].(float64)
+
+	stalled := behind && lastHeightChangeAge > syncStaleThreshold.Seconds()
+	candidateNoUsefulData := lastHeaderAge > syncStaleThreshold.Seconds() && lastBlockAge > syncStaleThreshold.Seconds()
+
+	reconnected := int64(0)
+	stalePeers := 0
+	syncingPeers := 0
+	now := time.Now()
+	for _, p := range peers {
+		p.lastMu.Lock()
+		peerHeight := p.height
+		lastSeen := p.lastSeen
+		lastHeightUpdate := p.lastHeightUpdate
+		lastSyncErr := p.lastSyncError
+		p.lastMu.Unlock()
+
+		if peerHeight > localHeight {
+			syncingPeers++
+		}
+		metaStale := !lastHeightUpdate.IsZero() && now.Sub(lastHeightUpdate) > peerStaleThreshold
+		msgStale := !lastSeen.IsZero() && now.Sub(lastSeen) > peerStaleThreshold
+		if metaStale || msgStale {
+			stalePeers++
+		}
+		if (stalled || candidateNoUsefulData) && (metaStale || msgStale || (behind && lastSyncErr != "")) {
+			_ = p.conn.Close()
+			reconnected++
+		}
+	}
+	noUsefulChainData := candidateNoUsefulData &&
+		(behind || syncingPeers > 0 || stalePeers > 0)
+
+	if behind || stalled || noUsefulChainData {
+		s.requestSyncFromAheadPeers(true)
+	}
+	if stalled || noUsefulChainData || reconnected > 0 {
+		s.connectSeeds(ctx)
+	}
+	s.addWatchdogReconnects(reconnected)
+
+	switch {
+	case stalled:
+		s.noteWatchdogAction(fmt.Sprintf("node appears stalled; forced sync requests; reconnecting %d stale peer(s)", reconnected))
+	case behind:
+		s.noteWatchdogAction(fmt.Sprintf("node behind peers by %d block(s); forced getheaders/getblocks to %d syncing peer(s)", bestPeerHeight-localHeight, syncingPeers))
+	case noUsefulChainData:
+		s.noteWatchdogAction(fmt.Sprintf("no useful chain data for %.0fs; reconnecting %d stale peer(s)", maxFloat(lastHeaderAge, lastBlockAge), reconnected))
+	case stalePeers > 0:
+		s.noteWatchdogAction(fmt.Sprintf("detected %d stale peer metadata entries; monitoring", stalePeers))
+	default:
+		s.noteWatchdogAction("watchdog healthy: peers connected and chain data flowing")
+	}
+}
+
+func (s *Server) requestSyncFromAheadPeers(force bool) {
+	for _, p := range s.snapshotPeers() {
+		_ = s.requestSyncFromPeerIfBehind(p, force)
+	}
+}
+
+func (s *Server) requestSyncFromPeerIfBehind(p *peer, force bool) error {
+	if p == nil {
+		return nil
+	}
+	localHeight := int32(-1)
+	if tip := s.chain.Tip(); tip != nil {
+		localHeight = tip.Height
+	}
+	p.lastMu.Lock()
+	peerHeight := p.height
+	lastReq := p.lastSyncRequest
+	lastHeightUpdate := p.lastHeightUpdate
+	p.lastMu.Unlock()
+	peerMetadataStale := !lastHeightUpdate.IsZero() && time.Since(lastHeightUpdate) > 2*time.Minute
+	if peerHeight <= localHeight && !force && !peerMetadataStale {
+		return nil
+	}
+	if !force && !lastReq.IsZero() && time.Since(lastReq) < 25*time.Second {
+		return nil
+	}
+	s.log.Printf("p2p sync behind peer %s: local height %d peer height %d, requesting headers/blocks", p.remote, localHeight, peerHeight)
+	s.noteSyncRequest()
+	if err := s.requestHeaders(p); err != nil {
+		p.setSyncResult(err)
+		return err
+	}
+	if err := s.requestBlocks(p); err != nil {
+		p.setSyncResult(err)
+		return err
+	}
+	p.setSyncResult(nil)
+	return nil
 }
 
 func (s *Server) connectSeeds(ctx context.Context) {
@@ -432,9 +1028,9 @@ func (s *Server) logSeedError(seed string, err error) {
 		s.seedLastLog[seed] = now
 		s.seedMu.Unlock()
 		if count == 1 {
-			s.log.Printf("🌱 DNS seed unavailable | %s | normal if seeds are offline/private test", seed)
+			s.log.Printf("рџЊ± DNS seed unavailable | %s | normal if seeds are offline/private test", seed)
 		} else {
-			s.log.Printf("🌱 DNS seed warning repeated | %s | repeats %d | suppressing noise", seed, count)
+			s.log.Printf("рџЊ± DNS seed warning repeated | %s | repeats %d | suppressing noise", seed, count)
 		}
 		return
 	}
@@ -461,9 +1057,9 @@ func (s *Server) logConnectOnlyReject(addr string) {
 		s.rejectLastLog[key] = now
 		s.rejectMu.Unlock()
 		if count == 1 {
-			s.log.Printf("🛡️ Connect-only active | rejected inbound peer %s | allowed peers only", addr)
+			s.log.Printf("рџ›ЎпёЏ Connect-only active | rejected inbound peer %s | allowed peers only", addr)
 		} else {
-			s.log.Printf("🛡️ Connect-only summary | rejected inbound peer %s | repeats %d | suppressing repeats for 5m", key, count)
+			s.log.Printf("рџ›ЎпёЏ Connect-only summary | rejected inbound peer %s | repeats %d | suppressing repeats for 5m", key, count)
 		}
 		return
 	}
@@ -494,7 +1090,7 @@ func (s *Server) unmarkOutbound(addr string) {
 
 func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 	now := time.Now()
-	p := &peer{conn: conn, outbound: outbound, remote: conn.RemoteAddr().String(), connected: now, lastSeen: now, lastPong: now}
+	p := &peer{conn: conn, outbound: outbound, remote: conn.RemoteAddr().String(), connected: now, lastSeen: now, lastPong: now, lastHeightUpdate: now}
 	defer conn.Close()
 	if s.isBanned(conn.RemoteAddr().String()) {
 		s.log.Printf("p2p rejected banned peer %s", conn.RemoteAddr())
@@ -543,6 +1139,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 		}
 		p.addBytesRecv(uint64(len(msg.Payload) + 24))
 		p.markSeen()
+		s.notePeerMessage()
 		if gotVersion && gotVerAck {
 			_ = conn.SetReadDeadline(time.Now().Add(peerIdleTimeout))
 		}
@@ -568,7 +1165,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 			if s.enforceChainID && s.chainID != "" && meta.ChainID != s.chainID {
 				s.scorePeer(p, 100, "wrong or empty chain id")
 				if s.pretty {
-					s.log.Printf("🚫 Peer rejected | %s | chain_id=%q expected=%q", conn.RemoteAddr(), meta.ChainID, s.chainID)
+					s.log.Printf("рџљ« Peer rejected | %s | chain_id=%q expected=%q", conn.RemoteAddr(), meta.ChainID, s.chainID)
 				} else {
 					s.log.Printf("p2p reject wrong-chain peer %s chain_id=%q expected=%q", conn.RemoteAddr(), meta.ChainID, s.chainID)
 				}
@@ -594,36 +1191,46 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 				}
 				name := s.peerLabel(p)
 				if s.compactHeartbeat {
-					s.log.Printf("🏓 %s pong %.1fms | peers %d | height %d | storage ✅", name, float64(rtt.Microseconds())/1000, s.PeerCount(), height)
+					s.log.Printf("рџЏ“ %s pong %.1fms | peers %d | height %d | storage вњ…", name, float64(rtt.Microseconds())/1000, s.PeerCount(), height)
 				} else {
-					s.log.Printf("🟢 PONG ← %s | latency %.1fms | height %d | connection stable", name, float64(rtt.Microseconds())/1000, height)
+					s.log.Printf("рџџў PONG в†ђ %s | latency %.1fms | height %d | connection stable", name, float64(rtt.Microseconds())/1000, height)
 				}
 			}
 		case wire.CommandBlock:
+			s.noteBlockMessage()
 			block, err := wire.ReadBlock(bytes.NewReader(msg.Payload))
 			if err != nil {
 				s.log.Printf("p2p parse block from %s: %v", conn.RemoteAddr(), err)
 				return
 			}
-			if err := s.chain.ProcessBlock(block); err != nil {
-				s.log.Printf("p2p reject block from %s: %v", conn.RemoteAddr(), err)
+			result, err := s.chain.ProcessBlockWithResult(block)
+			if err != nil {
+				p.setLastBlockReject(err.Error())
+				blockHash := "unknown"
+				if h, hashErr := s.chain.BlockHash(block); hashErr == nil {
+					blockHash = h.String()
+				}
+				s.log.Printf("p2p reject block from %s: hash=%s prev=%s reason=%v", conn.RemoteAddr(), blockHash, block.Header.PrevBlock.String(), err)
 				return
 			}
+			p.setLastBlockResult(result)
+			p.setLastBlockReject("")
 			if s.pretty {
-				height := int32(-1)
-				if tip := s.chain.Tip(); tip != nil {
-					height = tip.Height
-				}
-				s.log.Printf("📦 Block accepted | height %d | txs %d | from %s | storage ✅", height, len(block.Transactions), s.peerLabel(p))
+				s.log.Printf("📦 Block processed | status=%s | hash=%s | prev=%s | block_height=%d | parent_known=%v | extends_tip=%v | best_changed=%v | old_best=%d:%s | new_best=%d:%s | txs=%d | from=%s | reason=%s",
+					result.Status, result.Hash, result.PrevHash, result.CalculatedHeight, result.ParentKnown, result.ExtendsActiveTip, result.BestChanged, result.OldBestHeight, result.OldBestHash, result.NewBestHeight, result.NewBestHash, len(block.Transactions), s.peerLabel(p), result.Reason)
 			} else {
-				s.log.Printf("p2p accepted block from %s", conn.RemoteAddr())
+				s.log.Printf("p2p processed block from %s status=%s hash=%s height=%d best_changed=%v reason=%s", conn.RemoteAddr(), result.Status, result.Hash, result.CalculatedHeight, result.BestChanged, result.Reason)
 			}
+			if !result.Connected || !result.BestChanged {
+				continue
+			}
+			s.noteBlockConnected()
 			if s.pool != nil {
 				s.pool.RemoveForBlock(block)
 			}
-			hash, err := s.chain.BlockHash(block)
+			hash, err := chainhash.FromString(result.Hash)
 			if err == nil {
-				s.log.Printf("p2p connected block %s from %s", hash.String(), conn.RemoteAddr())
+				s.log.Printf("p2p connected active block %s height=%d from %s", hash.String(), result.NewBestHeight, conn.RemoteAddr())
 				// Relay the accepted block using the canonical Yespower block hash.
 				// Do not announce back to the peer that supplied the block.
 				s.announceBlockToPeersExcept(hash, p)
@@ -649,12 +1256,12 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 			// Relay accepted transactions onward so wallet-created transactions can
 			// propagate beyond the first peer and receivers can see pending funds.
 			if s.pretty {
-				s.log.Printf("💸 TX accepted to mempool | %s | from %s", entry.TxID, s.peerLabel(p))
+				s.log.Printf("рџ’ё TX accepted to mempool | %s | from %s", entry.TxID, s.peerLabel(p))
 			}
 			if h, err := chainhash.FromString(entry.TxID); err == nil {
 				s.announceTxToPeersExcept(h, p)
 				if s.pretty {
-					s.log.Printf("📣 TX relayed | %s | peers %d", entry.TxID, s.PeerCount())
+					s.log.Printf("рџ“Ј TX relayed | %s | peers %d", entry.TxID, s.PeerCount())
 				}
 			}
 		case wire.CommandInv:
@@ -698,6 +1305,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 				return
 			}
 		case wire.CommandHeaders:
+			s.noteHeaderMessage()
 			headers, err := wire.ReadHeadersPayload(bytes.NewReader(msg.Payload))
 			if err != nil {
 				s.log.Printf("p2p parse headers from %s: %v", conn.RemoteAddr(), err)
@@ -714,7 +1322,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 		if gotVersion && gotVerAck && !didSyncRequest {
 			didSyncRequest = true
 			if s.pretty {
-				s.log.Printf("🌐 Connected peer | %s | outbound=%v | height %d | chain_id=%s", s.peerLabel(p), outbound, p.height, p.chainID)
+				s.log.Printf("рџЊђ Connected peer | %s | outbound=%v | height %d | chain_id=%s", s.peerLabel(p), outbound, p.height, p.chainID)
 			} else {
 				s.log.Printf("p2p handshake complete with %s outbound=%v", conn.RemoteAddr(), outbound)
 			}
@@ -757,6 +1365,55 @@ func (p *peer) markPing() {
 	p.lastMu.Unlock()
 }
 
+func (p *peer) setSyncResult(err error) {
+	p.lastMu.Lock()
+	p.lastSyncRequest = time.Now()
+	if err != nil {
+		p.lastSyncError = err.Error()
+	} else {
+		p.lastSyncError = ""
+	}
+	p.lastMu.Unlock()
+}
+
+func (p *peer) setLastBlockReject(reason string) {
+	p.lastMu.Lock()
+	p.lastBlockReject = reason
+	p.lastMu.Unlock()
+}
+
+func (p *peer) setLastLocatorTip(hash string) {
+	p.lastMu.Lock()
+	p.lastLocatorTip = hash
+	p.lastSyncRequest = time.Now()
+	p.lastMu.Unlock()
+}
+
+func (p *peer) setLastBlockResult(result blockchain.BlockProcessResult) {
+	p.lastMu.Lock()
+	p.lastBlockHash = result.Hash
+	p.lastBlockPrev = result.PrevHash
+	p.lastBlockHeight = result.CalculatedHeight
+	p.lastBlockReason = result.Reason
+	if result.BestChanged {
+		p.lastBestUpdate = fmt.Sprintf("%d:%s -> %d:%s", result.OldBestHeight, result.OldBestHash, result.NewBestHeight, result.NewBestHash)
+	}
+	if result.NewBestHeight > p.height {
+		p.height = result.NewBestHeight
+		p.lastHeightUpdate = time.Now()
+	}
+	if result.Status == blockchain.BlockStatusSideChain && result.OldBestHeight < p.height {
+		p.lastSyncError = fmt.Sprintf("peer advertised height %d but sent non-connecting side-chain block %s at height %d", p.height, result.Hash, result.CalculatedHeight)
+	}
+	if result.Status == blockchain.BlockStatusOrphan && result.OldBestHeight < p.height {
+		p.lastSyncError = fmt.Sprintf("peer advertised height %d but sent block %s with unknown parent %s after local tip %s", p.height, result.Hash, result.PrevHash, result.OldBestHash)
+	}
+	if result.Connected && result.BestChanged {
+		p.lastSyncError = ""
+	}
+	p.lastMu.Unlock()
+}
+
 func (p *peer) lastActivity() (seen time.Time, pong time.Time) {
 	p.lastMu.Lock()
 	defer p.lastMu.Unlock()
@@ -796,7 +1453,7 @@ func (s *Server) pingLoop(ctx context.Context, p *peer, done <-chan struct{}) {
 			}
 			p.markPing()
 			if s.pretty && s.heartbeat && !s.compactHeartbeat {
-				s.log.Printf("🏓 PING → %s", s.peerLabel(p))
+				s.log.Printf("рџЏ“ PING в†’ %s", s.peerLabel(p))
 			}
 			if err := s.writePeerMessage(p, wire.CommandPing, nonce); err != nil {
 				s.log.Printf("p2p ping %s failed: %v", p.remote, err)
@@ -941,6 +1598,22 @@ func (p *peer) setVersionMeta(meta versionMeta) {
 	p.subver = meta.SubVer
 	p.height = meta.Height
 	p.chainID = meta.ChainID
+	p.lastHeightUpdate = time.Now()
+}
+
+func (p *peer) setAdvertisedHeight(height int32) {
+	p.lastMu.Lock()
+	if height > p.height {
+		p.height = height
+	}
+	p.lastHeightUpdate = time.Now()
+	p.lastMu.Unlock()
+}
+
+func (p *peer) markHeightMetadataSeen() {
+	p.lastMu.Lock()
+	p.lastHeightUpdate = time.Now()
+	p.lastMu.Unlock()
 }
 
 func (p *peer) addBytesSent(n uint64) {
@@ -1047,6 +1720,9 @@ func (s *Server) requestHeaders(p *peer) error {
 		return err
 	}
 	s.log.Printf("p2p send getheaders to %s locator_tip=%s", p.remote, locator[0].String())
+	s.noteSyncRequest()
+	s.noteGetHeadersSent()
+	p.setLastLocatorTip(locator[0].String())
 	return s.writePeerMessage(p, wire.CommandGetHeaders, payload)
 }
 
@@ -1060,6 +1736,9 @@ func (s *Server) requestBlocks(p *peer) error {
 		return err
 	}
 	s.log.Printf("p2p send getblocks to %s locator_tip=%s", p.remote, locator[0].String())
+	s.noteSyncRequest()
+	s.noteGetBlocksSent()
+	p.setLastLocatorTip(locator[0].String())
 	return s.writePeerMessage(p, wire.CommandGetBlocks, payload)
 }
 
@@ -1160,6 +1839,20 @@ func limitInv(inv []wire.InvVect, max int) []wire.InvVect {
 	return inv[:max]
 }
 
+func max32(a int32, b int32) int32 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func maxFloat(a float64, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 func (s *Server) announceTip(p *peer) error {
 	tip := s.chain.Tip()
 	if tip == nil || tip.Hash == "" {
@@ -1216,11 +1909,19 @@ func (s *Server) serveHeaders(p *peer, req wire.GetBlocks) error {
 
 func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error {
 	if len(headers) == 0 {
+		p.markHeightMetadataSeen()
 		return nil
+	}
+	tipHeight := int32(-1)
+	if tip := s.chain.Tip(); tip != nil {
+		tipHeight = tip.Height
 	}
 	hashes, err := s.chain.ValidateHeaderSequence(headers)
 	if err != nil {
 		return err
+	}
+	if tipHeight >= 0 {
+		p.setAdvertisedHeight(tipHeight + int32(len(hashes)))
 	}
 	want := make([]wire.InvVect, 0, len(hashes))
 	for _, hash := range hashes {
