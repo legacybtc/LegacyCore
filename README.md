@@ -22,7 +22,7 @@ If you are a normal Windows user:
    https://github.com/legacybtc/LegacyCore/releases
 
 2. Download:
-   `LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.1-infrastructure-ready.zip`
+   `LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.1.zip`
 
 3. Extract the ZIP.
 
@@ -71,7 +71,7 @@ From this `LegacyCore` repository/release:
 
 | User type | Download | What it does |
 |---|---|---|
-| Windows normal user | `LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.1-infrastructure-ready.zip` | Desktop wallet + local node |
+| Windows normal user | `LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.1.zip` | Desktop wallet + local node |
 | Linux node operator | `LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0-rc2.tar.gz` | Full node + CLI |
 | Developer | GitHub source or source ZIP | Build Core, CLI, and Wallet from source |
 
@@ -133,7 +133,7 @@ blocks.
 ## Windows Desktop Wallet: Download and Run
 
 1. Download:
-   `LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.1-infrastructure-ready.zip`
+   `LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.1.zip`
 
 2. Right-click ZIP -> Extract All.
 
@@ -270,7 +270,7 @@ Only run binaries if checksums match the official GitHub release.
 Windows PowerShell:
 
 ```powershell
-Get-FileHash .\LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.1-infrastructure-ready.zip -Algorithm SHA256
+Get-FileHash .\LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.1.zip -Algorithm SHA256
 ```
 
 Linux:
