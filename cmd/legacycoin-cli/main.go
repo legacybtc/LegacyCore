@@ -46,10 +46,15 @@ func runCLI(argv []string, stdout io.Writer, stderr io.Writer) error {
 		return fmt.Errorf("cli error: %w", err)
 	}
 	if len(rest) < 1 || rest[0] == "help" || rest[0] == "--help" || rest[0] == "-h" {
-		printHelp()
-		return nil
+	        printHelp()
+	        return nil
+	}
+	// special client-only commands
+	if len(rest) > 0 && rest[0] == "getbalance" {
+	        return runGetBalance(opts, stdout)
 	}
 	method := rest[0]
+
 	args := rest[1:]
 	params, rpcMethod, err := buildParams(method, args)
 	if err != nil {
@@ -85,9 +90,128 @@ func runCLI(argv []string, stdout io.Writer, stderr io.Writer) error {
 	}
 	fmt.Fprintln(stdout, string(out))
 	return nil
-}
+	}
+
+func rpcCall(opts cliOptions, method string, params []any) ([]byte, error) {
+	body, _ := json.Marshal(rpcReq{JSONRPC: "2.0", ID: "cli", Method: method, Params: params})
+	url := rpcURL(opts)
+	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
+	if err != nil {
+	        return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if err := applyRPCAuth(req, opts); err != nil {
+	        return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+	        return nil, err
+	}
+	defer resp.Body.Close()
+	out, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+	        return out, fmt.Errorf("RPC HTTP error %s: %s", resp.Status, strings.TrimSpace(string(out)))
+	}
+	return out, nil
+	}
+
+	// runGetBalance aggregates mature and immature balances per address.
+func runGetBalance(opts cliOptions, stdout io.Writer) error {
+	// fetch addresses
+	addOut, err := rpcCall(opts, "listaddresses", nil)
+	if err != nil {
+	        return fmt.Errorf("rpc listaddresses: %w", err)
+	}
+	var addrs []string
+	if err := json.Unmarshal(addOut, &addrs); err != nil {
+	        // try to parse standard RPC envelope
+	        var env struct{ Result any `json:"result"` }
+	        if json.Unmarshal(addOut, &env) == nil {
+	                if res, ok := env.Result.([]any); ok {
+	                        for _, v := range res {
+	                                if s, ok := v.(string); ok {
+	                                        addrs = append(addrs, s)
+	                                }
+	                        }
+	                }
+	        }
+	}
+	// fetch unspent
+	unOut, err := rpcCall(opts, "listunspent", nil)
+	if err != nil {
+	        return fmt.Errorf("rpc listunspent: %w", err)
+	}
+	var utxos []map[string]any
+	if err := json.Unmarshal(unOut, &utxos); err != nil {
+	        var env struct{ Result any `json:"result"` }
+	        if json.Unmarshal(unOut, &env) == nil {
+	                if res, ok := env.Result.([]any); ok {
+	                        for _, it := range res {
+	                                if m, ok := it.(map[string]any); ok {
+	                                        utxos = append(utxos, m)
+	                                }
+	                        }
+	                }
+	        }
+	}
+
+	// aggregate
+	type Bal struct {
+	        Mature   int64 `json:"mature_base_units"`
+	        Immature int64 `json:"immature_base_units"`
+	}
+	balances := make(map[string]Bal)
+	// initialize addresses
+	for _, a := range addrs {
+	        balances[a] = Bal{}
+	}
+	// coinbase maturity (best-effort): use 100
+	const coinbaseMaturity = 100
+	for _, u := range utxos {
+	        addr, _ := u["address"].(string)
+	        // value parsed as float64 from JSON numbers
+	        var val int64
+	        if f, ok := u["value"].(float64); ok {
+	                val = int64(f)
+	        } else if n, ok := u["value"].(int64); ok {
+	                val = n
+	        }
+	        coinbase := false
+	        if cb, ok := u["coinbase"].(bool); ok {
+	                coinbase = cb
+	        }
+	        confs := int64(0)
+	        if c, ok := u["confirmations"].(float64); ok {
+	                confs = int64(c)
+	        }
+	        b := balances[addr]
+	        if coinbase && confs > 0 && confs < coinbaseMaturity {
+	                b.Immature += val
+	        } else {
+	                b.Mature += val
+	        }
+	        balances[addr] = b
+	}
+
+	// include addresses with zero balance
+	outMap := make(map[string]map[string]any)
+	for addr, b := range balances {
+	        outMap[addr] = map[string]any{
+	                "mature_base_units":   b.Mature,
+	                "immature_base_units": b.Immature,
+	                "mature_lbtc":         amount.FormatWithTicker(b.Mature),
+	                "immature_lbtc":       amount.FormatWithTicker(b.Immature),
+	                "total_base_units":    b.Mature + b.Immature,
+	                "total_lbtc":          amount.FormatWithTicker(b.Mature + b.Immature),
+	        }
+	}
+	b, _ := json.MarshalIndent(outMap, "", "  ")
+	fmt.Fprintln(stdout, string(b))
+	return nil
+	}
 
 func parseGlobalFlags(args []string) (cliOptions, []string, error) {
+
 	var opts cliOptions
 	rest := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
@@ -216,8 +340,20 @@ func printHelp() {
 	fmt.Println("  legacycoin-cli sendtoaddress <address> 1 --yes")
 	fmt.Println("  legacycoin-cli sendtoaddress <address> 0.00000546 --yes")
 	fmt.Println("  legacycoin-cli sendtoaddress <address> 100000000 --base-units --yes")
-}
-
+	fmt.Println("  legacycoin-cli getbalance")
+	fmt.Println()
+	fmt.Println("RPC commands (grouped, short descriptions):")
+	fmt.Println("  Node: getinfo, gethealth, getreadiness, getselfcheck, getblockchaininfo, getchainparams, getbootstrapinfo")
+	fmt.Println("  Network: getnetworkinfo, getpeerinfo, getconnectioncount, addnode, disconnectnode, getnetworkhashps, getchaintiming")
+	fmt.Println("  Mining: getmininginfo, getminerstatus, startminer, stopminer, restartminer, benchmarkminer, autotuneminer, setminerthreads, configureminer, generate, getblocktemplate, submitblock")
+	fmt.Println("  Blocks: getblockcount, getbestblockhash, getblockhash, getblock, gettxout, gettxoutsetinfo, getblocklocator, disconnecttip")
+	fmt.Println("  Mempool: getrawmempool, getmempoolinfo, getmempoolentry, sendrawtransaction")
+	fmt.Println("  Wallet: setupwallet, getminingaddress, setminingaddress, getwalletsummary, getwalletinfo, listaddresses, listunspent, listimmature, getbalance (CLI helper), backupwallet, dumpwallet")
+	fmt.Println("  Keys: dumpprivkey, importprivkey")
+	fmt.Println("  Transactions: sendtoaddress, sendtoaddressraw, sendfromaddress, sendfromaddressraw, sendrawtransaction")
+	fmt.Println("  Tokens: sendtokendeploy, sendtokendeploycurve, sendtokentransfer, sendtokenburn, sendtokenbuy, sendtokensell")
+	fmt.Println("  Utilities: tobaseunits, frombaseunits, encryptwallet, walletpassphrase, walletlock, sethdseed, stop, doctor")
+	}
 func buildParams(method string, args []string) ([]any, string, error) {
 	switch method {
 	case "walletpassphrase":

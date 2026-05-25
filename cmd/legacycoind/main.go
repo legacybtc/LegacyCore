@@ -66,64 +66,7 @@ Usage:
   legacycoind mining-address
   legacycoind mineblock [threads] [pubkeyhash-hex]
 
-RPC:
-  getinfo
-  gethealth
-  getreadiness
-  getselfcheck
-  getchainparams
-  getbootstrapinfo
-  getnodeconfig
-  getscriptstatus
-  getlaunchchecklist
-  getpolicy
-  getlaunchstatus
-  getblockcount
-  getbestblockhash
-  getblockhash
-  getblock
-  getblocktemplate
-  submitblock
-  disconnecttip
-  generate
-  startminer
-  stopminer
-  doctor
-  getnetworkinfo
-  getpeerinfo
-  getconnectioncount
-  addnode
-  disconnectnode
-  getnetworkhashps
-  getchaintiming
-  getdifficulty
-  getblocklocator
-  gettxout
-  gettxoutsetinfo
-  getnewaddress
-  getnewhybridaddress
-  listaddresses
-  listunspent
-  backupwallet
-  dumpwallet
-  dumpprivkey
-  importprivkey
-  sendtoaddress     (human LBTC amounts by default, e.g. 1 = 1 LBTC)
-  sendtoaddressraw  (developer base-unit mode)
-  sendfromaddress    (human LBTC amounts by default)
-  sendfromaddressraw (developer base-unit mode)
-  tobaseunits
-  frombaseunits
-  encryptwallet
-  walletpassphrase
-  walletlock
-  getwalletinfo
-  sethdseed
-  sendrawtransaction
-  getrawmempool
-  getmempoolinfo
-  getmempoolentry
-  stop`)
+RPC: use legacycoin-cli for RPC methods. Run legacycoin-cli help for the full RPC list`)
 }
 
 func printParams() {
