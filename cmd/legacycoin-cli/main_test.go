@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -78,5 +79,103 @@ func TestRunCLIExplicitAuth(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), `"ok": true`) {
 		t.Fatalf("out=%s", out.String())
+	}
+}
+
+func TestBuildParamsSendManyEscapedJSON(t *testing.T) {
+	params, method, err := buildParams("sendmany", []string{
+		"",
+		"{\\\"LfP4QmiYvhgv5JBTqm6iiTadHQg41xve3F\\\":0.0001,\\\"LhyDoWS7RscYSj6G3jz8x7fy8Fq9e6taRB\\\":0.0002}",
+	})
+	if err != nil {
+		t.Fatalf("buildParams sendmany: %v", err)
+	}
+	if method != "sendmany" {
+		t.Fatalf("method=%s", method)
+	}
+	if len(params) != 2 {
+		t.Fatalf("params len=%d", len(params))
+	}
+	obj, ok := params[1].(map[string]any)
+	if !ok {
+		t.Fatalf("outputs type=%T", params[1])
+	}
+	if len(obj) != 2 {
+		t.Fatalf("outputs=%v", obj)
+	}
+}
+
+func TestBuildParamsSendManyRaw(t *testing.T) {
+	params, method, err := buildParams("sendmanyraw", []string{
+		"",
+		`{"LfP4QmiYvhgv5JBTqm6iiTadHQg41xve3F":10000}`,
+	})
+	if err != nil {
+		t.Fatalf("buildParams sendmanyraw: %v", err)
+	}
+	if method != "sendmanyraw" {
+		t.Fatalf("method=%s", method)
+	}
+	if len(params) != 2 {
+		t.Fatalf("params len=%d", len(params))
+	}
+	encoded, err := json.Marshal(params[1])
+	if err != nil {
+		t.Fatalf("marshal outputs: %v", err)
+	}
+	if !strings.Contains(string(encoded), "10000") {
+		t.Fatalf("unexpected outputs: %s", string(encoded))
+	}
+}
+
+func TestParseSendManyOutputsArgBareKeys(t *testing.T) {
+	out, err := parseSendManyOutputsArg("{LfP4QmiYvhgv5JBTqm6iiTadHQg41xve3F:0.0001,LhyDoWS7RscYSj6G3jz8x7fy8Fq9e6taRB:0.0002}")
+	if err != nil {
+		t.Fatalf("parseSendManyOutputsArg: %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("outputs=%v", out)
+	}
+}
+
+func TestBuildParamsSendManySplitFragments(t *testing.T) {
+	params, method, err := buildParams("sendmany", []string{
+		"",
+		"{LfP4QmiYvhgv5JBTqm6iiTadHQg41xve3F:0.0001",
+		"LhyDoWS7RscYSj6G3jz8x7fy8Fq9e6taRB:0.0002}",
+	})
+	if err != nil {
+		t.Fatalf("buildParams sendmany split fragments: %v", err)
+	}
+	if method != "sendmany" {
+		t.Fatalf("method=%s", method)
+	}
+	if len(params) != 2 {
+		t.Fatalf("params len=%d", len(params))
+	}
+	out, ok := params[1].(map[string]any)
+	if !ok {
+		t.Fatalf("outputs type=%T", params[1])
+	}
+	if len(out) != 2 {
+		t.Fatalf("outputs=%v", out)
+	}
+}
+
+func TestBuildParamsSendManyWithoutAccountArg(t *testing.T) {
+	params, method, err := buildParams("sendmany", []string{
+		`{"LfP4QmiYvhgv5JBTqm6iiTadHQg41xve3F":0.0001}`,
+	})
+	if err != nil {
+		t.Fatalf("buildParams sendmany no-account: %v", err)
+	}
+	if method != "sendmany" {
+		t.Fatalf("method=%s", method)
+	}
+	if len(params) != 2 {
+		t.Fatalf("params len=%d", len(params))
+	}
+	if account, ok := params[0].(string); !ok || account != "" {
+		t.Fatalf("account=%v", params[0])
 	}
 }

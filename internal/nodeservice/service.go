@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -36,13 +38,18 @@ import (
 )
 
 type Service struct {
-	mu      sync.Mutex
-	dataDir string
-	node    *node.Node
-	ctx     context.Context
-	cancel  context.CancelFunc
-	err     error
-	started time.Time
+	mu           sync.Mutex
+	dataDir      string
+	node         *node.Node
+	ctx          context.Context
+	cancel       context.CancelFunc
+	done         chan struct{}
+	err          error
+	started      time.Time
+	stopped      time.Time
+	stopping     bool
+	lastStartErr string
+	lastStopErr  string
 
 	minerMu                 sync.Mutex
 	minerActive             bool
@@ -66,6 +73,11 @@ type Service struct {
 	minerRewardAddress      string
 	minerSessionHashes      uint64
 	minerStopReason         string
+
+	lastRPCProbe        rpcPortProbe
+	lastRPCProbeAt      time.Time
+	lastRPCProbeDataDir string
+	lastRPCProbeOwned   bool
 }
 
 const (
@@ -76,11 +88,22 @@ const (
 )
 
 type Status struct {
-	Running   bool   `json:"running"`
-	Starting  bool   `json:"starting"`
-	Error     string `json:"error,omitempty"`
-	DataDir   string `json:"data_dir"`
-	UptimeSec int64  `json:"uptime_seconds"`
+	Running        bool   `json:"running"`
+	Starting       bool   `json:"starting"`
+	Error          string `json:"error,omitempty"`
+	DataDir        string `json:"data_dir"`
+	UptimeSec      int64  `json:"uptime_seconds"`
+	Stopping       bool   `json:"stopping"`
+	PID            int    `json:"internal_node_pid,omitempty"`
+	WalletOwned    bool   `json:"wallet_owned"`
+	LastStartError string `json:"last_start_error,omitempty"`
+	LastStopError  string `json:"last_stop_error,omitempty"`
+	RPCPortInUse   bool   `json:"rpc_port_in_use"`
+	RPCPortState   string `json:"rpc_port_state,omitempty"`
+	RPCPortMessage string `json:"rpc_port_message,omitempty"`
+	RPCPortChainID string `json:"rpc_port_chain_id,omitempty"`
+	RPCPortPID     int    `json:"rpc_port_pid,omitempty"`
+	RPCPortProcess string `json:"rpc_port_process,omitempty"`
 }
 
 type walletTxRecord struct {
@@ -111,7 +134,197 @@ func New(dataDir string) *Service {
 	return &Service{dataDir: dataDir}
 }
 
-func requiredPortsAvailable() error {
+type rpcPortProbe struct {
+	InUse      bool
+	State      string
+	Message    string
+	ChainID    string
+	Compatible bool
+	PID        int
+	Process    string
+}
+
+func probeRPCPort(dataDir string, walletOwns bool) rpcPortProbe {
+	addr := fmt.Sprintf("127.0.0.1:%d", chaincfg.MainNet.RPCPort)
+	conn, err := net.DialTimeout("tcp", addr, 600*time.Millisecond)
+	if err != nil {
+		return rpcPortProbe{
+			InUse:   false,
+			State:   "free",
+			Message: "RPC port is available",
+		}
+	}
+	_ = conn.Close()
+	if walletOwns {
+		return rpcPortProbe{
+			InUse:      true,
+			State:      "wallet_internal",
+			Message:    "wallet-managed internal node owns RPC port",
+			ChainID:    chaincfg.MainNet.ChainID,
+			Compatible: true,
+			PID:        os.Getpid(),
+			Process:    filepath.Base(os.Args[0]),
+		}
+	}
+	ownerPID, ownerProcess := rpcPortOwner(chaincfg.MainNet.RPCPort)
+	info, callErr := probeLocalRPCNetworkInfo(dataDir)
+	if callErr != nil {
+		msg := strings.ToLower(callErr.Error())
+		state := "unknown"
+		hint := "RPC port is in use by another process"
+		if strings.Contains(msg, "401") || strings.Contains(msg, "unauthorized") {
+			state = "external_auth_required"
+			hint = "RPC port is in use by a node that requires different RPC credentials"
+		}
+		return rpcPortProbe{
+			InUse:   true,
+			State:   state,
+			Message: hint,
+			PID:     ownerPID,
+			Process: ownerProcess,
+		}
+	}
+	chainID, _ := info["chain_id"].(string)
+	if chainID == "" {
+		chainID, _ = info["chain"].(string)
+	}
+	if chainID == "" {
+		if genesis, _ := info["genesis_hash"].(string); strings.EqualFold(genesis, chaincfg.MainNet.GenesisHash) {
+			chainID = chaincfg.MainNet.ChainID
+		}
+	}
+	if chainID == "" {
+		if versionText := strings.ToLower(fmt.Sprint(info["version"])); strings.Contains(versionText, "legacy core") {
+			chainID = chaincfg.MainNet.ChainID
+		}
+	}
+	compatible := strings.EqualFold(chainID, chaincfg.MainNet.ChainID)
+	state := "external_legacy_incompatible"
+	message := "RPC port is in use by a Legacy RPC server with a different chain identity"
+	if compatible {
+		state = "external_legacy_compatible"
+		message = "RPC port is in use by a compatible Legacy Core node"
+	}
+	return rpcPortProbe{
+		InUse:      true,
+		State:      state,
+		Message:    message,
+		ChainID:    chainID,
+		Compatible: compatible,
+		PID:        ownerPID,
+		Process:    ownerProcess,
+	}
+}
+
+func rpcPortOwner(port uint16) (int, string) {
+	if runtime.GOOS != "windows" {
+		return 0, ""
+	}
+	out, err := runCommandOutput("netstat", "-ano", "-p", "tcp")
+	if err != nil {
+		return 0, ""
+	}
+	target := fmt.Sprintf("127.0.0.1:%d", port)
+	lines := strings.Split(string(out), "\n")
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 5 {
+			continue
+		}
+		if !strings.EqualFold(fields[0], "TCP") {
+			continue
+		}
+		local := fields[1]
+		state := strings.ToUpper(fields[3])
+		pidRaw := fields[4]
+		if state != "LISTENING" || !strings.EqualFold(local, target) {
+			continue
+		}
+		pid, err := strconv.Atoi(pidRaw)
+		if err != nil || pid <= 0 {
+			return 0, ""
+		}
+		return pid, processNameForPID(pid)
+	}
+	return 0, ""
+}
+
+func processNameForPID(pid int) string {
+	if runtime.GOOS != "windows" || pid <= 0 {
+		return ""
+	}
+	out, err := runCommandOutput("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid), "/FO", "CSV", "/NH")
+	if err != nil {
+		return ""
+	}
+	line := strings.TrimSpace(string(out))
+	if line == "" || strings.EqualFold(line, "INFO: No tasks are running which match the specified criteria.") {
+		return ""
+	}
+	parts := strings.Split(line, "\",\"")
+	if len(parts) == 0 {
+		return ""
+	}
+	name := strings.Trim(parts[0], "\"")
+	return strings.TrimSpace(name)
+}
+
+func probeLocalRPCNetworkInfo(dataDir string) (map[string]any, error) {
+	reqBody := map[string]any{
+		"jsonrpc": "1.0",
+		"id":      "wallet-port-probe",
+		"method":  "getnetworkinfo",
+		"params":  []any{},
+	}
+	encoded, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, err
+	}
+	auth, err := config.LoadRPCAuth(filepath.Join(dataDir, config.ConfigFile))
+	if err != nil {
+		return nil, err
+	}
+	if !auth.Enabled {
+		cookieAuth, cookieErr := config.LoadRPCCookieForDataDir(dataDir)
+		if cookieErr == nil && cookieAuth.Enabled {
+			auth = cookieAuth
+		}
+	}
+	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://127.0.0.1:%d/", chaincfg.MainNet.RPCPort), bytes.NewReader(encoded))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "text/plain")
+	if auth.Enabled {
+		req.SetBasicAuth(auth.User, auth.Password)
+	}
+	client := &http.Client{Timeout: 1200 * time.Millisecond}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("rpc status %d", resp.StatusCode)
+	}
+	var payload struct {
+		Result map[string]any `json:"result"`
+		Error  any            `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	if payload.Error != nil {
+		return nil, fmt.Errorf("rpc error: %v", payload.Error)
+	}
+	return payload.Result, nil
+}
+
+func requiredPortsAvailable(dataDir string, walletOwns bool) error {
 	checks := []struct {
 		network string
 		addr    string
@@ -121,6 +334,33 @@ func requiredPortsAvailable() error {
 		{"tcp", fmt.Sprintf(":%d", chaincfg.MainNet.DefaultPort), "P2P"},
 	}
 	for _, check := range checks {
+		if check.label == "RPC" {
+			rpcProbe := probeRPCPort(dataDir, walletOwns)
+			if rpcProbe.InUse {
+				ownerInfo := ""
+				if rpcProbe.PID > 0 {
+					if rpcProbe.Process != "" {
+						ownerInfo = fmt.Sprintf(" owner=%s pid=%d", rpcProbe.Process, rpcProbe.PID)
+					} else {
+						ownerInfo = fmt.Sprintf(" pid=%d", rpcProbe.PID)
+					}
+				} else if rpcProbe.Process != "" {
+					ownerInfo = fmt.Sprintf(" owner=%s", rpcProbe.Process)
+				}
+				switch rpcProbe.State {
+				case "external_legacy_compatible":
+					return fmt.Errorf("RPC 127.0.0.1:%d is already in use by a compatible Legacy Core node (%s)%s. Use that node in headless mode or stop it before starting the wallet-managed internal node", chaincfg.MainNet.RPCPort, rpcProbe.ChainID, ownerInfo)
+				case "external_legacy_incompatible":
+					return fmt.Errorf("RPC 127.0.0.1:%d is already in use by an incompatible Legacy node (%s)%s. Stop that node or change RPC bind settings", chaincfg.MainNet.RPCPort, rpcProbe.ChainID, ownerInfo)
+				case "external_auth_required":
+					return fmt.Errorf("RPC 127.0.0.1:%d is already in use by a node that requires different RPC credentials%s. Stop the existing node or use matching credentials", chaincfg.MainNet.RPCPort, ownerInfo)
+				case "wallet_internal":
+					return fmt.Errorf("wallet-managed internal node is already using RPC 127.0.0.1:%d%s", chaincfg.MainNet.RPCPort, ownerInfo)
+				default:
+					return fmt.Errorf("Legacy Core or another process is already using the required port (%s %s)%s", check.label, check.addr, ownerInfo)
+				}
+			}
+		}
 		ln, err := net.Listen(check.network, check.addr)
 		if err != nil {
 			return fmt.Errorf("Legacy Core or another process is already using the required port (%s %s)", check.label, check.addr)
@@ -131,6 +371,10 @@ func requiredPortsAvailable() error {
 }
 
 func (s *Service) DataDir() string { return s.dataDir }
+
+func (s *Service) InstanceID() string {
+	return fmt.Sprintf("%p", s)
+}
 
 func (s *Service) WalletExists() bool {
 	info, err := os.Stat(filepath.Join(s.dataDir, "wallet.json"))
@@ -193,57 +437,207 @@ func (s *Service) ImportWallet(seedHex, passphrase string) (map[string]any, erro
 
 func (s *Service) Start() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.node != nil {
+		s.mu.Unlock()
 		return nil
 	}
-	if err := requiredPortsAvailable(); err != nil {
+	s.stopping = false
+	if err := requiredPortsAvailable(s.dataDir, false); err != nil {
 		s.err = err
+		s.lastStartErr = err.Error()
+		s.mu.Unlock()
 		return err
 	}
 	n, err := node.NewWithDataDir(s.dataDir)
 	if err != nil {
 		s.err = err
+		s.lastStartErr = err.Error()
+		s.mu.Unlock()
 		return err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
 	s.node = n
 	s.ctx = ctx
 	s.cancel = cancel
+	s.done = done
 	s.err = nil
 	s.started = time.Now()
+	s.stopping = false
+	s.lastStartErr = ""
+	dataDir := s.dataDir
+	s.mu.Unlock()
+
 	go func() {
 		err := n.Run(ctx, cancel)
 		s.mu.Lock()
-		s.err = err
+		if err != nil && !errors.Is(err, context.Canceled) {
+			s.err = err
+		} else {
+			s.err = nil
+		}
 		s.node = nil
 		s.cancel = nil
+		s.ctx = nil
+		s.stopped = time.Now()
+		s.stopping = false
+		if s.done != nil {
+			close(s.done)
+			s.done = nil
+		}
 		s.mu.Unlock()
 	}()
-	return nil
+
+	return s.waitForRPCReady(dataDir, done, 6*time.Second)
+}
+
+func (s *Service) waitForRPCReady(dataDir string, done <-chan struct{}, timeout time.Duration) error {
+	if timeout <= 0 {
+		return nil
+	}
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(120 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			s.mu.Lock()
+			err := s.err
+			s.mu.Unlock()
+			if err != nil {
+				return err
+			}
+			return fmt.Errorf("internal node exited during startup")
+		case <-ticker.C:
+			probe := probeRPCPort(dataDir, true)
+			if probe.InUse && probe.State == "wallet_internal" {
+				return nil
+			}
+		case <-deadline.C:
+			// Keep startup non-blocking for slower systems once the process is alive.
+			return nil
+		}
+	}
 }
 
 func (s *Service) Stop() {
+	_ = s.StopWithReport("stop requested", 8*time.Second)
+}
+
+func (s *Service) StopWithReport(reason string, timeout time.Duration) map[string]any {
 	s.mu.Lock()
 	cancel := s.cancel
+	done := s.done
+	running := s.node != nil
+	s.stopping = running
 	s.mu.Unlock()
 	_, _ = s.StopMiner()
 	if cancel != nil {
 		cancel()
 	}
+	out := map[string]any{
+		"requested":    true,
+		"reason":       reason,
+		"was_running":  running,
+		"stopped":      false,
+		"timed_out":    false,
+		"rpc_port":     chaincfg.MainNet.RPCPort,
+		"internal_pid": 0,
+	}
+	if running {
+		out["internal_pid"] = os.Getpid()
+	}
+	if done == nil {
+		s.mu.Lock()
+		s.stopping = false
+		s.lastStopErr = ""
+		s.stopped = time.Now()
+		s.mu.Unlock()
+		out["stopped"] = true
+		return out
+	}
+	if timeout <= 0 {
+		timeout = 8 * time.Second
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		s.mu.Lock()
+		s.lastStopErr = ""
+		s.stopping = false
+		s.stopped = time.Now()
+		s.mu.Unlock()
+		out["stopped"] = true
+	case <-timer.C:
+		s.mu.Lock()
+		s.stopping = false
+		s.lastStopErr = "timed out waiting for node shutdown"
+		s.mu.Unlock()
+		out["timed_out"] = true
+		out["error"] = "timed out waiting for node shutdown"
+	}
+	return out
 }
 
 func (s *Service) Status() Status {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	st := Status{Running: s.node != nil, DataDir: s.dataDir}
+	st := Status{
+		Running:        s.node != nil,
+		Starting:       false,
+		Stopping:       s.stopping,
+		DataDir:        s.dataDir,
+		WalletOwned:    s.node != nil,
+		LastStartError: s.lastStartErr,
+		LastStopError:  s.lastStopErr,
+	}
 	if s.node != nil {
 		st.UptimeSec = int64(time.Since(s.started).Seconds())
+		st.PID = os.Getpid()
 	}
 	if s.err != nil {
 		st.Error = s.err.Error()
 	}
+	dataDir := s.dataDir
+	walletOwns := s.node != nil
+	s.mu.Unlock()
+	rpcProbe := s.cachedRPCProbe(dataDir, walletOwns)
+	st.RPCPortInUse = rpcProbe.InUse
+	st.RPCPortState = rpcProbe.State
+	st.RPCPortMessage = rpcProbe.Message
+	st.RPCPortChainID = rpcProbe.ChainID
+	st.RPCPortPID = rpcProbe.PID
+	st.RPCPortProcess = rpcProbe.Process
 	return st
+}
+
+func (s *Service) cachedRPCProbe(dataDir string, walletOwns bool) rpcPortProbe {
+	now := time.Now()
+	ttl := 5 * time.Second
+	if walletOwns {
+		ttl = 2 * time.Second
+	}
+	s.mu.Lock()
+	if s.lastRPCProbeAt.IsZero() == false &&
+		now.Sub(s.lastRPCProbeAt) < ttl &&
+		s.lastRPCProbeDataDir == dataDir &&
+		s.lastRPCProbeOwned == walletOwns {
+		probe := s.lastRPCProbe
+		s.mu.Unlock()
+		return probe
+	}
+	s.mu.Unlock()
+
+	probe := probeRPCPort(dataDir, walletOwns)
+
+	s.mu.Lock()
+	s.lastRPCProbe = probe
+	s.lastRPCProbeAt = now
+	s.lastRPCProbeDataDir = dataDir
+	s.lastRPCProbeOwned = walletOwns
+	s.mu.Unlock()
+	return probe
 }
 
 func (s *Service) current() (*node.Node, error) {
@@ -1043,13 +1437,106 @@ func (s *Service) GetMinerStatus() (map[string]any, error) {
 	}, nil
 }
 
-func (s *Service) StartMiner(threads int) (map[string]any, error) {
+func (s *Service) SetDefaultMiningAddress(addr string) (map[string]any, error) {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		s.minerMu.Lock()
+		s.minerRewardAddress = ""
+		s.minerRewardHashHex = ""
+		s.minerMu.Unlock()
+		return map[string]any{"default_mining_address": "", "message": "default mining address cleared"}, nil
+	}
+	if err := validateLegacyAddress(addr); err != nil {
+		return nil, fmt.Errorf("invalid mining address")
+	}
 	n, err := s.current()
+	if err == nil && !s.walletOwnsAddress(n, addr) {
+		return nil, fmt.Errorf("address is not owned by this wallet")
+	}
+	pubHash, err := decodeMiningAddressHash(addr)
 	if err != nil {
 		return nil, err
 	}
+	s.minerMu.Lock()
+	s.minerRewardAddress = addr
+	s.minerRewardHashHex = hex.EncodeToString(pubHash)
+	s.minerMu.Unlock()
+	return map[string]any{"default_mining_address": addr, "pubkey_hash_hex": hex.EncodeToString(pubHash)}, nil
+}
+
+func decodeMiningAddressHash(addr string) ([]byte, error) {
+	if hash, err := address.DecodeHybridAddress(addr); err == nil && len(hash) == 20 {
+		return hash, nil
+	}
+	version, payload, err := address.DecodeBase58Check(addr)
+	if err != nil || version != chaincfg.PublicKeyHashVersion || len(payload) != 20 {
+		return nil, fmt.Errorf("invalid mining address")
+	}
+	return payload, nil
+}
+
+func (s *Service) resolveMiningAddress(n *node.Node) (wallet.MiningAddressInfo, error) {
+	s.minerMu.Lock()
+	preferredAddress := strings.TrimSpace(s.minerRewardAddress)
+	preferredHash := strings.TrimSpace(s.minerRewardHashHex)
+	s.minerMu.Unlock()
+	if preferredAddress != "" {
+		pubHash := []byte(nil)
+		if preferredHash != "" {
+			decoded, err := hex.DecodeString(preferredHash)
+			if err == nil && len(decoded) == 20 {
+				pubHash = decoded
+			}
+		}
+		if pubHash == nil {
+			decoded, err := decodeMiningAddressHash(preferredAddress)
+			if err == nil {
+				pubHash = decoded
+			}
+		}
+		if pubHash != nil && s.walletOwnsAddress(n, preferredAddress) {
+			return wallet.MiningAddressInfo{Address: preferredAddress, PubKeyHashHex: hex.EncodeToString(pubHash)}, nil
+		}
+	}
+	addrs := n.Wallet().ListAddresses()
+	for i := len(addrs) - 1; i >= 0; i-- {
+		addr := strings.TrimSpace(addrs[i])
+		if addr == "" {
+			continue
+		}
+		pubHash, err := decodeMiningAddressHash(addr)
+		if err != nil {
+			continue
+		}
+		return wallet.MiningAddressInfo{Address: addr, PubKeyHashHex: hex.EncodeToString(pubHash)}, nil
+	}
+	return n.Wallet().NewMiningAddress()
+}
+
+func (s *Service) StartMiner(threads int) (map[string]any, error) {
+	n, err := s.current()
+	if err != nil {
+		s.setMinerStartBlocked("node not running", "mining cannot start: no node running")
+		return nil, fmt.Errorf("mining cannot start: no node running")
+	}
 	if threads <= 0 {
 		threads = 1
+	}
+	if reason := s.miningPauseReason(n); reason != "" {
+		switch reason {
+		case "no peers":
+			s.setMinerStartBlocked(reason, "mining cannot start: no peers connected")
+			return nil, fmt.Errorf("mining cannot start: no peers connected")
+		case "syncing":
+			s.setMinerStartBlocked(reason, "mining cannot start: node is still syncing")
+			return nil, fmt.Errorf("mining cannot start: node is still syncing")
+		case "node stale":
+			s.setMinerStartBlocked(reason, "mining cannot start: node appears stalled")
+			return nil, fmt.Errorf("mining cannot start: node appears stalled")
+		default:
+			s.setMinerStartBlocked(reason, fmt.Sprintf("mining cannot start: %s", reason))
+			return nil, fmt.Errorf("mining cannot start: %s", reason)
+		}
 	}
 	s.minerMu.Lock()
 	if s.minerActive {
@@ -1057,14 +1544,21 @@ func (s *Service) StartMiner(threads int) (map[string]any, error) {
 		s.minerMu.Unlock()
 		return map[string]any{"active_mining": true, "threads": activeThreads, "message": "miner already running"}, nil
 	}
-	miningInfo, err := n.Wallet().NewMiningAddress()
+	miningInfo, err := s.resolveMiningAddress(n)
 	if err != nil {
 		s.minerMu.Unlock()
-		return nil, err
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "locked") {
+			s.setMinerStartBlocked("wallet locked", "mining cannot start: wallet locked and no reusable mining address is available")
+			return nil, fmt.Errorf("mining cannot start: wallet locked and no reusable mining address is available")
+		}
+		s.setMinerStartBlocked("address unavailable", fmt.Sprintf("mining cannot start: %v", err))
+		return nil, fmt.Errorf("mining cannot start: %w", err)
 	}
 	pubHash, err := hex.DecodeString(miningInfo.PubKeyHashHex)
 	if err != nil || len(pubHash) != 20 {
 		s.minerMu.Unlock()
+		s.setMinerStartBlocked("invalid mining address", "mining cannot start: invalid mining pubkey hash")
 		return nil, fmt.Errorf("invalid mining pubkey hash")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1111,6 +1605,18 @@ func (s *Service) StopMiner() (map[string]any, error) {
 	s.minerStopReason = "stopped by user"
 	s.minerMu.Unlock()
 	return map[string]any{"active_mining": false, "was_active": active, "session_blocks": blocks, "last_block_hash": last, "last_stop_reason": "stopped by user"}, nil
+}
+
+func (s *Service) setMinerStartBlocked(reason, message string) {
+	s.minerMu.Lock()
+	defer s.minerMu.Unlock()
+	s.minerEnabled = false
+	s.minerLoopRunning = false
+	s.minerPausedReason = strings.TrimSpace(reason)
+	s.minerLastError = strings.TrimSpace(message)
+	if s.minerStopReason == "" {
+		s.minerStopReason = strings.TrimSpace(reason)
+	}
 }
 
 func (s *Service) AddNode(addr string) error {
@@ -2212,9 +2718,6 @@ func (s *Service) miningPauseReason(n *node.Node) string {
 	}
 	if stalled, _ := status["sync_stalled"].(bool); stalled {
 		return "node stale"
-	}
-	if winfo := n.Wallet().SecurityInfo(); winfo["locked"] == true {
-		return "wallet locked"
 	}
 	return ""
 }

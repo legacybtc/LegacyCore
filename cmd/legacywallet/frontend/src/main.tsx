@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Activity,
@@ -37,6 +37,7 @@ type SettingsShape = {
   startNodeOnLaunch: boolean;
   stopNodeOnExit: boolean;
   defaultThreads: number;
+  defaultMiningAddress?: string;
   theme: string;
   network?: { mode: string; nodes: string[] };
   launchpad?: { apiUrl: string };
@@ -47,7 +48,9 @@ type Backend = {
   CreateWallet(passphrase: string): Promise<Dict>;
   ImportWallet(seedHex: string, passphrase: string): Promise<Dict>;
   StartNode(): Promise<void>;
-  StopNode(): Promise<string>;
+  StopNode(): Promise<Dict>;
+  RestartInternalNode(): Promise<Dict>;
+  OpenLifecycleLog(): Promise<Dict>;
   WindowMinimise(): Promise<void>;
   WindowToggleMaximise(): Promise<void>;
   Quit(): Promise<void>;
@@ -60,6 +63,7 @@ type Backend = {
   GetNewAddress(): Promise<string>;
   ListReceiveAddresses(): Promise<string[]>;
   GetDefaultAddress(): Promise<string>;
+  SetDefaultMiningAddress(address: string): Promise<Dict>;
   SendToAddress(to: string, amount: string, fee: string): Promise<Dict>;
   SendTokenDeploy(op: Dict, fee: string): Promise<Dict>;
   SendTokenTransfer(op: Dict, fee: string): Promise<Dict>;
@@ -84,6 +88,7 @@ type Backend = {
   TestNodeConnection(node: string): Promise<Dict>;
   TestConfiguredNodes(): Promise<Dict[]>;
   ReconnectPeers(): Promise<Dict>;
+  DisconnectNode(node: string): Promise<Dict>;
   GetChainTiming(): Promise<Dict>;
   Doctor(): Promise<Dict>;
   CheckStorage(): Promise<Dict>;
@@ -132,14 +137,19 @@ function App() {
   const [tab, setTab] = useState("overview");
   const [toast, setToast] = useState("");
   const [busy, setBusy] = useState(false);
+  const refreshInFlight = useRef(false);
   const [displayMode, setDisplayMode] = useState<"comfortable" | "compact">(() => (localStorage.getItem("legacy-display-mode") as any) || "compact");
   const [advancedMode, setAdvancedMode] = useState(() => localStorage.getItem("legacy-advanced-mode") === "1");
 
   async function refresh() {
+    if (refreshInFlight.current) return;
+    refreshInFlight.current = true;
     try {
       setSnap(await api().Snapshot());
     } catch (e) {
       setToast(cleanError(e));
+    } finally {
+      refreshInFlight.current = false;
     }
   }
 
@@ -200,6 +210,7 @@ function App() {
 
   const running = Boolean(snap?.node?.running);
   const walletLocked = Boolean(snap?.wallet?.wallet?.locked);
+  const portConflict = portConflictMessage(snap?.node);
   function toggleDisplayMode() {
     const next = displayMode === "compact" ? "comfortable" : "compact";
     setDisplayMode(next);
@@ -243,7 +254,7 @@ function App() {
         <section className="workspace">
           <header>
             <div>
-              <p className="eyebrow">Legacy Wallet 1.0.1</p>
+              <p className="eyebrow">Legacy Wallet 1.0.2</p>
               <h2>{tabs.find(([id]) => id === tab)?.[2] || "Overview"}</h2>
             </div>
             <div className="toolbar">
@@ -258,7 +269,17 @@ function App() {
               </button>
             </div>
           </header>
-          {snap?.node?.error && <Notice tone="danger" text={`${snap.node.error}. Please close the old Legacy Core node and restart Legacy Wallet.`} />}
+          {snap?.node?.error && <Notice tone="danger" text={snap.node.error} />}
+          {!running && portConflict && (
+            <section className="panel compactPanel">
+              <h3>RPC port status</h3>
+              <p className="muted">{portConflict}</p>
+              <div className="row">
+                <button onClick={() => run("Stop internal node", () => api().StopNode())}>Stop internal node</button>
+                <button className="primary" onClick={() => run("Retry start node", () => api().StartNode())}>Retry start node</button>
+              </div>
+            </section>
+          )}
           {snap?.sync?.sync_stalled && <Notice tone="warn" text="Sync appears stalled. Retrying peer sync..." />}
           {page}
           {toast && <div className="toast" onClick={() => setToast("")}>{toast}</div>}
@@ -392,8 +413,17 @@ function WalletPage({ snap, run, refresh }: PageProps) {
   const [address, setAddress] = useState("");
   const [passphrase, setPassphrase] = useState("");
   const [newPassphrase, setNewPassphrase] = useState("");
-  const [unlockSeconds, setUnlockSeconds] = useState(900);
+  const [unlockSeconds, setUnlockSeconds] = useState(() => {
+    const saved = Number(localStorage.getItem("legacy-unlock-seconds") || "900");
+    if (!Number.isFinite(saved) || saved < 60) return 900;
+    return Math.round(saved);
+  });
   const current = address || (w.receive_addresses || [])[Math.max(0, (w.receive_addresses || []).length - 1)] || "";
+  const defaultMining = w.default_mining_address || snap.settings?.defaultMiningAddress || "";
+  useEffect(() => {
+    if (!Number.isFinite(unlockSeconds) || unlockSeconds < 60) return;
+    localStorage.setItem("legacy-unlock-seconds", String(Math.round(unlockSeconds)));
+  }, [unlockSeconds]);
   const encryptionState = security.encrypted ? (security.locked ? "Encrypted + locked" : "Encrypted + unlocked") : "Unencrypted";
   return (
     <div className="page">
@@ -439,10 +469,11 @@ function WalletPage({ snap, run, refresh }: PageProps) {
           <h3>Current receive address</h3>
           <div className="addressBox">{current ? <CopyableValue value={current} /> : "Generate an address to receive LBTC"}</div>
           <div className="row">
-            <button className="primary" onClick={async () => { setAddress(await run("Create receive address", () => api().GetNewAddress())); await refresh(); }}>Create new receive address</button>
+            <button className="primary" onClick={async () => { setAddress(await run("Create receive address", () => api().GetNewAddress())); await refresh(); }}>Generate new address</button>
             <button disabled={!current} onClick={() => copy(current)}><Copy size={16} /> Copy address</button>
+            <button disabled={!current} onClick={async () => { await run("Set mining address", () => api().SetDefaultMiningAddress(current)); await refresh(); }}>Set as mining address</button>
           </div>
-          <div className="splitLine topGap"><span>Default mining address</span><strong className="mono">{w.default_mining_address ? <CopyableValue value={w.default_mining_address} /> : "Set when miner starts"}</strong></div>
+          <div className="splitLine topGap"><span>Default mining address</span><strong className="mono">{defaultMining ? <CopyableValue value={defaultMining} /> : "Not set"}</strong></div>
           <Notice tone="warn" text="Back up your wallet before testing serious receive/send flows." />
         </section>
       </div>
@@ -462,6 +493,7 @@ function ReceivePage({ snap, run, refresh }: PageProps) {
   const [label, setLabel] = useState("");
   const addresses = snap.wallet?.receive_addresses || [];
   const current = address || addresses[addresses.length - 1] || "";
+  const defaultMining = snap.wallet?.default_mining_address || snap.settings?.defaultMiningAddress || "";
 
   return (
     <div className="page twoCol">
@@ -480,11 +512,13 @@ function ReceivePage({ snap, run, refresh }: PageProps) {
         <div className="addressBox">{current ? <CopyableValue value={current} /> : "No receive address selected"}</div>
         <div className="row">
           <button className="primary" onClick={async () => { setAddress(await run("Generate address", () => api().GetNewAddress())); await refresh(); }}>
-            Create new receive address
+            Generate new address
           </button>
           <button disabled={!current} onClick={() => copy(current)}><Copy size={16} /> Copy address</button>
+          <button disabled={!current} onClick={async () => { await run("Set mining address", () => api().SetDefaultMiningAddress(current)); await refresh(); }}>Set as mining address</button>
         </div>
-        <p className="muted">Your wallet can have many receiving addresses. They all belong to this same wallet.</p>
+        <div className="splitLine topGap"><span>Current mining address</span><strong className="mono">{defaultMining ? <CopyableValue value={defaultMining} /> : "Not set"}</strong></div>
+        <p className="muted">Addresses are only generated when you click create. Opening this page will not create extra addresses.</p>
       </section>
       <section className="panel">
         <h3>Address book</h3>
@@ -699,7 +733,24 @@ function TokenCards({ tokens, empty }: { tokens: Dict[]; empty: string }) {
 }
 
 function ActivityPage({ snap, run, refresh }: PageProps) {
-  const txs = Array.isArray(snap.transactions) ? snap.transactions : [];
+  const [txs, setTxs] = useState<Dict[]>([]);
+  const [txLoadError, setTxLoadError] = useState("");
+  const loadTransactions = useCallback(async () => {
+    try {
+      const rows = await api().ListWalletTransactions();
+      setTxs(Array.isArray(rows) ? rows : []);
+      setTxLoadError("");
+    } catch (e) {
+      setTxLoadError(cleanError(e));
+    }
+  }, []);
+  useEffect(() => {
+    void loadTransactions();
+    const id = setInterval(() => {
+      void loadTransactions();
+    }, 15000);
+    return () => clearInterval(id);
+  }, [loadTransactions]);
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [sortOrder, setSortOrder] = useState<"newest" | "oldest">("newest");
@@ -718,16 +769,19 @@ function ActivityPage({ snap, run, refresh }: PageProps) {
     .slice(0, 200);
   async function retry(txid: string) {
     await run("Retry broadcast", () => api().RebroadcastTransaction(txid));
+    await loadTransactions();
     await refresh();
   }
   async function remove(txid: string) {
     await run("Remove local pending record", () => api().RemoveLocalPendingTransaction(txid));
+    await loadTransactions();
     await refresh();
   }
   return (
     <div className="page activityPage">
       <section className="panel activityGroups">
         <h3>Recent wallet activity</h3>
+        {txLoadError && <Notice tone="warn" text={`Activity refresh warning: ${txLoadError}`} />}
         <div className="activityGroupSummary">
           <span>Pending <strong>{pending.length}</strong></span>
           <span>Sent <strong>{sent.length}</strong></span>
@@ -954,6 +1008,7 @@ function MiningPage({ snap, run }: PageProps) {
   const mining = snap.mining || {};
   const [threads, setThreads] = useState<number>(mining.configured_threads || snap.settings?.defaultThreads || 1);
   const [selectedProfile, setSelectedProfile] = useState<string>(() => profileForThreads(mining.configured_threads || snap.settings?.defaultThreads || 1, snap.settings?.defaultThreads || 4));
+  const [startError, setStartError] = useState("");
   const profiles = [
     { id: "eco", label: "Eco", threads: 1, note: "low heat" },
     { id: "balanced", label: "Balanced", threads: 4, note: "recommended" },
@@ -964,6 +1019,22 @@ function MiningPage({ snap, run }: PageProps) {
     setSelectedProfile(profile.id);
     setThreads(profile.threads);
     await run("Set miner profile", () => api().SetMinerThreads(profile.threads));
+  }
+  async function startMining() {
+    setStartError("");
+    try {
+      await run("Start miner", () => api().StartMiner(threads));
+    } catch (e) {
+      setStartError(cleanError(e));
+    }
+  }
+  async function stopMining() {
+    setStartError("");
+    try {
+      await run("Stop miner", () => api().StopMiner());
+    } catch (e) {
+      setStartError(cleanError(e));
+    }
   }
   return (
     <div className="page miningPage">
@@ -980,6 +1051,8 @@ function MiningPage({ snap, run }: PageProps) {
       </div>
       <section className="panel minerControls">
         <h3>Miner controls</h3>
+        {startError && <Notice tone="danger" text={startError} />}
+        {!startError && mining.last_error && <Notice tone="warn" text={`Last miner error: ${mining.last_error}`} />}
         <div className="profileGrid">
           {profiles.map((profile) => <button key={profile.id} onClick={() => chooseProfile(profile)} className={selectedProfile === profile.id ? "active profileCard" : "profileCard"}><strong>{profile.label}</strong><span>{profile.threads} threads</span><small>{profile.note}</small></button>)}
         </div>
@@ -987,8 +1060,8 @@ function MiningPage({ snap, run }: PageProps) {
           <label className="inline">Threads<input type="number" min={1} value={threads} onChange={(e) => { setThreads(Number(e.target.value)); setSelectedProfile("custom"); }} /></label>
           <span className="pill">Configured profile: {title(selectedProfile)}</span>
           <button onClick={() => run("Set threads", () => api().SetMinerThreads(threads))}>Set threads</button>
-          <button className="primary" onClick={() => run("Start miner", () => api().StartMiner(threads))}>Start mining</button>
-          <button onClick={() => run("Stop miner", () => api().StopMiner())}>Stop mining</button>
+          <button className="primary" onClick={() => void startMining()}>Start mining</button>
+          <button onClick={() => void stopMining()}>Stop mining</button>
         </div>
       </section>
       <div className="miningLower">
@@ -1000,7 +1073,7 @@ function MiningPage({ snap, run }: PageProps) {
           ["Last template refresh", mining.last_template_refresh_time ? dateTime(mining.last_template_refresh_time) : "-"],
           ["Template age", seconds(mining.last_template_refresh_ago_seconds)],
           ["Watchdog action", mining.watchdog_last_recovery_action || "-"],
-          ["Active mining address", mining.active_mining_address || "Created when miner starts"],
+          ["Active mining address", mining.active_mining_address || snap.wallet?.default_mining_address || "Set in Receive/Wallet tab"],
           ["Pubkey hash", mining.mining_pubkey_hash || "-"],
           ["Configured threads", mining.configured_threads || threads],
           ["Active threads", mining.active_threads || 0],
@@ -1078,7 +1151,9 @@ function NetworkPage({ snap, run, refresh }: PageProps) {
   }
   async function removeNode(node: string) {
     const nodes = (networkSettings.nodes || []).filter((n: string) => n !== node);
+    await run("Disconnect node", () => api().DisconnectNode(node));
     await run("Remove node", () => api().SaveNetworkSettings({ mode: nodes.length ? "addnode" : "automatic", nodes }));
+    await run("Reconnect peers", () => api().ReconnectPeers());
     await refresh();
   }
   return (
@@ -1216,6 +1291,7 @@ function DiagnosticsPage({ snap, run }: PageProps) {
   const [timing, setTiming] = useState<Dict | null>(snap.chain_timing || null);
   const [raw, setRaw] = useState<Record<string, { status: "idle" | "loading" | "success" | "error"; result?: any; error?: string }>>({});
   const [selectedRaw, setSelectedRaw] = useState("getinfo");
+  const lifecyclePath = snap.lifecycle?.log || "";
   async function rawCall(name: string, fn: () => Promise<any>) {
     setSelectedRaw(name);
     setRaw((old) => ({ ...old, [name]: { status: "loading" } }));
@@ -1240,6 +1316,36 @@ function DiagnosticsPage({ snap, run }: PageProps) {
   const current = raw[selectedRaw];
   return (
     <div className="page">
+      <section className="panel">
+        <h3>Recovery actions</h3>
+        <div className="row">
+          <button onClick={() => run("Restart internal node", () => api().RestartInternalNode())}>Restart Internal Node</button>
+          <button onClick={() => run("Stop internal node", () => Promise.resolve(api().StopNode()))}>Stop Internal Node</button>
+          <button onClick={async () => {
+            const info = await run("Open lifecycle log", () => Promise.resolve(api().OpenLifecycleLog()));
+            const path = String(info?.path || lifecyclePath || "");
+            if (path) await copy(path);
+          }}>Open Lifecycle Log</button>
+          <button onClick={async () => {
+            const report = {
+              generated_at: new Date().toISOString(),
+              lifecycle_marker: snap.lifecycle?.marker,
+              lifecycle_log: lifecyclePath,
+              node: snap.node,
+              blockchain: snap.blockchain,
+              peers: snap.peers,
+              sync: snap.sync,
+              mining: snap.mining,
+              wallet: snap.wallet,
+              doctor,
+              storage,
+              chain_timing: timing,
+            };
+            await copy(JSON.stringify(report, null, 2));
+          }}><Copy size={14} /> Copy Diagnostics Report</button>
+        </div>
+        {lifecyclePath && <p className="muted compactNote">Lifecycle log: <span className="mono">{lifecyclePath}</span></p>}
+      </section>
       <div className="diagnosticButtons">
         <button className={selectedRaw === "getinfo" ? "active" : ""} onClick={() => rawCall("getinfo", () => api().Snapshot())}>getinfo</button>
         <button className={selectedRaw === "getblockchaininfo" ? "active" : ""} onClick={() => rawCall("getblockchaininfo", () => api().GetBlockchainInfo())}>getblockchaininfo</button>
@@ -1288,6 +1394,7 @@ function SettingsPage({ snap, run }: PageProps) {
     startNodeOnLaunch: Boolean(snap.settings?.startNodeOnLaunch),
     stopNodeOnExit: Boolean(snap.settings?.stopNodeOnExit),
     defaultThreads: Number(snap.settings?.defaultThreads || 1),
+    defaultMiningAddress: snap.settings?.defaultMiningAddress || snap.wallet?.default_mining_address || "",
     theme: snap.settings?.theme || "dark",
     network: snap.settings?.network || { mode: "automatic", nodes: [] },
     launchpad: snap.settings?.launchpad || { apiUrl: "http://127.0.0.1:8090" },
@@ -1342,7 +1449,7 @@ function SettingsPage({ snap, run }: PageProps) {
         </div>
         <div className="nodeList">
           {(network.nodes || []).length === 0 && <p className="muted">Automatic mode uses Legacy Coin DNS seeds.</p>}
-          {(network.nodes || []).map((node) => <div className="nodeRow" key={node}><span className="mono">{node}</span><button onClick={() => setNetwork({ nodes: network.nodes.filter((n) => n !== node) })}>Remove</button></div>)}
+          {(network.nodes || []).map((node) => <div className="nodeRow" key={node}><span className="mono">{node}</span><button onClick={async () => { await run("Disconnect node", () => api().DisconnectNode(node)); setNetwork({ nodes: network.nodes.filter((n) => n !== node) }); }}>Remove</button></div>)}
         </div>
         <div className="row">
           <button onClick={async () => setTestResults(await run("Test connections", () => api().TestConfiguredNodes()))}>Test Connection</button>
@@ -1353,8 +1460,8 @@ function SettingsPage({ snap, run }: PageProps) {
         </div>
       </section>
       <InfoPanel title="About" rows={[
-        ["Product", "Legacy Wallet 1.0.1"],
-        ["Core Engine", "Legacy Core 1.0.0"],
+        ["Product", "Legacy Wallet 1.0.2"],
+        ["Core Engine", "Legacy Core 1.0.2"],
         ["Network", "Legacy Coin Mainnet"],
         ["Coin", "Legacy Coin / LBTC"],
         ["P2P port", snap.coin?.p2p_port],
@@ -1609,6 +1716,28 @@ function syncLabel(chain: Dict, peers: Dict[]) {
   if (!chain.height && chain.height !== 0) return "Starting";
   if (expected > Number(chain.height)) return `${chain.height} / ${expected}`;
   return "Current";
+}
+
+function portConflictMessage(node: Dict | undefined) {
+  if (!node || !node.rpc_port_in_use) return "";
+  const state = String(node.rpc_port_state || "");
+  const chain = String(node.rpc_port_chain_id || "");
+  const pid = Number(node.rpc_port_pid || 0);
+  const proc = String(node.rpc_port_process || "");
+  const owner = pid > 0 ? `${proc || "process"} (PID ${pid})` : (proc || "another process");
+  if (state === "wallet_internal") {
+    return `Wallet-managed internal node still owns RPC 127.0.0.1:19556 (${owner}). Stop it cleanly, then retry start.`;
+  }
+  if (state === "external_legacy_compatible") {
+    return `A compatible external Legacy Core node is using RPC 127.0.0.1:19556${chain ? ` (${chain})` : ""}${pid > 0 ? ` via ${owner}` : ""}. You can keep using that node in headless mode, or stop it and restart the wallet-managed node.`;
+  }
+  if (state === "external_legacy_incompatible") {
+    return `RPC 127.0.0.1:19556 is in use by an incompatible chain${chain ? ` (${chain})` : ""}${pid > 0 ? ` via ${owner}` : ""}. Stop that process before starting Legacy Wallet internal node mode.`;
+  }
+  if (state === "external_auth_required") {
+    return `RPC 127.0.0.1:19556 is in use by a node with different RPC credentials${pid > 0 ? ` (${owner})` : ""}. Stop that node or align credentials before retrying.`;
+  }
+  return `${String(node.rpc_port_message || "RPC 127.0.0.1:19556 is already in use by another process.")}${pid > 0 ? ` Owner: ${owner}.` : ""}`;
 }
 
 function fmtAmount(v: any) {

@@ -728,6 +728,7 @@ func (s *Server) Start(ctx context.Context) error {
 	go func() {
 		defer s.wg.Done()
 		<-ctx.Done()
+		s.closeActivePeerConnections()
 		_ = ln.Close()
 	}()
 
@@ -756,6 +757,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}()
 
 	<-ctx.Done()
+	s.closeActivePeerConnections()
 	_ = ln.Close()
 	s.wg.Wait()
 	return nil
@@ -1487,6 +1489,12 @@ func (s *Server) snapshotPeers() []*peer {
 		out = append(out, p)
 	}
 	return out
+}
+
+func (s *Server) closeActivePeerConnections() {
+	for _, p := range s.snapshotPeers() {
+		_ = p.conn.Close()
+	}
 }
 
 func (s *Server) writePeerMessage(p *peer, command string, payload []byte) error {

@@ -1,0 +1,46 @@
+﻿# Build outputs
+*.exe
+*.dll
+*.so
+*.dylib
+*.zip
+*.tar
+*.tar.gz
+*.rar
+*.7z
+
+# Runtime data
+wallet.dat
+*.log
+*.tmp
+*.bak
+*.out
+*.err
+.cookie
+
+# Local configs
+config.local.json
+legacycoin.conf
+legacycoin.conf.local
+
+# Go/temp
+.gocache/
+.gomodcache/
+.gotmp/
+.gotmp-linux/
+.gotmp-wails/
+tmp/
+temp/
+
+# Frontend dependencies
+node_modules/
+
+# Release/package outputs
+dist/
+build/
+
+# OS/IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

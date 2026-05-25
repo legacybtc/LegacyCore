@@ -82,6 +82,7 @@ RPC:
   getbestblockhash
   getblockhash
   getblock
+  getblockheader
   getblocktemplate
   submitblock
   disconnecttip
@@ -100,10 +101,18 @@ RPC:
   getblocklocator
   gettxout
   gettxoutsetinfo
+  getrawtransaction
+  gettransaction
+  decoderawtransaction
   getnewaddress
   getnewhybridaddress
+  getrawchangeaddress
   listaddresses
   listunspent
+  listtransactions
+  listsinceblock
+  getreceivedbyaddress
+  getaddressinfo
   backupwallet
   dumpwallet
   dumpprivkey
@@ -112,6 +121,10 @@ RPC:
   sendtoaddressraw  (developer base-unit mode)
   sendfromaddress    (human LBTC amounts by default)
   sendfromaddressraw (developer base-unit mode)
+  sendmany
+  sendmanyraw
+  settxfee
+  signrawtransactionwithwallet
   tobaseunits
   frombaseunits
   encryptwallet

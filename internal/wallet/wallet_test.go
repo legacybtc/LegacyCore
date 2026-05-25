@@ -359,6 +359,110 @@ func TestTokenMarkerSendsRespectPendingInputLocks(t *testing.T) {
 	}
 }
 
+func TestSendManyCreatesSingleMultiOutputTransaction(t *testing.T) {
+	w, classicAddr, _, chain, pool := fundedClassicWallet(t)
+	addr1, err := w.NewAddress()
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr2, err := w.NewAddress()
+	if err != nil {
+		t.Fatal(err)
+	}
+	txid, total, err := w.SendMany(chain, pool, classicAddr, map[string]int64{
+		addr1: 1_000_000,
+		addr2: 2_000_000,
+	}, 1_000)
+	if err != nil {
+		t.Fatalf("sendmany failed: %v", err)
+	}
+	if txid == "" {
+		t.Fatalf("sendmany returned empty txid")
+	}
+	if total != 3_000_000 {
+		t.Fatalf("total=%d want=3000000", total)
+	}
+	if pool.Count() != 1 {
+		t.Fatalf("mempool count=%d want=1", pool.Count())
+	}
+	tx, ok := pool.Lookup(txid)
+	if !ok {
+		t.Fatalf("mempool missing sendmany tx")
+	}
+	if len(tx.TxOut) < 3 {
+		t.Fatalf("expected 2 payment outputs + change, got %d outputs", len(tx.TxOut))
+	}
+}
+
+func TestSignRawTransactionWithWalletKeys(t *testing.T) {
+	w, _, _, chain, pool := fundedClassicWallet(t)
+	dest, err := w.NewAddress()
+	if err != nil {
+		t.Fatal(err)
+	}
+	unspent, err := w.ListUnspentForSpend(chain, pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var selected *UTXOView
+	for i := range unspent {
+		u := &unspent[i]
+		if u.Locked {
+			continue
+		}
+		if u.Coinbase && u.Confirmations > 0 && u.Confirmations < int32(chaincfg.CoinbaseMaturity) {
+			continue
+		}
+		selected = u
+		break
+	}
+	if selected == nil {
+		t.Fatalf("no spendable utxo found")
+	}
+	prevHash, err := chainhash.FromString(selected.TxID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payScript, err := destinationScript(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changeScript, err := destinationScript(selected.Address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sendAmount := int64(500_000)
+	fee := int64(1_000)
+	change := selected.Value - sendAmount - fee
+	if change <= 0 {
+		t.Fatalf("insufficient selected utxo for test")
+	}
+	tx := &wire.MsgTx{
+		Version: 1,
+		TxIn: []wire.TxIn{{
+			PreviousOutPoint: wire.OutPoint{Hash: prevHash, Index: selected.Vout},
+			Sequence:         0xffffffff,
+		}},
+		TxOut: []wire.TxOut{
+			{Value: sendAmount, PkScript: payScript},
+			{Value: change, PkScript: changeScript},
+		},
+	}
+	signed, complete, signErrs, err := w.SignRawTransaction(chain, tx)
+	if err != nil {
+		t.Fatalf("sign raw tx failed: %v", err)
+	}
+	if !complete {
+		t.Fatalf("expected complete signature, errors: %+v", signErrs)
+	}
+	if len(signed.TxIn) != 1 || len(signed.TxIn[0].SignatureScript) == 0 {
+		t.Fatalf("signature script missing")
+	}
+	if _, err := pool.Add(chain, signed); err != nil {
+		t.Fatalf("signed tx rejected by mempool: %v", err)
+	}
+}
+
 func fundedClassicWallet(t *testing.T) (*Wallet, string, []byte, *blockchain.Chain, *mempool.Pool) {
 	t.Helper()
 	w, err := Open(t.TempDir())

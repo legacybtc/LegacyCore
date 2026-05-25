@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -62,12 +64,21 @@ type Server struct {
 	minerLastNonce       uint32
 	minerStaleBlocks     int64
 	minerRejectedBlocks  int64
+	defaultTxFee         int64
 }
 
 type request struct {
-	ID     any             `json:"id"`
-	Method string          `json:"method"`
-	Params json.RawMessage `json:"params"`
+	JSONRPC string          `json:"jsonrpc,omitempty"`
+	ID      any             `json:"id"`
+	Method  string          `json:"method"`
+	Params  json.RawMessage `json:"params"`
+}
+
+type rpcHelpEntry struct {
+	Method      string `json:"method"`
+	Usage       string `json:"usage"`
+	Category    string `json:"category"`
+	Description string `json:"description"`
 }
 
 type response struct {
@@ -79,6 +90,54 @@ type response struct {
 type rpcError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
+}
+
+const (
+	MaxRPCBatchRequests = 100
+)
+
+var rpcHelpEntries = []rpcHelpEntry{
+	{Method: "getblockcount", Usage: "getblockcount", Category: "chain", Description: "Return the current best block height."},
+	{Method: "getbestblockhash", Usage: "getbestblockhash", Category: "chain", Description: "Return the best tip block hash."},
+	{Method: "getblockhash", Usage: "getblockhash <height>", Category: "chain", Description: "Return block hash by height."},
+	{Method: "getblock", Usage: "getblock <hash>", Category: "chain", Description: "Return a decoded block by hash."},
+	{Method: "getblockheader", Usage: "getblockheader <hash>", Category: "chain", Description: "Return a decoded block header by hash."},
+	{Method: "getblockchaininfo", Usage: "getblockchaininfo", Category: "chain", Description: "Return chain status and sync summary."},
+	{Method: "getnetworkinfo", Usage: "getnetworkinfo", Category: "network", Description: "Return network and connection summary."},
+	{Method: "getpeerinfo", Usage: "getpeerinfo", Category: "network", Description: "Return connected peer diagnostics."},
+	{Method: "getsyncstatus", Usage: "getsyncstatus", Category: "network", Description: "Return sync watchdog and peer sync health."},
+	{Method: "getmempoolinfo", Usage: "getmempoolinfo", Category: "mempool", Description: "Return mempool counters and limits."},
+	{Method: "getrawmempool", Usage: "getrawmempool", Category: "mempool", Description: "Return mempool txid list."},
+	{Method: "getmempoolentry", Usage: "getmempoolentry <txid>", Category: "mempool", Description: "Return a mempool entry for a txid."},
+	{Method: "getrawtransaction", Usage: "getrawtransaction <txid> [verbose]", Category: "tx", Description: "Return raw tx hex or verbose object."},
+	{Method: "decoderawtransaction", Usage: "decoderawtransaction <hex>", Category: "tx", Description: "Decode raw transaction hex."},
+	{Method: "sendrawtransaction", Usage: "sendrawtransaction <hex>", Category: "tx", Description: "Submit a raw transaction to mempool."},
+	{Method: "gettxout", Usage: "gettxout <txid> <vout>", Category: "tx", Description: "Return UTXO entry for an outpoint."},
+	{Method: "gettxoutsetinfo", Usage: "gettxoutsetinfo", Category: "tx", Description: "Return UTXO set statistics."},
+	{Method: "getblocktemplate", Usage: "getblocktemplate [request_object]", Category: "mining", Description: "Return pool/miner template (BIP22/BIP23 style fields)."},
+	{Method: "submitblock", Usage: "submitblock <block_hex>", Category: "mining", Description: "Submit a candidate block; null on accepted, reject string otherwise."},
+	{Method: "getminerstatus", Usage: "getminerstatus", Category: "mining", Description: "Return miner runtime status and counters."},
+	{Method: "startminer", Usage: "startminer", Category: "mining", Description: "Start local CPU mining."},
+	{Method: "stopminer", Usage: "stopminer", Category: "mining", Description: "Stop local CPU mining."},
+	{Method: "setminerthreads", Usage: "setminerthreads <threads>", Category: "mining", Description: "Set mining thread count."},
+	{Method: "getnewaddress", Usage: "getnewaddress", Category: "wallet", Description: "Generate a new wallet receive address."},
+	{Method: "listunspent", Usage: "listunspent [minconf] [maxconf] [addresses]", Category: "wallet", Description: "Return spendable and tracked UTXOs."},
+	{Method: "getbalance", Usage: "getbalance [address]", Category: "wallet", Description: "Return wallet balance (LBTC display units)."},
+	{Method: "getwalletinfo", Usage: "getwalletinfo", Category: "wallet", Description: "Return wallet lock/encryption/key stats."},
+	{Method: "gettransaction", Usage: "gettransaction <txid>", Category: "wallet", Description: "Return wallet transaction details and categories."},
+	{Method: "listtransactions", Usage: "listtransactions [count] [skip]", Category: "wallet", Description: "Return recent wallet history."},
+	{Method: "listsinceblock", Usage: "listsinceblock [blockhash]", Category: "wallet", Description: "Return wallet history since block."},
+	{Method: "sendtoaddress", Usage: "sendtoaddress <address> <amount_lbtc> [fee_lbtc]", Category: "wallet", Description: "Send LBTC to one address."},
+	{Method: "sendmany", Usage: "sendmany \"\" {\"addr\":amount,...}", Category: "wallet", Description: "Send LBTC to multiple addresses in one tx."},
+	{Method: "sendmanyraw", Usage: "sendmanyraw \"\" {\"addr\":base_units,...}", Category: "wallet", Description: "sendmany using explicit base units."},
+	{Method: "signrawtransactionwithwallet", Usage: "signrawtransactionwithwallet <rawtx_hex>", Category: "wallet", Description: "Sign wallet-known inputs in raw transaction."},
+	{Method: "validateaddress", Usage: "validateaddress <address>", Category: "wallet", Description: "Validate address and ownership hints."},
+	{Method: "getaddressinfo", Usage: "getaddressinfo <address>", Category: "wallet", Description: "Return detailed address metadata."},
+	{Method: "backupwallet", Usage: "backupwallet <path>", Category: "wallet", Description: "Export wallet backup file."},
+	{Method: "walletpassphrase", Usage: "walletpassphrase <passphrase> <timeout>", Category: "wallet", Description: "Unlock encrypted wallet for signing."},
+	{Method: "walletlock", Usage: "walletlock", Category: "wallet", Description: "Lock encrypted wallet."},
+	{Method: "help", Usage: "help [method]", Category: "meta", Description: "List supported RPC methods or show one method summary."},
+	{Method: "stop", Usage: "stop", Category: "meta", Description: "Stop Legacy Core daemon."},
 }
 
 func (s *Server) rpcBindHost() string {
@@ -195,7 +254,17 @@ func p2pIsLocalhost(host string) bool {
 const MaxRPCRequestBytes int64 = 1 << 20
 
 func New(chain *blockchain.Chain, pool *mempool.Pool, wallet *wallet.Wallet, p2pServer *p2p.Server, stop context.CancelFunc, auth config.RPCAuth, bind config.RPCBind, policy config.LaunchPolicy) *Server {
-	return &Server{chain: chain, pool: pool, wallet: wallet, p2p: p2pServer, stop: stop, auth: auth, bind: bind, policy: policy}
+	return &Server{
+		chain:        chain,
+		pool:         pool,
+		wallet:       wallet,
+		p2p:          p2pServer,
+		stop:         stop,
+		auth:         auth,
+		bind:         bind,
+		policy:       policy,
+		defaultTxFee: 1_000,
+	}
 }
 
 func (s *Server) ListenAndServe(ctx context.Context) error {
@@ -258,13 +327,56 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, MaxRPCRequestBytes)
-	var req request
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	rawBody, err := io.ReadAll(r.Body)
+	if err != nil {
 		writeResponse(w, response{Error: &rpcError{Code: -32700, Message: err.Error()}})
 		return
 	}
-	result, rpcErr := s.call(r.Context(), req.Method, req.Params)
-	writeResponse(w, response{ID: req.ID, Result: result, Error: rpcErr})
+	trimmed := bytes.TrimSpace(rawBody)
+	if len(trimmed) == 0 {
+		writeResponse(w, response{Error: &rpcError{Code: -32600, Message: "empty request"}})
+		return
+	}
+	if trimmed[0] == '[' {
+		var reqs []request
+		if err := json.Unmarshal(trimmed, &reqs); err != nil {
+			writeResponse(w, response{Error: &rpcError{Code: -32700, Message: err.Error()}})
+			return
+		}
+		if len(reqs) == 0 {
+			writeResponse(w, response{Error: &rpcError{Code: -32600, Message: "invalid batch request"}})
+			return
+		}
+		if len(reqs) > MaxRPCBatchRequests {
+			writeResponse(w, response{Error: &rpcError{Code: -32600, Message: fmt.Sprintf("batch request too large: max %d", MaxRPCBatchRequests)}})
+			return
+		}
+		responses := make([]response, 0, len(reqs))
+		for _, req := range reqs {
+			responses = append(responses, s.handleRPCRequest(r.Context(), req))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(responses)
+		return
+	}
+	var req request
+	if err := json.Unmarshal(trimmed, &req); err != nil {
+		writeResponse(w, response{Error: &rpcError{Code: -32700, Message: err.Error()}})
+		return
+	}
+	writeResponse(w, s.handleRPCRequest(r.Context(), req))
+}
+
+func (s *Server) handleRPCRequest(ctx context.Context, req request) response {
+	if strings.TrimSpace(req.Method) == "" {
+		return response{ID: req.ID, Error: &rpcError{Code: -32600, Message: "invalid request: missing method"}}
+	}
+	params := req.Params
+	if len(bytes.TrimSpace(params)) == 0 {
+		params = json.RawMessage("[]")
+	}
+	result, rpcErr := s.call(ctx, req.Method, params)
+	return response{ID: req.ID, Result: result, Error: rpcErr}
 }
 
 func (s *Server) authorized(r *http.Request) bool {
@@ -275,6 +387,15 @@ func (s *Server) authorized(r *http.Request) bool {
 	userOK := subtle.ConstantTimeCompare([]byte(user), []byte(s.auth.User)) == 1
 	passOK := subtle.ConstantTimeCompare([]byte(pass), []byte(s.auth.Password)) == 1
 	return userOK && passOK
+}
+
+func (s *Server) currentTxFee() int64 {
+	s.minerMu.Lock()
+	defer s.minerMu.Unlock()
+	if s.defaultTxFee <= 0 {
+		return 1_000
+	}
+	return s.defaultTxFee
 }
 
 func (s *Server) call(ctx context.Context, method string, params json.RawMessage) (any, *rpcError) {
@@ -1004,56 +1125,7 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		}
 		return map[string]any{"height": -1, "hash": ""}, nil
 	case "getblocktemplate":
-		var args []string
-		_ = json.Unmarshal(params, &args)
-		pubHash := make([]byte, 20)
-		if len(args) > 0 && args[0] != "" {
-			decoded, err := hex.DecodeString(args[0])
-			if err != nil || len(decoded) != 20 {
-				return nil, &rpcError{Code: -32602, Message: "getblocktemplate expects optional pubkey hash hex"}
-			}
-			pubHash = decoded
-		}
-		block, height, err := mining.NewBlockTemplate(s.chain, s.pool, pubHash)
-		if err != nil {
-			return nil, &rpcError{Code: -32603, Message: err.Error()}
-		}
-		raw, err := block.Bytes()
-		if err != nil {
-			return nil, &rpcError{Code: -32603, Message: err.Error()}
-		}
-		previousHash := block.Header.PrevBlock.String()
-		transactions := blockTemplateTransactions(block, s.pool)
-		coinbaseValue := int64(0)
-		if len(block.Transactions) > 0 {
-			for _, out := range block.Transactions[0].TxOut {
-				coinbaseValue += out.Value
-			}
-		}
-		mempoolCount := 0
-		if s.pool != nil {
-			mempoolCount = s.pool.Count()
-		}
-		return map[string]any{
-			"height":            height,
-			"version":           block.Header.Version,
-			"previoushash":      previousHash,
-			"previousblockhash": previousHash,
-			"bits":              fmt.Sprintf("%08x", block.Header.Bits),
-			"target":            compactTargetHex(block.Header.Bits),
-			"merkleroot":        block.Header.MerkleRoot.String(),
-			"time":              block.Header.Timestamp,
-			"curtime":           block.Header.Timestamp,
-			"transactions":      transactions,
-			"transaction_count": len(transactions),
-			"txids":             blockTxIDs(block),
-			"mempoolsize":       mempoolCount,
-			"coinbasevalue":     coinbaseValue,
-			"mutable":           []string{"time", "transactions", "prevblock"},
-			"submitold":         true,
-			"noncerange":        "00000000ffffffff",
-			"hex":               hex.EncodeToString(raw),
-		}, nil
+		return s.getBlockTemplate(ctx, params)
 	case "getrawtransaction":
 		var args []json.RawMessage
 		if err := json.Unmarshal(params, &args); err != nil || len(args) < 1 {
@@ -1100,10 +1172,14 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		}
 		out := txVerboseResult(lookup)
 		out["hex"] = hex.EncodeToString(rawTx)
-		out["amount"] = int64(0)
-		out["fee"] = int64(0)
-		out["wallet"] = "limited"
-		out["comment"] = "Wallet-centric debit/credit breakdown is limited in this build."
+		summary := s.walletTransactionSummary(lookup)
+		out["amount"] = amountFloat(summary.AmountBaseUnits)
+		out["amount_base_units"] = summary.AmountBaseUnits
+		out["fee"] = amountFloat(summary.FeeBaseUnits)
+		out["fee_base_units"] = summary.FeeBaseUnits
+		out["generated"] = summary.Generated
+		out["timereceived"] = summary.TimeReceived
+		out["details"] = summary.Details
 		return out, nil
 	case "decoderawtransaction":
 		var args []string
@@ -1336,11 +1412,54 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 	case "listaddresses":
 		return s.wallet.ListAddresses(), nil
 	case "listunspent":
-		unspent, err := s.wallet.ListUnspent(s.chain)
+		var args []json.RawMessage
+		_ = json.Unmarshal(params, &args)
+		minConf := int32(1)
+		if len(args) > 0 {
+			var parsed int32
+			if err := json.Unmarshal(args[0], &parsed); err == nil {
+				minConf = parsed
+			}
+		}
+		var unspent []wallet.UTXOView
+		var err error
+		if minConf <= 0 {
+			unspent, err = s.wallet.ListUnspentForSpend(s.chain, s.pool)
+		} else {
+			unspent, err = s.wallet.ListUnspent(s.chain)
+		}
 		if err != nil {
 			return nil, &rpcError{Code: -32603, Message: err.Error()}
 		}
-		return unspent, nil
+		addressFilter := map[string]struct{}{}
+		if len(args) > 2 {
+			var addresses []string
+			if err := json.Unmarshal(args[2], &addresses); err == nil {
+				for _, a := range addresses {
+					a = strings.TrimSpace(a)
+					if a != "" {
+						addressFilter[a] = struct{}{}
+					}
+				}
+			}
+		}
+		rows := make([]map[string]any, 0, len(unspent))
+		for _, u := range unspent {
+			if minConf > 0 && u.Confirmations < minConf {
+				continue
+			}
+			if len(addressFilter) > 0 {
+				if _, ok := addressFilter[u.Address]; !ok {
+					continue
+				}
+			}
+			row, err := s.rpcUnspentRow(u)
+			if err != nil {
+				continue
+			}
+			rows = append(rows, row)
+		}
+		return rows, nil
 	case "backupwallet":
 		var args []string
 		if err := json.Unmarshal(params, &args); err != nil || len(args) != 1 {
@@ -1404,7 +1523,7 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		if err != nil {
 			return nil, &rpcError{Code: -32602, Message: "bad amount: " + err.Error()}
 		}
-		feeValue := int64(1_000)
+		feeValue := s.currentTxFee()
 		if len(args) > 2 {
 			feeValue, err = parseRPCAmount(args[2], rawMode)
 			if err != nil {
@@ -1435,7 +1554,7 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		if err != nil {
 			return nil, &rpcError{Code: -32602, Message: "bad amount: " + err.Error()}
 		}
-		feeValue := int64(1_000)
+		feeValue := s.currentTxFee()
 		if len(args) > 3 {
 			feeValue, err = parseRPCAmount(args[3], rawMode)
 			if err != nil {
@@ -1448,6 +1567,35 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		}
 		s.announceMempoolTx(txid)
 		return txSendResult(txid, amountValue, feeValue, rawMode), nil
+	case "sendmany", "sendmanyraw":
+		var args []json.RawMessage
+		if err := json.Unmarshal(params, &args); err != nil || len(args) < 2 {
+			return nil, &rpcError{Code: -32602, Message: method + " expects account, {address:amount}, optional minconf/comment/subtractfeefrom"}
+		}
+		// Bitcoin compatibility: first arg is a legacy account string and is ignored.
+		from := ""
+		if len(args) > 0 {
+			_ = json.Unmarshal(args[0], &from)
+			from = strings.TrimSpace(from)
+		}
+		rawMode := method == "sendmanyraw"
+		outputs, err := parseSendManyOutputs(args[1], rawMode)
+		if err != nil {
+			return nil, &rpcError{Code: -32602, Message: err.Error()}
+		}
+		feeValue := s.currentTxFee()
+		if len(args) > 6 {
+			feeValue, err = parseRPCAmount(args[6], rawMode)
+			if err != nil {
+				return nil, &rpcError{Code: -32602, Message: "bad fee: " + err.Error()}
+			}
+		}
+		txid, totalAmount, err := s.wallet.SendMany(s.chain, s.pool, from, outputs, feeValue)
+		if err != nil {
+			return nil, &rpcError{Code: -6, Message: rpcSendError(err)}
+		}
+		s.announceMempoolTx(txid)
+		return txSendResult(txid, totalAmount, feeValue, rawMode), nil
 	case "sendtokendeploy", "sendtokendeploycurve", "sendtokentransfer", "sendtokenburn", "sendtokenbuy", "sendtokensell":
 		var args []json.RawMessage
 		if err := json.Unmarshal(params, &args); err != nil || len(args) < 1 || len(args) > 2 {
@@ -1605,6 +1753,165 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 			total += u.Value
 		}
 		return total, nil
+	case "listtransactions":
+		var args []json.RawMessage
+		_ = json.Unmarshal(params, &args)
+		count := 10
+		skip := 0
+		if len(args) > 1 {
+			_ = json.Unmarshal(args[1], &count)
+		}
+		if len(args) > 2 {
+			_ = json.Unmarshal(args[2], &skip)
+		}
+		if count <= 0 {
+			count = 10
+		}
+		if count > 1000 {
+			count = 1000
+		}
+		if skip < 0 {
+			skip = 0
+		}
+		rows, err := s.walletTransactionRows()
+		if err != nil {
+			return nil, &rpcError{Code: -32603, Message: err.Error()}
+		}
+		if skip >= len(rows) {
+			return []map[string]any{}, nil
+		}
+		end := skip + count
+		if end > len(rows) {
+			end = len(rows)
+		}
+		return rows[skip:end], nil
+	case "listsinceblock":
+		var args []json.RawMessage
+		_ = json.Unmarshal(params, &args)
+		startHeight := int32(-1)
+		if len(args) > 0 {
+			var blockHash string
+			if err := json.Unmarshal(args[0], &blockHash); err == nil && strings.TrimSpace(blockHash) != "" {
+				_, idx, err := s.chain.BlockByHash(strings.TrimSpace(blockHash))
+				if err != nil {
+					return nil, &rpcError{Code: -5, Message: "block not found"}
+				}
+				startHeight = idx.Height
+			}
+		}
+		rows, err := s.walletTransactionRows()
+		if err != nil {
+			return nil, &rpcError{Code: -32603, Message: err.Error()}
+		}
+		filtered := make([]map[string]any, 0, len(rows))
+		for _, row := range rows {
+			h, _ := row["blockheight"].(int32)
+			if h > startHeight {
+				filtered = append(filtered, row)
+			}
+		}
+		lastBlock := ""
+		if tip := s.chain.Tip(); tip != nil {
+			lastBlock = tip.Hash
+		}
+		return map[string]any{"transactions": filtered, "lastblock": lastBlock}, nil
+	case "getreceivedbyaddress":
+		var args []json.RawMessage
+		if err := json.Unmarshal(params, &args); err != nil || len(args) < 1 {
+			return nil, &rpcError{Code: -32602, Message: "getreceivedbyaddress expects address and optional minconf"}
+		}
+		var addr string
+		if err := json.Unmarshal(args[0], &addr); err != nil || strings.TrimSpace(addr) == "" {
+			return nil, &rpcError{Code: -32602, Message: "bad address"}
+		}
+		addr = strings.TrimSpace(addr)
+		minConf := int32(1)
+		if len(args) > 1 {
+			var parsed int32
+			if err := json.Unmarshal(args[1], &parsed); err == nil {
+				minConf = parsed
+			}
+		}
+		var utxos []wallet.UTXOView
+		var err error
+		if minConf <= 0 {
+			utxos, err = s.wallet.ListUnspentForSpend(s.chain, s.pool)
+		} else {
+			utxos, err = s.wallet.ListUnspent(s.chain)
+		}
+		if err != nil {
+			return nil, &rpcError{Code: -32603, Message: err.Error()}
+		}
+		total := int64(0)
+		for _, u := range utxos {
+			if u.Address != addr {
+				continue
+			}
+			if minConf > 0 && u.Confirmations < minConf {
+				continue
+			}
+			total += u.Value
+		}
+		return amountFloat(total), nil
+	case "getrawchangeaddress":
+		addr, err := s.wallet.NewAddress()
+		if err != nil {
+			return nil, &rpcError{Code: -13, Message: err.Error()}
+		}
+		return addr, nil
+	case "settxfee":
+		var args []json.RawMessage
+		if err := json.Unmarshal(params, &args); err != nil || len(args) < 1 {
+			return nil, &rpcError{Code: -32602, Message: "settxfee expects fee_lbtc"}
+		}
+		feeValue, err := parseRPCAmount(args[0], false)
+		if err != nil {
+			return nil, &rpcError{Code: -32602, Message: err.Error()}
+		}
+		if feeValue < 0 {
+			return nil, &rpcError{Code: -32602, Message: "fee must be >= 0"}
+		}
+		// Avoid accidental huge fees in wallet mode.
+		if feeValue > 10*chaincfg.Coin {
+			return nil, &rpcError{Code: -32602, Message: "fee too large"}
+		}
+		s.minerMu.Lock()
+		s.defaultTxFee = feeValue
+		s.minerMu.Unlock()
+		return true, nil
+	case "signrawtransactionwithwallet":
+		var args []string
+		if err := json.Unmarshal(params, &args); err != nil || len(args) < 1 {
+			return nil, &rpcError{Code: -32602, Message: "signrawtransactionwithwallet expects raw transaction hex"}
+		}
+		raw, err := hex.DecodeString(strings.TrimSpace(args[0]))
+		if err != nil {
+			return nil, &rpcError{Code: -22, Message: err.Error()}
+		}
+		tx, err := wire.ReadTx(bytes.NewReader(raw))
+		if err != nil {
+			return nil, &rpcError{Code: -22, Message: err.Error()}
+		}
+		signed, complete, signErrs, err := s.wallet.SignRawTransaction(s.chain, tx)
+		if err != nil {
+			code := -13
+			if strings.Contains(strings.ToLower(err.Error()), "locked") {
+				code = -13
+			}
+			return nil, &rpcError{Code: code, Message: err.Error()}
+		}
+		outRaw, err := signed.Bytes()
+		if err != nil {
+			return nil, &rpcError{Code: -32603, Message: err.Error()}
+		}
+		out := map[string]any{
+			"hex":      hex.EncodeToString(outRaw),
+			"complete": complete,
+		}
+		if len(signErrs) > 0 {
+			out["errors"] = signErrs
+		}
+		return out, nil
 	case "validateaddress":
 		var args []string
 		if err := json.Unmarshal(params, &args); err != nil || len(args) != 1 {
@@ -1638,6 +1945,26 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 			"is_hybrid":       isHybrid,
 			"pubkey_hash_hex": pubHashHex,
 		}, nil
+	case "getaddressinfo":
+		var args []string
+		if err := json.Unmarshal(params, &args); err != nil || len(args) != 1 {
+			return nil, &rpcError{Code: -32602, Message: "getaddressinfo expects address"}
+		}
+		addr := strings.TrimSpace(args[0])
+		info, err := s.call(ctx, "validateaddress", json.RawMessage(fmt.Sprintf("[\"%s\"]", addr)))
+		if err != nil {
+			return nil, err
+		}
+		row, _ := info.(map[string]any)
+		if row == nil {
+			row = map[string]any{}
+		}
+		row["ismine"] = row["ismine"] == true
+		row["iswatchonly"] = false
+		row["isscript"] = false
+		row["ischange"] = false
+		row["iswitness"] = false
+		return row, nil
 	case "sethdseed":
 		var args []string
 		_ = json.Unmarshal(params, &args)
@@ -1792,6 +2119,8 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 			"core_version":   version.CoreVersion,
 			"wallet_version": version.WalletVersion,
 			"network":        "mainnet",
+			"chain_id":       s.chain.Params().ChainID,
+			"genesis_hash":   s.chain.Params().GenesisHash,
 			"protocol":       70015,
 			"connections":    s.p2p.PeerCount(),
 			"outbound":       s.p2p.OutboundCount(),
@@ -1847,12 +2176,64 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 			return nil, &rpcError{Code: -32603, Message: err.Error()}
 		}
 		return stats, nil
+	case "help":
+		return s.help(params)
 	case "stop":
 		go s.stop()
 		return "Legacy Coin server stopping", nil
 	default:
 		return nil, &rpcError{Code: -32601, Message: "method not found"}
 	}
+}
+
+func (s *Server) help(params json.RawMessage) (any, *rpcError) {
+	var args []json.RawMessage
+	if len(strings.TrimSpace(string(params))) > 0 {
+		if err := json.Unmarshal(params, &args); err != nil {
+			return nil, &rpcError{Code: -32602, Message: "help expects zero args or help <method>"}
+		}
+	}
+	if len(args) == 0 {
+		methods := make([]string, 0, len(rpcHelpEntries))
+		for _, entry := range rpcHelpEntries {
+			methods = append(methods, entry.Method)
+		}
+		sort.Strings(methods)
+		return map[string]any{
+			"count":   len(methods),
+			"methods": methods,
+			"note":    "use help <method> for detailed usage",
+		}, nil
+	}
+
+	var topic string
+	if err := json.Unmarshal(args[0], &topic); err != nil {
+		return nil, &rpcError{Code: -32602, Message: "help expects a method name string"}
+	}
+	topic = strings.ToLower(strings.TrimSpace(topic))
+	if topic == "" {
+		return nil, &rpcError{Code: -32602, Message: "help method name cannot be empty"}
+	}
+	for _, entry := range rpcHelpEntries {
+		if entry.Method == topic {
+			return entry, nil
+		}
+	}
+
+	matches := make([]rpcHelpEntry, 0, 8)
+	for _, entry := range rpcHelpEntries {
+		if strings.Contains(entry.Method, topic) {
+			matches = append(matches, entry)
+		}
+	}
+	if len(matches) > 0 {
+		return map[string]any{
+			"query":   topic,
+			"matches": matches,
+		}, nil
+	}
+
+	return nil, &rpcError{Code: -32601, Message: "method not found"}
 }
 
 func (s *Server) getBlockchainInfo() map[string]any {
@@ -2155,11 +2536,14 @@ func blockTemplateTransactionsFromEntries(block *wire.MsgBlock, entries []mempoo
 			}
 		}
 		out = append(out, map[string]any{
-			"data": hex.EncodeToString(raw),
-			"hash": txid,
-			"txid": txid,
-			"fee":  fee,
-			"size": size,
+			"data":    hex.EncodeToString(raw),
+			"hash":    txid,
+			"txid":    txid,
+			"fee":     fee,
+			"size":    size,
+			"sigops":  0,
+			"weight":  size * 4,
+			"depends": []int{},
 		})
 	}
 	return out
@@ -2171,6 +2555,595 @@ func compactTargetHex(bits uint32) string {
 		return strings.Repeat("0", 64)
 	}
 	return fmt.Sprintf("%064x", target)
+}
+
+type gbtRequest struct {
+	Mode         string
+	Capabilities []string
+	Rules        []string
+	LongPollID   string
+	Data         string
+	PubKeyHash   string
+}
+
+func (s *Server) getBlockTemplate(ctx context.Context, params json.RawMessage) (any, *rpcError) {
+	req, pubHash, err := parseGBTRequest(params)
+	if err != nil {
+		return nil, &rpcError{Code: -32602, Message: err.Error()}
+	}
+	mode := strings.ToLower(strings.TrimSpace(req.Mode))
+	if mode == "" {
+		mode = "template"
+	}
+	if mode == "proposal" {
+		return s.getBlockTemplateProposal(req.Data)
+	}
+	if mode != "template" {
+		return nil, &rpcError{Code: -32602, Message: "getblocktemplate mode must be template or proposal"}
+	}
+	if req.LongPollID != "" {
+		s.waitForTemplateChange(ctx, req.LongPollID, 30*time.Second)
+	}
+	block, height, err := mining.NewBlockTemplate(s.chain, s.pool, pubHash)
+	if err != nil {
+		return nil, &rpcError{Code: -32603, Message: err.Error()}
+	}
+	raw, err := block.Bytes()
+	if err != nil {
+		return nil, &rpcError{Code: -32603, Message: err.Error()}
+	}
+	previousHash := block.Header.PrevBlock.String()
+	transactions := blockTemplateTransactions(block, s.pool)
+	coinbaseValue := int64(0)
+	if len(block.Transactions) > 0 {
+		for _, out := range block.Transactions[0].TxOut {
+			coinbaseValue += out.Value
+		}
+	}
+	mempoolCount := 0
+	if s.pool != nil {
+		mempoolCount = s.pool.Count()
+	}
+	longPollID := s.currentTemplateLongPollID()
+	result := map[string]any{
+		"height":            height,
+		"version":           block.Header.Version,
+		"previoushash":      previousHash,
+		"previousblockhash": previousHash,
+		"bits":              fmt.Sprintf("%08x", block.Header.Bits),
+		"target":            compactTargetHex(block.Header.Bits),
+		"merkleroot":        block.Header.MerkleRoot.String(),
+		"time":              block.Header.Timestamp,
+		"curtime":           block.Header.Timestamp,
+		"transactions":      transactions,
+		"transaction_count": len(transactions),
+		"txids":             blockTxIDs(block),
+		"mempoolsize":       mempoolCount,
+		"coinbasevalue":     coinbaseValue,
+		"mutable":           []string{"time", "transactions", "prevblock"},
+		"submitold":         true,
+		"noncerange":        "00000000ffffffff",
+		"hex":               hex.EncodeToString(raw),
+		"longpollid":        longPollID,
+		"capabilities":      []string{"proposal", "longpoll", "coinbasetxn"},
+		"expires":           30,
+		"mintime":           block.Header.Timestamp,
+		"maxtime":           block.Header.Timestamp + uint32(chaincfg.MaxFutureDrift.Seconds()),
+		"sigoplimit":        80_000,
+		"sizelimit":         1_000_000,
+		"weightlimit":       4_000_000,
+		"coinbaseaux":       map[string]any{"flags": ""},
+		"rules":             req.Rules,
+		"vbavailable":       map[string]any{},
+		"vbrequired":        0,
+	}
+	if hasCapability(req.Capabilities, "coinbasetxn") || hasCapability(req.Capabilities, "coinbasevalue") {
+		result["coinbasetxn"] = buildCoinbaseTxnField(block, height, coinbaseValue)
+	}
+	return result, nil
+}
+
+func parseGBTRequest(params json.RawMessage) (gbtRequest, []byte, error) {
+	req := gbtRequest{Mode: "template"}
+	pubHash := make([]byte, 20)
+	var args []json.RawMessage
+	_ = json.Unmarshal(params, &args)
+	if len(args) == 0 {
+		return req, pubHash, nil
+	}
+	var reqObj map[string]json.RawMessage
+	if err := json.Unmarshal(args[0], &reqObj); err == nil && len(reqObj) > 0 {
+		if raw, ok := reqObj["mode"]; ok {
+			_ = json.Unmarshal(raw, &req.Mode)
+		}
+		if raw, ok := reqObj["capabilities"]; ok {
+			_ = json.Unmarshal(raw, &req.Capabilities)
+		}
+		if raw, ok := reqObj["rules"]; ok {
+			_ = json.Unmarshal(raw, &req.Rules)
+		}
+		if raw, ok := reqObj["longpollid"]; ok {
+			_ = json.Unmarshal(raw, &req.LongPollID)
+		}
+		if raw, ok := reqObj["data"]; ok {
+			_ = json.Unmarshal(raw, &req.Data)
+		}
+		if raw, ok := reqObj["pubkeyhash"]; ok {
+			_ = json.Unmarshal(raw, &req.PubKeyHash)
+		}
+	} else {
+		var legacyPubHash string
+		if err := json.Unmarshal(args[0], &legacyPubHash); err == nil {
+			req.PubKeyHash = legacyPubHash
+		}
+	}
+	if strings.TrimSpace(req.PubKeyHash) != "" {
+		decoded, err := hex.DecodeString(strings.TrimSpace(req.PubKeyHash))
+		if err != nil || len(decoded) != 20 {
+			return gbtRequest{}, nil, fmt.Errorf("getblocktemplate expects optional pubkey hash hex")
+		}
+		pubHash = decoded
+	}
+	return req, pubHash, nil
+}
+
+func (s *Server) getBlockTemplateProposal(blockHex string) (any, *rpcError) {
+	blockHex = strings.TrimSpace(blockHex)
+	if blockHex == "" {
+		return nil, &rpcError{Code: -32602, Message: "proposal mode requires data field with block hex"}
+	}
+	raw, err := hex.DecodeString(blockHex)
+	if err != nil {
+		return "rejected", nil
+	}
+	block, err := wire.ReadBlock(bytes.NewReader(raw))
+	if err != nil {
+		return "rejected", nil
+	}
+	hash, err := s.chain.BlockHash(block)
+	if err == nil && s.chain.HasBlock(hash.String()) {
+		return "duplicate", nil
+	}
+	if len(block.Transactions) == 0 {
+		return "bad-txns", nil
+	}
+	if len(block.Transactions[0].TxIn) == 0 || len(block.Transactions[0].TxIn[0].SignatureScript) > 100 {
+		return "bad-cb-length", nil
+	}
+	root, err := block.BuildMerkleRoot()
+	if err != nil {
+		return "bad-txnmrklroot", nil
+	}
+	if root != block.Header.MerkleRoot {
+		return "bad-txnmrklroot", nil
+	}
+	if tip := s.chain.Tip(); tip != nil {
+		prev := block.Header.PrevBlock.String()
+		if prev != tip.Hash {
+			if !s.chain.HasBlock(prev) {
+				return "bad-prevblk", nil
+			}
+			return "inconclusive", nil
+		}
+		if block.Header.Timestamp <= tip.Time {
+			return "time-too-old", nil
+		}
+	}
+	maxFuture := uint32(time.Now().Unix()) + uint32(chaincfg.MaxFutureDrift.Seconds())
+	if block.Header.Timestamp > maxFuture {
+		return "time-too-new", nil
+	}
+	expectedBits, err := s.chain.NextRequiredBits()
+	if err == nil && block.Header.Bits != expectedBits {
+		return "bad-diffbits", nil
+	}
+	if hash, err := s.chain.BlockHash(block); err == nil {
+		if err := consensus.CheckProofOfWork(hash, block.Header.Bits); err != nil {
+			return "high-hash", nil
+		}
+	}
+	return nil, nil
+}
+
+func (s *Server) currentTemplateLongPollID() string {
+	tipHash := ""
+	if tip := s.chain.Tip(); tip != nil {
+		tipHash = tip.Hash
+	}
+	mempoolCount := 0
+	if s.pool != nil {
+		mempoolCount = s.pool.Count()
+	}
+	return fmt.Sprintf("%s:%d", tipHash, mempoolCount)
+}
+
+func (s *Server) waitForTemplateChange(ctx context.Context, currentID string, timeout time.Duration) {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if s.currentTemplateLongPollID() != currentID {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-deadline.C:
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func hasCapability(capabilities []string, want string) bool {
+	want = strings.ToLower(strings.TrimSpace(want))
+	for _, c := range capabilities {
+		if strings.ToLower(strings.TrimSpace(c)) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func buildCoinbaseTxnField(block *wire.MsgBlock, height int32, coinbaseValue int64) map[string]any {
+	if block == nil || len(block.Transactions) == 0 || block.Transactions[0] == nil {
+		return map[string]any{}
+	}
+	cb := block.Transactions[0]
+	raw, _ := cb.Bytes()
+	h, _ := cb.TxHash()
+	totalFees := coinbaseValue - chaincfg.BlockSubsidy(height)
+	if totalFees < 0 {
+		totalFees = 0
+	}
+	return map[string]any{
+		"data":     hex.EncodeToString(raw),
+		"txid":     h.String(),
+		"hash":     h.String(),
+		"fee":      -totalFees,
+		"sigops":   0,
+		"weight":   len(raw) * 4,
+		"depends":  []int{},
+		"required": true,
+	}
+}
+
+func parseSendManyOutputs(raw json.RawMessage, baseUnits bool) (map[string]int64, error) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		// CLI compatibility: allow the outputs object to be passed as a JSON string.
+		var wrapped string
+		if err2 := json.Unmarshal(raw, &wrapped); err2 == nil {
+			if err3 := json.Unmarshal([]byte(wrapped), &obj); err3 != nil {
+				return nil, fmt.Errorf("sendmany outputs must be a JSON object of address->amount")
+			}
+		} else {
+			return nil, fmt.Errorf("sendmany outputs must be a JSON object of address->amount")
+		}
+	}
+	if len(obj) == 0 {
+		return nil, fmt.Errorf("sendmany requires at least one destination")
+	}
+	out := make(map[string]int64, len(obj))
+	for addr, amtRaw := range obj {
+		addr = strings.TrimSpace(addr)
+		if err := validateRPCAddress(addr); err != nil {
+			return nil, err
+		}
+		amountValue, err := parseRPCAmount(amtRaw, baseUnits)
+		if err != nil {
+			return nil, fmt.Errorf("bad amount for %s: %w", addr, err)
+		}
+		if amountValue <= 0 {
+			return nil, fmt.Errorf("amount for %s must be > 0", addr)
+		}
+		out[addr] = amountValue
+	}
+	return out, nil
+}
+
+func validateRPCAddress(addr string) error {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return fmt.Errorf("bad destination address")
+	}
+	if payload, err := address.DecodeHybridAddress(addr); err == nil && len(payload) == 20 {
+		return nil
+	}
+	version, payload, err := address.DecodeBase58Check(addr)
+	if err != nil || version != chaincfg.PublicKeyHashVersion || len(payload) != 20 {
+		return fmt.Errorf("bad destination address: %s", addr)
+	}
+	return nil
+}
+
+func (s *Server) rpcUnspentRow(u wallet.UTXOView) (map[string]any, error) {
+	scriptHex := u.PkScriptHex
+	if scriptHex == "" {
+		entry, err := s.chain.UTXO(u.TxID, u.Vout)
+		if err == nil && entry != nil {
+			scriptHex = entry.PkScript
+		}
+	}
+	spendable := !u.Locked
+	if u.Coinbase && u.Confirmations > 0 && u.Confirmations < int32(chaincfg.CoinbaseMaturity) {
+		spendable = false
+	}
+	safe := u.SafeToSpend && spendable
+	if u.Unconfirmed && u.ChainDepth > 1 {
+		safe = false
+	}
+	return map[string]any{
+		"txid":              u.TxID,
+		"vout":              u.Vout,
+		"address":           u.Address,
+		"scriptPubKey":      scriptHex,
+		"amount":            amountFloat(u.Value),
+		"amount_base_units": u.Value,
+		"value":             u.Value,
+		"value_base_units":  u.Value,
+		"confirmations":     u.Confirmations,
+		"spendable":         spendable,
+		"solvable":          true,
+		"safe":              safe,
+		"coinbase":          u.Coinbase,
+		"height":            u.Height,
+		"pubkey_hash_hex":   u.PubKeyHashHex,
+		"locked":            u.Locked,
+		"locked_by":         u.LockedBy,
+		"safe_to_spend":     u.SafeToSpend,
+		"unconfirmed":       u.Unconfirmed,
+	}, nil
+}
+
+type walletTxSummary struct {
+	AmountBaseUnits int64
+	FeeBaseUnits    int64
+	Generated       bool
+	TimeReceived    uint32
+	Details         []map[string]any
+	Category        string
+	Address         string
+	InvolvesWallet  bool
+}
+
+func (s *Server) walletTransactionSummary(lookup *txLookupResult) walletTxSummary {
+	if lookup == nil || lookup.Tx == nil {
+		return walletTxSummary{}
+	}
+	return s.summarizeWalletTx(lookup.TxID, lookup.Tx, lookup.Confirmations, lookup.BlockHash, lookup.BlockHeight, lookup.BlockTime, lookup.InMempool)
+}
+
+func (s *Server) summarizeWalletTx(txid string, tx *wire.MsgTx, confirmations int32, blockHash string, blockHeight int32, blockTime uint32, inMempool bool) walletTxSummary {
+	summary := walletTxSummary{
+		TimeReceived: blockTime,
+		Details:      []map[string]any{},
+		Category:     "receive",
+	}
+	if summary.TimeReceived == 0 {
+		summary.TimeReceived = uint32(time.Now().Unix())
+	}
+	if tx == nil {
+		return summary
+	}
+	addressSet := map[string]struct{}{}
+	for _, addr := range s.wallet.ListAddresses() {
+		addressSet[addr] = struct{}{}
+	}
+	isCoinbase := len(tx.TxIn) == 1 &&
+		tx.TxIn[0].PreviousOutPoint.Index == ^uint32(0) &&
+		tx.TxIn[0].PreviousOutPoint.Hash == (chainhash.Hash{})
+	walletOutTotal := int64(0)
+	totalOut := int64(0)
+	firstAddress := ""
+	for vout, out := range tx.TxOut {
+		totalOut += out.Value
+		addr := decodeOutputAddress(out.PkScript)
+		if addr == "" {
+			continue
+		}
+		if _, ok := addressSet[addr]; !ok {
+			continue
+		}
+		if firstAddress == "" {
+			firstAddress = addr
+		}
+		walletOutTotal += out.Value
+		category := "receive"
+		if isCoinbase {
+			if confirmations > 0 && confirmations < int32(chaincfg.CoinbaseMaturity) {
+				category = "immature"
+			} else {
+				category = "generate"
+			}
+		}
+		summary.Details = append(summary.Details, map[string]any{
+			"address":           addr,
+			"category":          category,
+			"amount":            amountFloat(out.Value),
+			"amount_base_units": out.Value,
+			"vout":              vout,
+		})
+	}
+	walletInTotal := int64(0)
+	for _, in := range tx.TxIn {
+		if in.PreviousOutPoint.Index == ^uint32(0) && in.PreviousOutPoint.Hash == (chainhash.Hash{}) {
+			continue
+		}
+		prevTxID := in.PreviousOutPoint.Hash.String()
+		entry, err := s.chain.UTXO(prevTxID, in.PreviousOutPoint.Index)
+		if err != nil || entry == nil {
+			continue
+		}
+		pkScript, err := hex.DecodeString(entry.PkScript)
+		if err != nil {
+			continue
+		}
+		addr := decodeOutputAddress(pkScript)
+		if _, ok := addressSet[addr]; !ok {
+			continue
+		}
+		walletInTotal += entry.Value
+	}
+	fee := int64(0)
+	if s.pool != nil {
+		if memEntry, ok := s.pool.Entry(txid); ok {
+			fee = memEntry.Fee
+		}
+	}
+	if fee == 0 && walletInTotal > 0 && walletInTotal >= totalOut {
+		fee = walletInTotal - totalOut
+	}
+	summary.FeeBaseUnits = fee
+	summary.Generated = isCoinbase && walletOutTotal > 0
+	summary.Address = firstAddress
+	switch {
+	case isCoinbase && walletOutTotal > 0:
+		summary.AmountBaseUnits = walletOutTotal
+		if confirmations > 0 && confirmations < int32(chaincfg.CoinbaseMaturity) {
+			summary.Category = "immature"
+		} else {
+			summary.Category = "generate"
+		}
+	case walletInTotal > 0 && walletOutTotal == 0:
+		summary.AmountBaseUnits = -totalOut
+		summary.Category = "send"
+	case walletInTotal > 0 && walletOutTotal > 0:
+		external := totalOut - walletOutTotal
+		if external > 0 {
+			summary.AmountBaseUnits = -external
+			summary.Category = "send"
+		} else {
+			summary.AmountBaseUnits = 0
+			summary.Category = "self"
+		}
+	default:
+		summary.AmountBaseUnits = walletOutTotal
+		summary.Category = "receive"
+	}
+	summary.InvolvesWallet = walletOutTotal > 0 || walletInTotal > 0
+	if inMempool && summary.Category == "receive" && summary.AmountBaseUnits == 0 {
+		summary.InvolvesWallet = false
+	}
+	_ = blockHash
+	_ = blockHeight
+	return summary
+}
+
+func (s *Server) walletTransactionRows() ([]map[string]any, error) {
+	rows := make([]map[string]any, 0, 128)
+	if tip := s.chain.Tip(); tip != nil {
+		for h := tip.Height; h >= 0; h-- {
+			idx, err := s.chain.IndexByHeight(h)
+			if err != nil {
+				continue
+			}
+			block, _, err := s.chain.BlockByHash(idx.Hash)
+			if err != nil {
+				continue
+			}
+			conf := confirmations(tip, idx)
+			for _, tx := range block.Transactions {
+				hash, err := tx.TxHash()
+				if err != nil {
+					continue
+				}
+				txid := hash.String()
+				sum := s.summarizeWalletTx(txid, tx, conf, idx.Hash, idx.Height, idx.Time, false)
+				if !sum.InvolvesWallet {
+					continue
+				}
+				row := map[string]any{
+					"address":           sum.Address,
+					"category":          sum.Category,
+					"amount":            amountFloat(sum.AmountBaseUnits),
+					"amount_base_units": sum.AmountBaseUnits,
+					"confirmations":     conf,
+					"txid":              txid,
+					"vout":              0,
+					"time":              idx.Time,
+					"timereceived":      idx.Time,
+					"blockhash":         idx.Hash,
+					"blockheight":       idx.Height,
+					"blocktime":         idx.Time,
+					"generated":         sum.Generated,
+				}
+				if sum.FeeBaseUnits > 0 {
+					row["fee"] = amountFloat(-sum.FeeBaseUnits)
+					row["fee_base_units"] = -sum.FeeBaseUnits
+				}
+				if len(sum.Details) > 0 {
+					row["details"] = sum.Details
+				}
+				rows = append(rows, row)
+			}
+		}
+	}
+	if s.pool != nil {
+		for _, tx := range s.pool.Transactions(0) {
+			hash, err := tx.TxHash()
+			if err != nil {
+				continue
+			}
+			txid := hash.String()
+			sum := s.summarizeWalletTx(txid, tx, 0, "", -1, 0, true)
+			if !sum.InvolvesWallet {
+				continue
+			}
+			row := map[string]any{
+				"address":           sum.Address,
+				"category":          sum.Category,
+				"amount":            amountFloat(sum.AmountBaseUnits),
+				"amount_base_units": sum.AmountBaseUnits,
+				"confirmations":     int32(0),
+				"txid":              txid,
+				"vout":              0,
+				"time":              int64(time.Now().Unix()),
+				"timereceived":      int64(time.Now().Unix()),
+				"generated":         sum.Generated,
+				"in_mempool":        true,
+			}
+			if sum.FeeBaseUnits > 0 {
+				row["fee"] = amountFloat(-sum.FeeBaseUnits)
+				row["fee_base_units"] = -sum.FeeBaseUnits
+			}
+			if len(sum.Details) > 0 {
+				row["details"] = sum.Details
+			}
+			rows = append(rows, row)
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		ti := asInt64(rows[i]["timereceived"])
+		tj := asInt64(rows[j]["timereceived"])
+		return ti > tj
+	})
+	return rows, nil
+}
+
+func asInt64(v any) int64 {
+	switch t := v.(type) {
+	case int64:
+		return t
+	case int:
+		return int64(t)
+	case int32:
+		return int64(t)
+	case uint32:
+		return int64(t)
+	case uint64:
+		if t > uint64(^uint64(0)>>1) {
+			return int64(^uint64(0) >> 1)
+		}
+		return int64(t)
+	default:
+		return 0
+	}
+}
+
+func amountFloat(v int64) float64 {
+	return float64(v) / float64(chaincfg.Coin)
 }
 
 func writeResponse(w http.ResponseWriter, resp response) {

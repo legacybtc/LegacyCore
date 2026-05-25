@@ -5,7 +5,7 @@
 }
 
 * { box-sizing: border-box; }
-body { margin: 0; min-width: 980px; overflow: hidden; }
+body { margin: 0; min-width: 920px; overflow: hidden; font-size: 14px; }
 button, input, select { font: inherit; }
 h1, h2, h3, p { margin: 0; }
 
@@ -96,7 +96,7 @@ h1, h2, h3, p { margin: 0; }
   min-height: 0;
   overflow: hidden;
   display: grid;
-  grid-template-columns: 238px 1fr;
+  grid-template-columns: 224px 1fr;
   background: #050608;
 }
 
@@ -105,8 +105,8 @@ h1, h2, h3, p { margin: 0; }
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 12px 10px;
+  gap: 10px;
+  padding: 10px 9px;
   background:
     linear-gradient(180deg, rgba(22, 28, 42, .94), rgba(7, 9, 14, .98)),
     #080a0f;
@@ -151,7 +151,7 @@ nav button.active {
 nav button:hover:not(.active) { background: #151c2a; color: #fff; }
 
 button {
-  min-height: 32px;
+  min-height: 30px;
   border: 1px solid #39465b;
   border-radius: 6px;
   padding: 8px 12px;
@@ -204,18 +204,18 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .workspace {
   min-height: 0;
   overflow: hidden;
-  padding: 10px 12px;
+  padding: 8px 10px;
   background:
     radial-gradient(circle at top right, rgba(42, 87, 150, .18), transparent 340px),
     linear-gradient(180deg, #0d1119 0%, #07090d 100%);
 }
 header {
-  min-height: 42px;
+  min-height: 38px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 18px;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 .eyebrow {
   color: #79a9e8;
@@ -224,7 +224,7 @@ header {
   letter-spacing: 0;
   text-transform: uppercase;
 }
-h2 { font-size: 22px; color: #fff; }
+h2 { font-size: 20px; color: #fff; }
 h3 { font-size: 15px; color: #f8fbff; margin-bottom: 10px; }
 .toolbar, .row {
   display: flex;
@@ -234,7 +234,7 @@ h3 { font-size: 15px; color: #f8fbff; margin-bottom: 10px; }
 }
 .row.end { justify-content: flex-end; }
 
-.page { display: grid; gap: 10px; }
+.page { display: grid; gap: 8px; }
 .page {
   height: calc(100vh - 42px - 42px - 46px);
   min-height: 0;
@@ -251,10 +251,10 @@ h3 { font-size: 15px; color: #f8fbff; margin-bottom: 10px; }
   border-radius: 6px;
   box-shadow: 0 1px 0 rgba(255,255,255,.04) inset, 0 14px 34px rgba(0,0,0,.22);
 }
-.panel { padding: 10px; min-height: 0; overflow: hidden; }
+.panel { padding: 8px; min-height: 0; overflow: hidden; }
 .metric {
-  min-height: 54px;
-  padding: 7px 9px;
+  min-height: 48px;
+  padding: 6px 8px;
   display: grid;
   align-content: space-between;
   gap: 8px;
@@ -269,7 +269,7 @@ h3 { font-size: 15px; color: #f8fbff; margin-bottom: 10px; }
 .metric svg { width: 16px; height: 16px; color: #8fbfff; }
 .metric strong {
   color: #fff;
-  font-size: 14px;
+  font-size: 13px;
   min-width: 0;
   overflow: hidden;
 }
@@ -859,9 +859,15 @@ input:focus {
 
 .backupPage { grid-template-rows: minmax(0, 1fr); }
 .settingsPage {
-  grid-template-columns: minmax(260px, .7fr) minmax(360px, 1.2fr) minmax(280px, .9fr);
+  grid-template-columns: minmax(240px, .75fr) minmax(320px, 1.25fr) minmax(250px, .95fr);
   grid-template-rows: minmax(0, 1fr);
   align-items: stretch;
+  min-height: 0;
+  overflow: auto;
+}
+.settingsPage > .panel {
+  min-height: 0;
+  overflow: auto;
 }
 .networkSettings {
   display: grid;
@@ -1309,7 +1315,7 @@ input:focus {
 }
 
 @media (max-width: 1368px) {
-  body { min-width: 1180px; }
+  body { min-width: 1030px; }
   .shell { grid-template-columns: 210px 1fr; }
   .brand img { width: 54px; height: 54px; }
   .workspace { padding: 8px; }

@@ -1,0 +1,18 @@
+# test log
+getenv GOTMPDIR
+stat C:\Users\MAX\AppData\Local\Temp\TestWriteFileAtomicCreatesFileWithPermissions1624557701\001\nested
+stat C:\Users\MAX\AppData\Local\Temp\TestWriteFileAtomicCreatesFileWithPermissions1624557701\001
+open C:\Users\MAX\AppData\Local\Temp\TestWriteFileAtomicCreatesFileWithPermissions1624557701\001\nested\.state.json.tmp-2429781356
+open C:\Users\MAX\AppData\Local\Temp\TestWriteFileAtomicCreatesFileWithPermissions1624557701\001\nested
+open C:\Users\MAX\AppData\Local\Temp\TestWriteFileAtomicCreatesFileWithPermissions1624557701\001\nested\state.json
+stat C:\Users\MAX\AppData\Local\Temp\TestWriteFileAtomicCreatesFileWithPermissions1624557701\001\nested\state.json
+open C:\Users\MAX\AppData\Local\Temp
+getenv GOTMPDIR
+stat C:\Users\MAX\AppData\Local\Temp\TestWriteFileAtomicReplacesExistingFile1828856391\001
+open C:\Users\MAX\AppData\Local\Temp\TestWriteFileAtomicReplacesExistingFile1828856391\001\.state.json.tmp-2967402703
+open C:\Users\MAX\AppData\Local\Temp\TestWriteFileAtomicReplacesExistingFile1828856391\001
+stat C:\Users\MAX\AppData\Local\Temp\TestWriteFileAtomicReplacesExistingFile1828856391\001
+open C:\Users\MAX\AppData\Local\Temp\TestWriteFileAtomicReplacesExistingFile1828856391\001\.state.json.tmp-400122222
+open C:\Users\MAX\AppData\Local\Temp\TestWriteFileAtomicReplacesExistingFile1828856391\001
+open C:\Users\MAX\AppData\Local\Temp\TestWriteFileAtomicReplacesExistingFile1828856391\001\state.json
+open C:\Users\MAX\AppData\Local\Temp

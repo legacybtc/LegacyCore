@@ -1,0 +1,7 @@
+./pow.go
+./yespower_pure.go
+./yespower_cgo_test.go
+./yespower_pure_test.go
+_cgo_gotypes.go
+yespower_cgo.cgo1.go
+_cgo_import.go

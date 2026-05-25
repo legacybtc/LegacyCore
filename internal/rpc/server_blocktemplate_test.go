@@ -39,6 +39,12 @@ func TestBlockTemplateTransactionsFromEntries(t *testing.T) {
 	if rows[0]["fee"] != int64(111) || rows[0]["size"] != 333 {
 		t.Fatalf("unexpected first tx fee/size: %+v", rows[0])
 	}
+	if rows[0]["sigops"] != 0 || rows[0]["weight"] != 333*4 {
+		t.Fatalf("unexpected first tx sigops/weight: %+v", rows[0])
+	}
+	if deps, ok := rows[0]["depends"].([]int); !ok || len(deps) != 0 {
+		t.Fatalf("unexpected first tx depends: %+v", rows[0]["depends"])
+	}
 	if rows[1]["fee"] != int64(222) || rows[1]["size"] != 444 {
 		t.Fatalf("unexpected second tx fee/size: %+v", rows[1])
 	}

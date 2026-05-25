@@ -1,0 +1,18 @@
+# test log
+getenv GOTMPDIR
+stat C:\Users\MAX\Desktop\LegacyCore-v1.0.2-final\.gotmp-build\TestWriteFileAtomicCreatesFileWithPermissions4121510127\001\nested
+stat C:\Users\MAX\Desktop\LegacyCore-v1.0.2-final\.gotmp-build\TestWriteFileAtomicCreatesFileWithPermissions4121510127\001
+open C:\Users\MAX\Desktop\LegacyCore-v1.0.2-final\.gotmp-build\TestWriteFileAtomicCreatesFileWithPermissions4121510127\001\nested\.state.json.tmp-1826799590
+open C:\Users\MAX\Desktop\LegacyCore-v1.0.2-final\.gotmp-build\TestWriteFileAtomicCreatesFileWithPermissions4121510127\001\nested
+open C:\Users\MAX\Desktop\LegacyCore-v1.0.2-final\.gotmp-build\TestWriteFileAtomicCreatesFileWithPermissions4121510127\001\nested\state.json
+stat C:\Users\MAX\Desktop\LegacyCore-v1.0.2-final\.gotmp-build\TestWriteFileAtomicCreatesFileWithPermissions4121510127\001\nested\state.json
+open C:\Users\MAX\Desktop\LegacyCore-v1.0.2-final\.gotmp-build
+getenv GOTMPDIR
+stat C:\Users\MAX\Desktop\LegacyCore-v1.0.2-final\.gotmp-build\TestWriteFileAtomicReplacesExistingFile3748154850\001
+open C:\Users\MAX\Desktop\LegacyCore-v1.0.2-final\.gotmp-build\TestWriteFileAtomicReplacesExistingFile3748154850\001\.state.json.tmp-2940936346
+open C:\Users\MAX\Desktop\LegacyCore-v1.0.2-final\.gotmp-build\TestWriteFileAtomicReplacesExistingFile3748154850\001
+stat C:\Users\MAX\Desktop\LegacyCore-v1.0.2-final\.gotmp-build\TestWriteFileAtomicReplacesExistingFile3748154850\001
+open C:\Users\MAX\Desktop\LegacyCore-v1.0.2-final\.gotmp-build\TestWriteFileAtomicReplacesExistingFile3748154850\001\.state.json.tmp-4254677549
+open C:\Users\MAX\Desktop\LegacyCore-v1.0.2-final\.gotmp-build\TestWriteFileAtomicReplacesExistingFile3748154850\001
+open C:\Users\MAX\Desktop\LegacyCore-v1.0.2-final\.gotmp-build\TestWriteFileAtomicReplacesExistingFile3748154850\001\state.json
+open C:\Users\MAX\Desktop\LegacyCore-v1.0.2-final\.gotmp-build

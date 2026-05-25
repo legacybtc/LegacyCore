@@ -3,6 +3,7 @@
 Legacy Coin is a fair-launch UTXO proof-of-work network focused on local
 ownership: run a node, hold keys locally, mine with CPU, and verify the network
 from your own computer.
+There is no premine or dev tax in mainnet consensus.
 
 This public `LegacyCore` repository contains:
 
@@ -22,7 +23,7 @@ If you are a normal Windows user:
    https://github.com/legacybtc/LegacyCore/releases
 
 2. Download:
-   `LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.1.zip`
+   `LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.2.zip`
 
 3. Extract the ZIP.
 
@@ -46,13 +47,13 @@ If you are a Linux node operator / miner:
    https://github.com/legacybtc/LegacyCore/releases
 
 2. Download:
-   `LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0.tar.gz`
+   `LegacyCore-LBTC-mainnet-linux-amd64-v1.0.2.tar.gz`
 
 3. Extract and run:
 
    ```bash
-   tar -xzf LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0.tar.gz
-   cd LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0
+   tar -xzf LegacyCore-LBTC-mainnet-linux-amd64-v1.0.2.tar.gz
+   cd LegacyCore-LBTC-mainnet-linux-amd64-v1.0.2
    chmod +x legacycoind legacycoin-cli
    ./legacycoind run -seed-peers
    ```
@@ -71,8 +72,8 @@ From this `LegacyCore` repository/release:
 
 | User type | Download | What it does |
 |---|---|---|
-| Windows normal user | `LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.1.zip` | Desktop wallet + local node |
-| Linux node operator | `LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0.tar.gz` | Full node + CLI |
+| Windows normal user | `LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.2.zip` | Desktop wallet + local node |
+| Linux node operator | `LegacyCore-LBTC-mainnet-linux-amd64-v1.0.2.tar.gz` | Full node + CLI |
 | Developer | GitHub source or source ZIP | Build Core, CLI, and Wallet from source |
 
 Separate products, not included in this repository:
@@ -120,10 +121,57 @@ Mining from the CLI is solo mining. Hashrate does not guarantee a block. Rewards
 only appear if your miner finds a block, and coinbase rewards mature after 100
 blocks.
 
+### Multi-Machine Mining (Safe Setup)
+
+- Run one fully-synced node on your LAN.
+- Point other mining machines to that node's RPC on a private network only.
+- Do not expose RPC port `19556` to the public internet.
+- Do not share one wallet seed across multiple random machines.
+- Keep wallet backups offline and verify your mining address before long runs.
+
+### Mining Reality Check
+
+- Solo mining is probabilistic: hashrate improves your odds but does not
+  guarantee a block in any fixed time.
+- Network KH/s is an estimate from recent blocks, not a count of connected
+  peers.
+- GPU miners in the community are third-party tools unless officially audited
+  and announced. CPU mining remains the intended baseline.
+
+## Public Documentation Scope
+
+This public repository intentionally keeps docs minimal: user quick start, source
+build steps, basic RPC usage, mining basics, and security guidance.
+
+Detailed internal deployment playbooks (explorer/pool/exchange operations and
+private infrastructure procedures) are maintained outside this public repo.
+
+Windows build details remain in `docs/WINDOWS_BUILD.md`.
+
+## Build and CI Framework
+
+- GitHub Actions CI: `.github/workflows/ci.yml` (Linux + Windows matrix)
+- Make targets:
+  - `make test`
+  - `make vet`
+  - `make daemon`
+  - `make cli`
+  - `make wallet-internal`
+  - `make linux-amd64`
+  - `make package-linux`
+- Linux helper scripts:
+  - `scripts/build-linux.sh`
+  - `scripts/package-linux.sh`
+- Windows helper scripts:
+  - `scripts/check-windows-build-env.ps1`
+  - `scripts/build-windows.ps1`
+  - `scripts/package-windows.ps1`
+  - `build-windows.bat`
+
 ## Windows Desktop Wallet: Download and Run
 
 1. Download:
-   `LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.1.zip`
+   `LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.2.zip`
 
 2. Right-click ZIP -> Extract All.
 
@@ -151,7 +199,7 @@ blocks.
 Warning:
 
 - Do not delete wallet files, private keys, or seed phrases.
-- If you tested old pre builds, back up wallet first, then remove only old
+- If you tested old pre-RC2 builds, back up wallet first, then remove only old
   runtime data:
   - `blocks`
   - `chainstate`
@@ -201,13 +249,13 @@ Full Windows build details are in `docs/WINDOWS_BUILD.md`.
 ## Linux Full Node: Download and Run
 
 1. Download:
-   `LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0.tar.gz`
+   `LegacyCore-LBTC-mainnet-linux-amd64-v1.0.2.tar.gz`
 
 2. Extract:
 
    ```bash
-   tar -xzf LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0.tar.gz
-   cd LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0
+   tar -xzf LegacyCore-LBTC-mainnet-linux-amd64-v1.0.2.tar.gz
+   cd LegacyCore-LBTC-mainnet-linux-amd64-v1.0.2
    ```
 
 3. Make binaries executable:
@@ -260,13 +308,13 @@ Only run binaries if checksums match the official GitHub release.
 Windows PowerShell:
 
 ```powershell
-Get-FileHash .\LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.1.zip -Algorithm SHA256
+Get-FileHash .\LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.2.zip -Algorithm SHA256
 ```
 
 Linux:
 
 ```bash
-sha256sum LegacyCore-LBTC-mainnet-linux-amd64-v1.0.0.tar.gz
+sha256sum LegacyCore-LBTC-mainnet-linux-amd64-v1.0.2.tar.gz
 sha256sum -c SHA256SUMS.txt
 ```
 

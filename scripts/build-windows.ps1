@@ -12,6 +12,22 @@ function Assert-LastExitCode([string]$stepName) {
     }
 }
 
+function Sync-WalletBrandingAssets {
+    $assetsDir = Join-Path $repoRoot "cmd\legacywallet\assets"
+    $appIconSrc = Join-Path $assetsDir "appicon.png"
+    $winIconSrc = Join-Path $assetsDir "icon.ico"
+    if (-not (Test-Path $appIconSrc) -or -not (Test-Path $winIconSrc)) {
+        Write-Host "Wallet branding assets not found in cmd\\legacywallet\\assets; using current build defaults."
+        return
+    }
+    $buildDir = Join-Path $repoRoot "cmd\legacywallet\build"
+    $windowsBuildDir = Join-Path $buildDir "windows"
+    New-Item -ItemType Directory -Force -Path $buildDir, $windowsBuildDir | Out-Null
+    Copy-Item $appIconSrc (Join-Path $buildDir "appicon.png") -Force
+    Copy-Item $winIconSrc (Join-Path $windowsBuildDir "icon.ico") -Force
+    Write-Host "Applied wallet branding assets from cmd\\legacywallet\\assets."
+}
+
 $env:GOTELEMETRY = "off"
 $env:GOCACHE = Join-Path $repoRoot ".gocache-build"
 $env:GOTMPDIR = Join-Path $repoRoot ".gotmp-build"
@@ -121,6 +137,7 @@ if ($params -notmatch "yespower backend:\s+cgo-c-reference") {
 
 if (-not $SkipWails) {
     if (Get-Command wails -ErrorAction SilentlyContinue) {
+        Sync-WalletBrandingAssets
         Push-Location "cmd\legacywallet"
         wails build -platform windows/amd64 -skipbindings -trimpath -ldflags "-s -w"
         Assert-LastExitCode "wails build windows/amd64"

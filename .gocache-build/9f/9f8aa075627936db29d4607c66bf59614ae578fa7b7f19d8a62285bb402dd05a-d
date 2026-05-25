@@ -1,0 +1,159 @@
+# test log
+getenv LEGACYCOIN_DATADIR
+getenv LEGACYCOIN_DATADIR
+getenv APPDATA
+getenv GOTMPDIR
+stat C:\Users\MAX\AppData\Local\Temp\TestNewWithDataDirUsesCustomPathWithoutEnvMutation3621203253
+getenv LEGACYCOIN_DATADIR
+getenv LEGACYCOIN_DATADIR
+open C:\Users\MAX\AppData\Local\Temp\TestNewWithDataDirUsesCustomPathWithoutEnvMutation3621203253\001\chainstate.journal.json
+open C:\Users\MAX\AppData\Local\Temp\TestNewWithDataDirUsesCustomPathWithoutEnvMutation3621203253\001\chainstate.json
+open C:\Users\MAX\AppData\Local\Temp\TestNewWithDataDirUsesCustomPathWithoutEnvMutation3621203253\001\wallet.json
+stat C:\Users\MAX\AppData\Local\Temp\TestNewWithDataDirUsesCustomPathWithoutEnvMutation3621203253\001
+stat C:\Users\MAX\AppData\Local\Temp\TestNewWithDataDirUsesCustomPathWithoutEnvMutation3621203253\001
+open C:\Users\MAX\AppData\Local\Temp\TestNewWithDataDirUsesCustomPathWithoutEnvMutation3621203253\001\.wallet.json.tmp-1215520290
+open C:\Users\MAX\AppData\Local\Temp\TestNewWithDataDirUsesCustomPathWithoutEnvMutation3621203253\001
+open C:\Users\MAX\AppData\Local\Temp\TestNewWithDataDirUsesCustomPathWithoutEnvMutation3621203253\001\legacycoin.conf
+open C:\Users\MAX\AppData\Local\Temp\TestNewWithDataDirUsesCustomPathWithoutEnvMutation3621203253\001\legacycoin.conf
+open C:\Users\MAX\AppData\Local\Temp\TestNewWithDataDirUsesCustomPathWithoutEnvMutation3621203253\001\legacycoin.conf
+open C:\Users\MAX\AppData\Local\Temp\TestNewWithDataDirUsesCustomPathWithoutEnvMutation3621203253\001\.cookie
+stat C:\Users\MAX\AppData\Local\Temp\TestNewWithDataDirUsesCustomPathWithoutEnvMutation3621203253\001
+open C:\Users\MAX\AppData\Local\Temp\TestNewWithDataDirUsesCustomPathWithoutEnvMutation3621203253\001\.cookie
+open C:\Users\MAX\AppData\Local\Temp\TestNewWithDataDirUsesCustomPathWithoutEnvMutation3621203253\001\legacycoin.conf
+open C:\Users\MAX\AppData\Local\Temp\TestNewWithDataDirUsesCustomPathWithoutEnvMutation3621203253\001\legacycoin.conf
+open C:\Users\MAX\AppData\Local\Temp\TestNewWithDataDirUsesCustomPathWithoutEnvMutation3621203253\001\legacycoin.conf
+open C:\Users\MAX\AppData\Local\Temp\TestNewWithDataDirUsesCustomPathWithoutEnvMutation3621203253\001\legacycoin.conf
+open C:\Users\MAX\AppData\Local\Temp\TestNewWithDataDirUsesCustomPathWithoutEnvMutation3621203253\001\legacycoin.conf
+getenv LEGACYCOIN_DATADIR
+stat C:\Users\MAX\AppData\Local\Temp\TestNewWithDataDirUsesCustomPathWithoutEnvMutation3621203253\001\wallet.json
+stat C:\Users\MAX\AppData\Local\Temp\TestNewWithDataDirUsesCustomPathWithoutEnvMutation3621203253\001\.cookie
+open C:\Users\MAX\AppData\Local\Temp
+getenv GOTMPDIR
+open C:\Users\MAX\AppData\Local\Temp
+getenv GOTMPDIR
+open C:\Users\MAX\AppData\Local\Temp
+getenv GOTMPDIR
+open C:\Users\MAX\AppData\Local\Temp
+getenv GOTMPDIR
+getenv PATHEXT
+getenv NoDefaultCurrentDirectoryInExePath
+stat netstat.com
+stat netstat.exe
+stat netstat.bat
+stat netstat.cmd
+stat netstat.vbs
+stat netstat.vbe
+stat netstat.js
+stat netstat.jse
+stat netstat.wsf
+stat netstat.wsh
+stat netstat.msc
+stat netstat.cpl
+getenv path
+stat C:\Program Files\Go\bin\netstat.com
+stat C:\Program Files\Go\bin\netstat.exe
+stat C:\Program Files\Go\bin\netstat.bat
+stat C:\Program Files\Go\bin\netstat.cmd
+stat C:\Program Files\Go\bin\netstat.vbs
+stat C:\Program Files\Go\bin\netstat.vbe
+stat C:\Program Files\Go\bin\netstat.js
+stat C:\Program Files\Go\bin\netstat.jse
+stat C:\Program Files\Go\bin\netstat.wsf
+stat C:\Program Files\Go\bin\netstat.wsh
+stat C:\Program Files\Go\bin\netstat.msc
+stat C:\Program Files\Go\bin\netstat.cpl
+stat C:\Users\MAX\.codex\tmp\arg0\codex-arg06UM7jk\netstat.com
+stat C:\Users\MAX\.codex\tmp\arg0\codex-arg06UM7jk\netstat.exe
+stat C:\Users\MAX\.codex\tmp\arg0\codex-arg06UM7jk\netstat.bat
+stat C:\Users\MAX\.codex\tmp\arg0\codex-arg06UM7jk\netstat.cmd
+stat C:\Users\MAX\.codex\tmp\arg0\codex-arg06UM7jk\netstat.vbs
+stat C:\Users\MAX\.codex\tmp\arg0\codex-arg06UM7jk\netstat.vbe
+stat C:\Users\MAX\.codex\tmp\arg0\codex-arg06UM7jk\netstat.js
+stat C:\Users\MAX\.codex\tmp\arg0\codex-arg06UM7jk\netstat.jse
+stat C:\Users\MAX\.codex\tmp\arg0\codex-arg06UM7jk\netstat.wsf
+stat C:\Users\MAX\.codex\tmp\arg0\codex-arg06UM7jk\netstat.wsh
+stat C:\Users\MAX\.codex\tmp\arg0\codex-arg06UM7jk\netstat.msc
+stat C:\Users\MAX\.codex\tmp\arg0\codex-arg06UM7jk\netstat.cpl
+stat C:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot\bin\netstat.com
+stat C:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot\bin\netstat.exe
+stat C:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot\bin\netstat.bat
+stat C:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot\bin\netstat.cmd
+stat C:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot\bin\netstat.vbs
+stat C:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot\bin\netstat.vbe
+stat C:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot\bin\netstat.js
+stat C:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot\bin\netstat.jse
+stat C:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot\bin\netstat.wsf
+stat C:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot\bin\netstat.wsh
+stat C:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot\bin\netstat.msc
+stat C:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot\bin\netstat.cpl
+stat C:\Windows\system32\netstat.com
+stat C:\Windows\system32\netstat.exe
+getenv PATHEXT
+open NUL
+open C:\Windows\system32\netstat.exe
+getenv PATHEXT
+getenv NoDefaultCurrentDirectoryInExePath
+stat tasklist.com
+stat tasklist.exe
+stat tasklist.bat
+stat tasklist.cmd
+stat tasklist.vbs
+stat tasklist.vbe
+stat tasklist.js
+stat tasklist.jse
+stat tasklist.wsf
+stat tasklist.wsh
+stat tasklist.msc
+stat tasklist.cpl
+getenv path
+stat C:\Program Files\Go\bin\tasklist.com
+stat C:\Program Files\Go\bin\tasklist.exe
+stat C:\Program Files\Go\bin\tasklist.bat
+stat C:\Program Files\Go\bin\tasklist.cmd
+stat C:\Program Files\Go\bin\tasklist.vbs
+stat C:\Program Files\Go\bin\tasklist.vbe
+stat C:\Program Files\Go\bin\tasklist.js
+stat C:\Program Files\Go\bin\tasklist.jse
+stat C:\Program Files\Go\bin\tasklist.wsf
+stat C:\Program Files\Go\bin\tasklist.wsh
+stat C:\Program Files\Go\bin\tasklist.msc
+stat C:\Program Files\Go\bin\tasklist.cpl
+stat C:\Users\MAX\.codex\tmp\arg0\codex-arg06UM7jk\tasklist.com
+stat C:\Users\MAX\.codex\tmp\arg0\codex-arg06UM7jk\tasklist.exe
+stat C:\Users\MAX\.codex\tmp\arg0\codex-arg06UM7jk\tasklist.bat
+stat C:\Users\MAX\.codex\tmp\arg0\codex-arg06UM7jk\tasklist.cmd
+stat C:\Users\MAX\.codex\tmp\arg0\codex-arg06UM7jk\tasklist.vbs
+stat C:\Users\MAX\.codex\tmp\arg0\codex-arg06UM7jk\tasklist.vbe
+stat C:\Users\MAX\.codex\tmp\arg0\codex-arg06UM7jk\tasklist.js
+stat C:\Users\MAX\.codex\tmp\arg0\codex-arg06UM7jk\tasklist.jse
+stat C:\Users\MAX\.codex\tmp\arg0\codex-arg06UM7jk\tasklist.wsf
+stat C:\Users\MAX\.codex\tmp\arg0\codex-arg06UM7jk\tasklist.wsh
+stat C:\Users\MAX\.codex\tmp\arg0\codex-arg06UM7jk\tasklist.msc
+stat C:\Users\MAX\.codex\tmp\arg0\codex-arg06UM7jk\tasklist.cpl
+stat C:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot\bin\tasklist.com
+stat C:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot\bin\tasklist.exe
+stat C:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot\bin\tasklist.bat
+stat C:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot\bin\tasklist.cmd
+stat C:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot\bin\tasklist.vbs
+stat C:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot\bin\tasklist.vbe
+stat C:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot\bin\tasklist.js
+stat C:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot\bin\tasklist.jse
+stat C:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot\bin\tasklist.wsf
+stat C:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot\bin\tasklist.wsh
+stat C:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot\bin\tasklist.msc
+stat C:\Program Files\Eclipse Adoptium\jdk-17.0.18.8-hotspot\bin\tasklist.cpl
+stat C:\Windows\system32\tasklist.com
+stat C:\Windows\system32\tasklist.exe
+getenv PATHEXT
+open NUL
+open C:\Windows\system32\tasklist.exe
+open C:\Users\MAX\AppData\Local\Temp\TestStatusIncludesRPCPortProbe4218378728\001\legacycoin.conf
+open C:\Users\MAX\AppData\Local\Temp\TestStatusIncludesRPCPortProbe4218378728\001\.cookie
+getenv HTTP_PROXY
+getenv http_proxy
+getenv HTTPS_PROXY
+getenv https_proxy
+getenv NO_PROXY
+getenv no_proxy
+getenv REQUEST_METHOD
+open C:\Users\MAX\AppData\Local\Temp

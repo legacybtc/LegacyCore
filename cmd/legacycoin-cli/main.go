@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -233,6 +234,8 @@ func buildParams(method string, args []string) ([]any, string, error) {
 		return buildSendToAddress(method, args)
 	case "sendfromaddress":
 		return buildSendFromAddress(method, args)
+	case "sendmany", "sendmanyraw":
+		return buildSendMany(method, args)
 	default:
 		params := make([]any, 0, len(args))
 		for _, arg := range args {
@@ -240,6 +243,115 @@ func buildParams(method string, args []string) ([]any, string, error) {
 		}
 		return params, method, nil
 	}
+}
+
+func buildSendMany(method string, args []string) ([]any, string, error) {
+	clean, _, _ := splitFlags(args)
+	if os.Getenv("LEGACYCOIN_CLI_DEBUG_SENDMANY") == "1" {
+		fmt.Fprintf(os.Stderr, "debug sendmany raw args: %#v\n", args)
+		fmt.Fprintf(os.Stderr, "debug sendmany clean args: %#v\n", clean)
+	}
+	if len(clean) == 0 {
+		return nil, method, fmt.Errorf("%s expects <account> <outputs_json>", method)
+	}
+	account := ""
+	outputStart := 0
+	// For compatibility, allow either:
+	//   sendmany "" "{...}"
+	// or account omitted by shell handling:
+	//   sendmany "{...}"
+	if len(clean) >= 2 && !looksLikeSendManyOutputs(clean[0]) {
+		account = clean[0]
+		outputStart = 1
+	}
+	if outputStart >= len(clean) {
+		return nil, method, fmt.Errorf("%s expects <account> <outputs_json>", method)
+	}
+	// PowerShell may split JSON objects into multiple argv fragments.
+	// Try progressively joining fragments and parse the first valid JSON object.
+	for end := outputStart + 1; end <= len(clean); end++ {
+		candidates := []string{
+			strings.Join(clean[outputStart:end], ""),
+		}
+		if end > outputStart+1 {
+			candidates = append(candidates,
+				strings.Join(clean[outputStart:end], ","),
+				strings.Join(clean[outputStart:end], " "),
+			)
+		}
+		for _, candidate := range candidates {
+			outputs, err := parseSendManyOutputsArg(candidate)
+			if err != nil {
+				continue
+			}
+			params := []any{account, outputs}
+			for i := end; i < len(clean); i++ {
+				params = append(params, parseParam(clean[i]))
+			}
+			return params, method, nil
+		}
+	}
+	return nil, method, fmt.Errorf("sendmany outputs must be a JSON object like {\"addr\":amount}")
+}
+
+func looksLikeSendManyOutputs(arg string) bool {
+	arg = strings.TrimSpace(arg)
+	if arg == "" {
+		return false
+	}
+	if strings.HasPrefix(arg, "{") || strings.HasPrefix(arg, `"{`) {
+		return true
+	}
+	return strings.Contains(arg, ":")
+}
+
+func parseSendManyOutputsArg(arg string) (map[string]any, error) {
+	arg = strings.TrimSpace(arg)
+	if arg == "" {
+		return nil, fmt.Errorf("sendmany outputs json cannot be empty")
+	}
+	tryParse := func(text string) (map[string]any, bool) {
+		var out map[string]any
+		if err := json.Unmarshal([]byte(text), &out); err != nil {
+			return nil, false
+		}
+		if len(out) == 0 {
+			return nil, false
+		}
+		return out, true
+	}
+	if out, ok := tryParse(arg); ok {
+		return out, nil
+	}
+	if unquoted, err := strconv.Unquote(arg); err == nil {
+		if out, ok := tryParse(unquoted); ok {
+			return out, nil
+		}
+	}
+	if strings.Contains(arg, `\"`) {
+		normalized := strings.ReplaceAll(arg, `\"`, `"`)
+		if out, ok := tryParse(normalized); ok {
+			return out, nil
+		}
+		arg = normalized
+	}
+	if strings.Contains(arg, `\:`) {
+		normalized := strings.ReplaceAll(arg, `\:`, `:`)
+		if out, ok := tryParse(normalized); ok {
+			return out, nil
+		}
+		arg = normalized
+	}
+	// PowerShell may pass object-like text without quoted keys:
+	// {Lxxxx:0.1,Lyyyy:0.2}
+	reBareKeys := regexp.MustCompile(`([,{]\s*)([A-Za-z0-9]+)\s*:`)
+	if strings.Contains(arg, "{") && strings.Contains(arg, ":") {
+		quotedKeys := reBareKeys.ReplaceAllString(arg, `$1"$2":`)
+		if out, ok := tryParse(quotedKeys); ok {
+			return out, nil
+		}
+	}
+	return nil, fmt.Errorf("sendmany outputs must be a JSON object like {\"addr\":amount}")
 }
 
 func buildSendToAddress(method string, args []string) ([]any, string, error) {

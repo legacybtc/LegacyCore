@@ -32,6 +32,7 @@ func main() {
 		},
 		BackgroundColour: &options.RGBA{R: 17, G: 24, B: 39, A: 1},
 		OnStartup:        app.Startup,
+		OnBeforeClose:    app.BeforeClose,
 		OnShutdown:       app.Shutdown,
 		Bind:             []any{app},
 	}); err != nil {

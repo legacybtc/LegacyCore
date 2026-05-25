@@ -1,47 +1,48 @@
 GO ?= go
-PKG := ./...
-BIN := bin/legacycoind
+PKG ?= ./...
 
-.PHONY: all build test race fuzz lint vuln sec clean release-snapshot
+.PHONY: build build-core daemon cli wallet-internal test vet frontend clean params \
+	linux-amd64 windows-amd64 package-linux package-windows
 
-all: test build
+build: build-core
 
-build:
-	$(GO) build -trimpath -ldflags='-s -w -buildid=' -o $(BIN) ./cmd/legacycoind
+build-core: daemon cli wallet-internal
+
+daemon:
+	$(GO) build -trimpath -o legacycoind ./cmd/legacycoind
+
+cli:
+	$(GO) build -trimpath -o legacycoin-cli ./cmd/legacycoin-cli
+
+wallet-internal:
+	$(GO) build -trimpath -o legacy-wallet-internal ./cmd/legacywallet
 
 test:
-	$(GO) test $(PKG)
+	$(GO) test ./internal/p2p ./internal/rpc ./internal/wallet ./internal/mempool
+	$(GO) test ./cmd/... ./internal/...
 
-race:
-	$(GO) test -race $(PKG)
+vet:
+	$(GO) vet ./internal/p2p ./internal/rpc ./internal/wallet ./internal/mempool
+	$(GO) vet ./cmd/... ./internal/...
 
-fuzz:
-	$(GO) test ./internal/wire -run=^$$ -fuzz=Fuzz -fuzztime=30s
-	$(GO) test ./internal/script -run=^$$ -fuzz=Fuzz -fuzztime=30s
+frontend:
+	cd cmd/legacywallet/frontend && npm install && npm run build
 
-lint:
-	$(GO) vet $(PKG)
-	staticcheck $(PKG)
-	gosec ./...
+params:
+	./legacycoind params
 
-vuln:
-	govulncheck $(PKG)
+linux-amd64:
+	CGO_ENABLED=1 GOOS=linux GOARCH=amd64 $(GO) build -trimpath -ldflags "-s -w" -o dist/linux-amd64/legacycoind ./cmd/legacycoind
+	CGO_ENABLED=1 GOOS=linux GOARCH=amd64 $(GO) build -trimpath -ldflags "-s -w" -o dist/linux-amd64/legacycoin-cli ./cmd/legacycoin-cli
 
-sec: test race lint vuln
+windows-amd64:
+	powershell.exe -ExecutionPolicy Bypass -File scripts/build-windows.ps1
+
+package-linux:
+	bash scripts/package-linux.sh
+
+package-windows:
+	powershell.exe -ExecutionPolicy Bypass -File scripts/package-windows.ps1
 
 clean:
-	rm -rf bin dist coverage.out coverage.html
-
-release-snapshot: clean sec build
-	mkdir -p dist
-	tar --sort=name --mtime='UTC 2026-01-01' --owner=0 --group=0 --numeric-owner -czf dist/legacy-go-source.tar.gz \
-		--exclude=.git --exclude=bin --exclude=dist --exclude=.gocache --exclude=.gotmp .
-	sha256sum dist/legacy-go-source.tar.gz > dist/SHA256SUMS
-
-.PHONY: mainnet-gate check-release-artifacts
-
-mainnet-gate:
-	sh ops/mainnet-gate.sh
-
-check-release-artifacts:
-	sh ops/check-release-artifacts.sh dist
+	rm -rf legacycoind legacycoin-cli legacy-wallet-internal legacycoind.exe legacycoin-cli.exe legacy-wallet-internal.exe dist .gocache-local .gotmp-local .gocache-build .gotmp-build

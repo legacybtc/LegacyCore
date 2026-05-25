@@ -84,3 +84,35 @@ func TestTxVerboseResultHasCoinbaseVin(t *testing.T) {
 		t.Fatalf("expected coinbase vin marker in decoded transaction")
 	}
 }
+
+func TestParseGBTRequestObject(t *testing.T) {
+	req, pubHash, err := parseGBTRequest(json.RawMessage(`[{"mode":"template","capabilities":["coinbasetxn"],"longpollid":"abc"}]`))
+	if err != nil {
+		t.Fatalf("parseGBTRequest failed: %v", err)
+	}
+	if req.Mode != "template" {
+		t.Fatalf("mode=%q want template", req.Mode)
+	}
+	if len(req.Capabilities) != 1 || req.Capabilities[0] != "coinbasetxn" {
+		t.Fatalf("capabilities=%v", req.Capabilities)
+	}
+	if req.LongPollID != "abc" {
+		t.Fatalf("longpollid=%q", req.LongPollID)
+	}
+	if len(pubHash) != 20 {
+		t.Fatalf("pubhash len=%d want 20", len(pubHash))
+	}
+}
+
+func TestParseGBTRequestLegacyPubHash(t *testing.T) {
+	req, pubHash, err := parseGBTRequest(json.RawMessage(`["00112233445566778899aabbccddeeff00112233"]`))
+	if err != nil {
+		t.Fatalf("parseGBTRequest failed: %v", err)
+	}
+	if req.Mode != "template" {
+		t.Fatalf("mode=%q want template", req.Mode)
+	}
+	if got := len(pubHash); got != 20 {
+		t.Fatalf("pubhash len=%d want 20", got)
+	}
+}

@@ -1,0 +1,5 @@
+./block.go
+./inventory.go
+./message.go
+./tx.go
+./varint.go

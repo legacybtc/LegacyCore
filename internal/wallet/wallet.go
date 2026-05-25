@@ -651,6 +651,196 @@ func (w *Wallet) SendFromAddress(chain *blockchain.Chain, pool *mempool.Pool, fr
 	return w.sendWithSource(chain, pool, from, to, amount, fee, nil)
 }
 
+func (w *Wallet) SendMany(chain *blockchain.Chain, pool *mempool.Pool, from string, outputs map[string]int64, fee int64) (string, int64, error) {
+	if fee < 0 {
+		return "", 0, fmt.Errorf("bad fee")
+	}
+	if len(outputs) == 0 {
+		return "", 0, fmt.Errorf("missing outputs")
+	}
+	addrs := make([]string, 0, len(outputs))
+	for addr := range outputs {
+		addrs = append(addrs, addr)
+	}
+	sort.Strings(addrs)
+	totalAmount := int64(0)
+	extra := make([]wire.TxOut, 0, len(addrs))
+	for _, addr := range addrs {
+		amountValue := outputs[addr]
+		if amountValue <= 0 {
+			return "", 0, fmt.Errorf("amount for %s must be > 0", addr)
+		}
+		pkScript, err := destinationScript(addr)
+		if err != nil {
+			return "", 0, err
+		}
+		totalAmount += amountValue
+		extra = append(extra, wire.TxOut{Value: amountValue, PkScript: pkScript})
+	}
+	txid, err := w.sendWithSource(chain, pool, from, "", 0, fee, extra)
+	if err != nil {
+		return "", 0, err
+	}
+	return txid, totalAmount, nil
+}
+
+func (w *Wallet) SignRawTransaction(chain *blockchain.Chain, tx *wire.MsgTx) (*wire.MsgTx, bool, []map[string]any, error) {
+	if err := w.requireUnlocked(); err != nil {
+		return nil, false, nil, err
+	}
+	if tx == nil {
+		return nil, false, nil, fmt.Errorf("nil transaction")
+	}
+	if chain == nil {
+		return nil, false, nil, fmt.Errorf("nil chain")
+	}
+	signErrors := make([]map[string]any, 0)
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	for i := range tx.TxIn {
+		in := &tx.TxIn[i]
+		if in.PreviousOutPoint.Index == ^uint32(0) && in.PreviousOutPoint.Hash == (chainhash.Hash{}) {
+			signErrors = append(signErrors, map[string]any{
+				"txid":  in.PreviousOutPoint.Hash.String(),
+				"vout":  in.PreviousOutPoint.Index,
+				"error": "coinbase input cannot be signed",
+			})
+			continue
+		}
+		prevTxID := in.PreviousOutPoint.Hash.String()
+		entry, err := chain.UTXO(prevTxID, in.PreviousOutPoint.Index)
+		if err != nil || entry == nil {
+			signErrors = append(signErrors, map[string]any{
+				"txid":  prevTxID,
+				"vout":  in.PreviousOutPoint.Index,
+				"error": "prevout not found in current UTXO set",
+			})
+			continue
+		}
+		prevScript, err := hex.DecodeString(entry.PkScript)
+		if err != nil {
+			signErrors = append(signErrors, map[string]any{
+				"txid":  prevTxID,
+				"vout":  in.PreviousOutPoint.Index,
+				"error": "invalid prevout script",
+			})
+			continue
+		}
+		sighash, err := script.SignatureHash(tx, i, prevScript, script.SigHashAll)
+		if err != nil {
+			signErrors = append(signErrors, map[string]any{
+				"txid":  prevTxID,
+				"vout":  in.PreviousOutPoint.Index,
+				"error": err.Error(),
+			})
+			continue
+		}
+		switch {
+		case script.IsPayToPubKeyHash(prevScript):
+			if len(prevScript) < 23 {
+				signErrors = append(signErrors, map[string]any{
+					"txid":  prevTxID,
+					"vout":  in.PreviousOutPoint.Index,
+					"error": "short P2PKH script",
+				})
+				continue
+			}
+			addr := address.EncodeBase58Check(chaincfg.PublicKeyHashVersion, prevScript[3:23])
+			hexKey, ok := w.keys[addr]
+			if !ok {
+				signErrors = append(signErrors, map[string]any{
+					"txid":    prevTxID,
+					"vout":    in.PreviousOutPoint.Index,
+					"address": addr,
+					"error":   "wallet key not found",
+				})
+				continue
+			}
+			keyBytes, err := hex.DecodeString(hexKey)
+			if err != nil {
+				signErrors = append(signErrors, map[string]any{
+					"txid":    prevTxID,
+					"vout":    in.PreviousOutPoint.Index,
+					"address": addr,
+					"error":   "invalid wallet key encoding",
+				})
+				continue
+			}
+			priv, _ := btcec.PrivKeyFromBytes(keyBytes)
+			sig := btcecdsa.Sign(priv, sighash[:]).Serialize()
+			sigScript, err := script.SignatureScript(sig, priv.PubKey().SerializeCompressed())
+			if err != nil {
+				signErrors = append(signErrors, map[string]any{
+					"txid":    prevTxID,
+					"vout":    in.PreviousOutPoint.Index,
+					"address": addr,
+					"error":   err.Error(),
+				})
+				continue
+			}
+			in.SignatureScript = sigScript
+		case script.IsPayToHybridPubKeyHash(prevScript):
+			if len(prevScript) < 23 {
+				signErrors = append(signErrors, map[string]any{
+					"txid":  prevTxID,
+					"vout":  in.PreviousOutPoint.Index,
+					"error": "short hybrid script",
+				})
+				continue
+			}
+			addr := address.HybridPrefix + address.EncodeBase58Check(address.HybridVersion, prevScript[3:23])
+			hybridBytes, ok := w.hybridKeys[addr]
+			if !ok {
+				signErrors = append(signErrors, map[string]any{
+					"txid":    prevTxID,
+					"vout":    in.PreviousOutPoint.Index,
+					"address": addr,
+					"error":   "wallet hybrid key not found",
+				})
+				continue
+			}
+			hybridKey, err := pqc.HybridPrivateKeyFromBytes(hybridBytes)
+			if err != nil {
+				signErrors = append(signErrors, map[string]any{
+					"txid":    prevTxID,
+					"vout":    in.PreviousOutPoint.Index,
+					"address": addr,
+					"error":   "invalid hybrid key encoding",
+				})
+				continue
+			}
+			hybridSig, err := hybridKey.Sign(sighash[:])
+			if err != nil {
+				signErrors = append(signErrors, map[string]any{
+					"txid":    prevTxID,
+					"vout":    in.PreviousOutPoint.Index,
+					"address": addr,
+					"error":   err.Error(),
+				})
+				continue
+			}
+			sigScript, err := script.HybridSignatureScript(hybridSig, hybridKey.Public().Bytes())
+			if err != nil {
+				signErrors = append(signErrors, map[string]any{
+					"txid":    prevTxID,
+					"vout":    in.PreviousOutPoint.Index,
+					"address": addr,
+					"error":   err.Error(),
+				})
+				continue
+			}
+			in.SignatureScript = sigScript
+		default:
+			signErrors = append(signErrors, map[string]any{
+				"txid":  prevTxID,
+				"vout":  in.PreviousOutPoint.Index,
+				"error": "unsupported script type",
+			})
+		}
+	}
+	return tx, len(signErrors) == 0, signErrors, nil
+}
+
 func (w *Wallet) SendTokenMarkers(chain *blockchain.Chain, pool *mempool.Pool, from string, markerScripts [][]byte, fee int64) (string, error) {
 	if from == "" {
 		return "", fmt.Errorf("bad source address")

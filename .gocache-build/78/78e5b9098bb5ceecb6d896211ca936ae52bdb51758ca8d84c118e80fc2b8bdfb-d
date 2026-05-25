@@ -1,0 +1,4 @@
+./app.go
+./main.go
+./service_windows.go
+./tray.go

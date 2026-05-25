@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -27,16 +28,19 @@ type App struct {
 	settings Settings
 	service  *nodeservice.Service
 	trayEnd  func()
+	logMu    sync.Mutex
+	stopOnce sync.Once
 }
 
 type Settings struct {
-	DataDir           string            `json:"dataDir"`
-	StartNodeOnLaunch bool              `json:"startNodeOnLaunch"`
-	StopNodeOnExit    bool              `json:"stopNodeOnExit"`
-	DefaultThreads    int               `json:"defaultThreads"`
-	Theme             string            `json:"theme"`
-	Network           NetworkSettings   `json:"network"`
-	Launchpad         LaunchpadSettings `json:"launchpad"`
+	DataDir              string            `json:"dataDir"`
+	StartNodeOnLaunch    bool              `json:"startNodeOnLaunch"`
+	StopNodeOnExit       bool              `json:"stopNodeOnExit"`
+	DefaultThreads       int               `json:"defaultThreads"`
+	DefaultMiningAddress string            `json:"defaultMiningAddress"`
+	Theme                string            `json:"theme"`
+	Network              NetworkSettings   `json:"network"`
+	Launchpad            LaunchpadSettings `json:"launchpad"`
 }
 
 type NetworkSettings struct {
@@ -54,6 +58,8 @@ type NodeTestResult struct {
 	Message string `json:"message"`
 }
 
+const lifecycleBuildMarker = "lifecycle-fix-v1.0.2-build-20260525"
+
 func NewApp() *App {
 	s := defaultSettings()
 	return &App{settings: s, service: nodeservice.New(s.DataDir)}
@@ -61,23 +67,45 @@ func NewApp() *App {
 
 func (a *App) Startup(ctx context.Context) {
 	a.ctx = ctx
+	a.lifecycleLogf("app startup marker=%s", lifecycleBuildMarker)
+	a.lifecycleLogf("app executable=%s", currentExecutablePath())
 	if s, err := loadSettings(); err == nil {
 		a.settings = s.withDefaults()
+		a.lifecycleLogf("settings loaded config=%s data_dir=%s start_on_launch=%t stop_on_exit=%t", settingsPath(), a.settings.DataDir, a.settings.StartNodeOnLaunch, a.settings.StopNodeOnExit)
+	} else {
+		a.lifecycleLogf("settings load failed config=%s err=%v (using defaults)", settingsPath(), err)
 	}
 	a.service = nodeservice.New(a.settings.DataDir)
+	a.lifecycleLogf("service created id=%s data_dir=%s", a.service.InstanceID(), a.settings.DataDir)
+	_, _ = a.service.SetDefaultMiningAddress(a.settings.DefaultMiningAddress)
 	a.trayEnd = startTray(a)
 	if a.settings.StartNodeOnLaunch && a.service.WalletExists() {
-		_ = a.service.Start()
+		a.lifecycleLog("startup auto-start requested")
+		if err := a.service.Start(); err != nil {
+			a.lifecycleLogf("startup auto-start failed: %v", err)
+		} else {
+			a.lifecycleLog("startup auto-start success")
+		}
 	}
+	status := a.service.Status()
+	a.lifecycleLogf("startup status running=%t rpc_in_use=%t rpc_state=%s rpc_pid=%d rpc_process=%s", status.Running, status.RPCPortInUse, status.RPCPortState, status.RPCPortPID, status.RPCPortProcess)
+}
+
+func (a *App) BeforeClose(ctx context.Context) bool {
+	a.lifecycleLog("window close event received")
+	return false
 }
 
 func (a *App) Shutdown(ctx context.Context) {
+	a.lifecycleLog("shutdown hook received")
 	if a.trayEnd != nil {
 		a.trayEnd()
 	}
-	if a.settings.StopNodeOnExit {
-		a.service.Stop()
-	}
+	a.stopOnce.Do(func() {
+		a.stopInternalNodeWithLifecycle("wallet shutdown")
+	})
+	status := a.service.Status()
+	a.lifecycleLogf("shutdown complete running=%t stopping=%t rpc_in_use=%t rpc_state=%s rpc_pid=%d rpc_process=%s", status.Running, status.Stopping, status.RPCPortInUse, status.RPCPortState, status.RPCPortPID, status.RPCPortProcess)
 }
 
 func (a *App) CoinInfo() map[string]any { return a.service.CoinInfo() }
@@ -92,11 +120,49 @@ func (a *App) ImportWallet(seedHex, passphrase string) (map[string]any, error) {
 	return a.service.ImportWallet(seedHex, passphrase)
 }
 
-func (a *App) StartNode() error { return a.service.Start() }
+func (a *App) StartNode() error {
+	a.lifecycleLogf("node start requested service_id=%s", a.service.InstanceID())
+	err := a.service.Start()
+	if err != nil {
+		a.lifecycleLogf("node start failed: %v", err)
+		return err
+	}
+	status := a.service.Status()
+	a.lifecycleLogf("node start success running=%t rpc_state=%s rpc_pid=%d rpc_process=%s", status.Running, status.RPCPortState, status.RPCPortPID, status.RPCPortProcess)
+	return nil
+}
 
-func (a *App) StopNode() string {
-	a.service.Stop()
-	return "node stop requested"
+func (a *App) StopNode() map[string]any {
+	a.lifecycleLogf("stop node clicked service_id=%s", a.service.InstanceID())
+	return a.stopInternalNodeWithLifecycle("wallet stop requested")
+}
+
+func (a *App) RestartInternalNode() (map[string]any, error) {
+	a.lifecycleLogf("restart internal node requested service_id=%s", a.service.InstanceID())
+	stopReport := a.stopInternalNodeWithLifecycle("wallet restart requested")
+	if err := a.service.Start(); err != nil {
+		a.lifecycleLogf("restart internal node failed: %v", err)
+		return map[string]any{
+			"ok":          false,
+			"stop_report": stopReport,
+			"error":       err.Error(),
+		}, err
+	}
+	status := a.service.Status()
+	a.lifecycleLogf("restart internal node success running=%t rpc_state=%s rpc_pid=%d rpc_process=%s", status.Running, status.RPCPortState, status.RPCPortPID, status.RPCPortProcess)
+	return map[string]any{
+		"ok":          true,
+		"stop_report": stopReport,
+		"status":      status,
+	}, nil
+}
+
+func (a *App) OpenLifecycleLog() map[string]any {
+	path := lifecycleLogPath()
+	return map[string]any{
+		"path":    path,
+		"message": "Open this log file in a text editor for wallet/node lifecycle diagnostics.",
+	}
 }
 
 func (a *App) WindowMinimise() {
@@ -108,6 +174,7 @@ func (a *App) WindowToggleMaximise() {
 }
 
 func (a *App) Quit() {
+	a.lifecycleLog("quit requested from UI")
 	wailsRuntime.Quit(a.ctx)
 }
 
@@ -145,6 +212,21 @@ func (a *App) GetDefaultAddress() (string, error) {
 		return "", err
 	}
 	return addrs[len(addrs)-1], nil
+}
+
+func (a *App) SetDefaultMiningAddress(addr string) (map[string]any, error) {
+	result, err := a.service.SetDefaultMiningAddress(addr)
+	if err != nil {
+		return nil, err
+	}
+	a.mu.Lock()
+	a.settings.DefaultMiningAddress = strings.TrimSpace(addr)
+	settings := a.settings
+	a.mu.Unlock()
+	if err := saveSettings(settings); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (a *App) SendToAddress(to, amount, fee string) (map[string]any, error) {
@@ -225,14 +307,33 @@ func (a *App) GetPeerInfo() ([]any, error) { return a.service.GetPeerInfo() }
 func (a *App) GetSyncStatus() (map[string]any, error) { return a.service.GetSyncStatus() }
 
 func (a *App) ForcePeerSync() (map[string]any, error) {
+	a.lifecycleLog("force peer sync requested from UI")
 	return a.service.ForcePeerSync("desktop wallet refresh")
 }
 
 func (a *App) GetMinerStatus() (map[string]any, error) { return a.service.GetMinerStatus() }
 
-func (a *App) StartMiner(threads int) (map[string]any, error) { return a.service.StartMiner(threads) }
+func (a *App) StartMiner(threads int) (map[string]any, error) {
+	a.lifecycleLogf("mining start requested threads=%d service_id=%s", threads, a.service.InstanceID())
+	out, err := a.service.StartMiner(threads)
+	if err != nil {
+		a.lifecycleLogf("mining start blocked reason=%v", err)
+		return nil, err
+	}
+	a.lifecycleLogf("mining start success threads=%d", threads)
+	return out, nil
+}
 
-func (a *App) StopMiner() (map[string]any, error) { return a.service.StopMiner() }
+func (a *App) StopMiner() (map[string]any, error) {
+	a.lifecycleLogf("mining stop requested service_id=%s", a.service.InstanceID())
+	out, err := a.service.StopMiner()
+	if err != nil {
+		a.lifecycleLogf("mining stop error=%v", err)
+		return nil, err
+	}
+	a.lifecycleLog("mining stop success")
+	return out, nil
+}
 
 func (a *App) SetMinerThreads(threads int) (map[string]any, error) {
 	return a.service.SetMinerThreads(threads)
@@ -313,6 +414,11 @@ func (a *App) ReconnectPeers() (map[string]any, error) {
 	return map[string]any{"status": ns.Mode, "results": results, "restart_required": ns.Mode == "connectonly"}, nil
 }
 
+func (a *App) DisconnectNode(addr string) map[string]any {
+	ok := a.service.DisconnectNode(addr)
+	return map[string]any{"node": addr, "disconnected": ok}
+}
+
 func (a *App) GetChainTiming() (map[string]any, error) { return a.service.GetChainTiming() }
 
 func (a *App) Doctor() (map[string]any, error) { return a.service.Doctor() }
@@ -367,6 +473,10 @@ func (a *App) Snapshot() map[string]any {
 		"wallet_exists": a.WalletExists(),
 		"node":          a.NodeStatus(),
 		"settings":      a.settings,
+		"lifecycle": map[string]any{
+			"marker": lifecycleBuildMarker,
+			"log":    lifecycleLogPath(),
+		},
 	}
 	if info, err := a.GetBlockchainInfo(); err == nil {
 		out["blockchain"] = info
@@ -392,9 +502,6 @@ func (a *App) Snapshot() map[string]any {
 	if supply, err := a.GetSupplyInfo(); err == nil {
 		out["supply"] = supply
 	}
-	if txs, err := a.ListWalletTransactions(); err == nil {
-		out["transactions"] = txs
-	}
 	return out
 }
 
@@ -404,21 +511,43 @@ func (a *App) SaveSettings(s Settings) (Settings, error) {
 		return Settings{}, errors.New("data directory is required")
 	}
 	a.mu.Lock()
+	prevSettings := a.settings
+	prevService := a.service
 	a.settings = s
-	a.service = nodeservice.New(s.DataDir)
+	dataDirChanged := !strings.EqualFold(strings.TrimSpace(prevSettings.DataDir), strings.TrimSpace(s.DataDir))
+	prevServiceID := "nil"
+	if prevService != nil {
+		prevServiceID = prevService.InstanceID()
+	}
+	if dataDirChanged {
+		a.service = nodeservice.New(s.DataDir)
+		a.lifecycleLogf("service replaced old_id=%s new_id=%s old_data_dir=%s new_data_dir=%s", prevServiceID, a.service.InstanceID(), prevSettings.DataDir, s.DataDir)
+	} else {
+		a.lifecycleLogf("settings saved using existing service id=%s", prevServiceID)
+	}
+	currentService := a.service
 	a.mu.Unlock()
+
+	if dataDirChanged && prevService != nil {
+		report := prevService.StopWithReport("settings data directory changed", 12*time.Second)
+		a.lifecycleLogf("old service stop report=%s", reportJSON(report))
+	}
+	if currentService != nil {
+		_, _ = currentService.SetDefaultMiningAddress(s.DefaultMiningAddress)
+	}
 	return s, saveSettings(s)
 }
 
 func defaultSettings() Settings {
 	return Settings{
-		DataDir:           config.DefaultDataDir(),
-		StartNodeOnLaunch: true,
-		StopNodeOnExit:    true,
-		DefaultThreads:    runtime.NumCPU(),
-		Theme:             "system",
-		Network:           NetworkSettings{Mode: "automatic", Nodes: nil},
-		Launchpad:         LaunchpadSettings{APIURL: "http://127.0.0.1:8090"},
+		DataDir:              config.DefaultDataDir(),
+		StartNodeOnLaunch:    true,
+		StopNodeOnExit:       true,
+		DefaultThreads:       runtime.NumCPU(),
+		DefaultMiningAddress: "",
+		Theme:                "system",
+		Network:              NetworkSettings{Mode: "automatic", Nodes: nil},
+		Launchpad:            LaunchpadSettings{APIURL: "http://127.0.0.1:8090"},
 	}
 }
 
@@ -579,4 +708,89 @@ func loadSettings() (Settings, error) {
 func saveSettings(s Settings) error {
 	b, _ := json.MarshalIndent(s, "", "  ")
 	return os.WriteFile(settingsPath(), b, 0600)
+}
+
+func lifecycleLogPath() string {
+	base := strings.TrimSpace(os.Getenv("LOCALAPPDATA"))
+	if base == "" {
+		dir, err := os.UserConfigDir()
+		if err != nil || strings.TrimSpace(dir) == "" {
+			return ""
+		}
+		base = dir
+	}
+	logDir := filepath.Join(base, "LegacyWallet", "logs")
+	_ = os.MkdirAll(logDir, 0700)
+	return filepath.Join(logDir, "legacy-wallet-lifecycle.log")
+}
+
+func currentExecutablePath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "unknown"
+	}
+	return exe
+}
+
+func (a *App) lifecycleLogf(format string, args ...any) {
+	a.lifecycleLog(fmt.Sprintf(format, args...))
+}
+
+func (a *App) lifecycleLog(msg string) {
+	if strings.TrimSpace(msg) == "" {
+		return
+	}
+	a.logMu.Lock()
+	defer a.logMu.Unlock()
+	logPath := lifecycleLogPath()
+	if logPath == "" {
+		return
+	}
+	line := fmt.Sprintf("%s %s\n", time.Now().Format(time.RFC3339), msg)
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.WriteString(line)
+}
+
+func (a *App) stopInternalNodeWithLifecycle(reason string) map[string]any {
+	if a.service == nil {
+		a.lifecycleLogf("stop skipped reason=%s no service instance", reason)
+		return map[string]any{"requested": false, "stopped": true, "reason": reason, "note": "service unavailable"}
+	}
+	if strings.Contains(reason, "shutdown") && !a.settings.StopNodeOnExit {
+		a.lifecycleLogf("stop skipped by settings reason=%s", reason)
+		return map[string]any{"requested": false, "stopped": true, "reason": reason, "note": "stop node on exit is disabled"}
+	}
+	timeout := 12 * time.Second
+	reasonLower := strings.ToLower(reason)
+	if strings.Contains(reasonLower, "shutdown") || strings.Contains(reasonLower, "close") || strings.Contains(reasonLower, "quit") {
+		timeout = 8 * time.Second
+	}
+	a.lifecycleLogf("StopWithReport called reason=%s timeout=%s service_id=%s", reason, timeout, a.service.InstanceID())
+	report := a.service.StopWithReport(reason, timeout)
+	a.lifecycleLogf("StopWithReport result=%s", reportJSON(report))
+	return report
+}
+
+func reportJSON(m map[string]any) string {
+	if len(m) == 0 {
+		return "{}"
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	ordered := map[string]any{}
+	for _, k := range keys {
+		ordered[k] = m[k]
+	}
+	b, err := json.Marshal(ordered)
+	if err != nil {
+		return fmt.Sprintf("%v", m)
+	}
+	return string(b)
 }

@@ -1,16 +1,27 @@
 package nodeservice
 
 import (
+	"bytes"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"legacycoin/legacy-go/internal/address"
 	"legacycoin/legacy-go/internal/chaincfg"
 	"legacycoin/legacy-go/internal/config"
 	"legacycoin/legacy-go/internal/node"
+	"legacycoin/legacy-go/internal/pow"
 )
+
+func requireProductionYespower(t *testing.T) {
+	t.Helper()
+	if pow.BackendName() != "cgo-c-reference" {
+		t.Skipf("requires production yespower backend, got %q", pow.BackendName())
+	}
+}
 
 func TestDefaultDataDirUnchangedWithoutEnv(t *testing.T) {
 	t.Setenv("LEGACYCOIN_DATADIR", "")
@@ -113,5 +124,122 @@ func TestClassifyWalletSpendSeparatesChangeFromSelfTransfer(t *testing.T) {
 	dir, amt = classifyWalletSpend(13_00000000, 0)
 	if dir != "self_transfer" || amt != 13_00000000 {
 		t.Fatalf("wallet-only spend classified as %s amount=%d", dir, amt)
+	}
+}
+
+func TestSetDefaultMiningAddressWithoutNode(t *testing.T) {
+	s := New(t.TempDir())
+	addr := address.EncodeBase58Check(chaincfg.PublicKeyHashVersion, bytes.Repeat([]byte{0x11}, 20))
+	out, err := s.SetDefaultMiningAddress(addr)
+	if err != nil {
+		t.Fatalf("SetDefaultMiningAddress: %v", err)
+	}
+	if got := s.defaultMiningAddress(); got != addr {
+		t.Fatalf("default mining address=%q want=%q", got, addr)
+	}
+	if got := out["default_mining_address"]; got != addr {
+		t.Fatalf("returned default mining address=%v want=%v", got, addr)
+	}
+}
+
+func TestSetDefaultMiningAddressRejectsInvalid(t *testing.T) {
+	s := New(t.TempDir())
+	if _, err := s.SetDefaultMiningAddress("not-an-address"); err == nil {
+		t.Fatal("expected invalid mining address error")
+	}
+}
+
+func TestStopWithReportWhenNodeIsNotRunning(t *testing.T) {
+	s := New(t.TempDir())
+	out := s.StopWithReport("unit test", 100*time.Millisecond)
+	if stopped, _ := out["stopped"].(bool); !stopped {
+		t.Fatalf("expected stopped=true, got %#v", out)
+	}
+	if timedOut, _ := out["timed_out"].(bool); timedOut {
+		t.Fatalf("expected timed_out=false, got %#v", out)
+	}
+}
+
+func TestStatusIncludesRPCPortProbe(t *testing.T) {
+	s := New(t.TempDir())
+	st := s.Status()
+	if st.RPCPortState == "" {
+		t.Fatalf("expected rpc port state to be set")
+	}
+}
+
+func TestStartStopReleasesRPCPort(t *testing.T) {
+	requireProductionYespower(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:19556")
+	if err != nil {
+		t.Skipf("rpc port not available for integration lifecycle test: %v", err)
+	}
+	_ = ln.Close()
+	s := New(t.TempDir())
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	out := s.StopWithReport("integration lifecycle test", 10*time.Second)
+	if stopped, _ := out["stopped"].(bool); !stopped {
+		t.Fatalf("expected stopped=true, got %#v", out)
+	}
+	if err := requiredPortsAvailable(s.DataDir(), false); err != nil {
+		t.Fatalf("expected ports to be available after stop, got %v", err)
+	}
+}
+
+func TestSecondServiceReportsCompatibleRPCConflict(t *testing.T) {
+	requireProductionYespower(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:19556")
+	if err != nil {
+		t.Skipf("rpc port not available for conflict test: %v", err)
+	}
+	_ = ln.Close()
+	s1 := New(t.TempDir())
+	if err := s1.Start(); err != nil {
+		t.Fatalf("s1.Start: %v", err)
+	}
+	defer s1.Stop()
+	time.Sleep(250 * time.Millisecond)
+	s2 := New(t.TempDir())
+	err = s2.Start()
+	if err == nil {
+		s2.Stop()
+		t.Fatal("expected second service start to fail with rpc conflict")
+	}
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "rpc 127.0.0.1:19556 is already in use") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestStopWithReportClosesActivePeerReadLoops(t *testing.T) {
+	requireProductionYespower(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:19556")
+	if err != nil {
+		t.Skipf("rpc port not available for shutdown test: %v", err)
+	}
+	_ = ln.Close()
+	s := New(t.TempDir())
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	conn, err := net.DialTimeout("tcp", "127.0.0.1:19555", 2*time.Second)
+	if err != nil {
+		s.Stop()
+		t.Fatalf("dial p2p: %v", err)
+	}
+	defer conn.Close()
+	time.Sleep(250 * time.Millisecond)
+	start := time.Now()
+	out := s.StopWithReport("shutdown peer read loop test", 8*time.Second)
+	if stopped, _ := out["stopped"].(bool); !stopped {
+		t.Fatalf("expected stopped=true, got %#v", out)
+	}
+	if timedOut, _ := out["timed_out"].(bool); timedOut {
+		t.Fatalf("expected timed_out=false, got %#v", out)
+	}
+	if elapsed := time.Since(start); elapsed > 4*time.Second {
+		t.Fatalf("stop took too long (%s), active peer read loops may still be blocking shutdown", elapsed)
 	}
 }

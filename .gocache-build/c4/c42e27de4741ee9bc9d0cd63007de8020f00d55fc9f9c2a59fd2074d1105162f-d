@@ -1,0 +1,5 @@
+./difficulty_launch_test.go
+./finality_test.go
+./header_sequence_test.go
+./reorg_hardening_test.go
+./reorg_test.go

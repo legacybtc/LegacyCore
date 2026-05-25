@@ -1,0 +1,33 @@
+# test log
+getenv GOTMPDIR
+getenv APPDATA
+getenv LEGACYCOIN_DATADIR
+getenv APPDATA
+getenv LEGACYCOIN_DATADIR
+getenv APPDATA
+getenv LOCALAPPDATA
+stat C:\Users\MAX\AppData\Local\LegacyWallet\logs
+open C:\Users\MAX\AppData\Local\LegacyWallet\logs\legacy-wallet-lifecycle.log
+getenv AppData
+stat C:\Users\MAX\AppData\Local\Temp\TestSaveSettingsKeepsServiceWhenDataDirUnchanged1646780151\001\Legacy Wallet
+stat C:\Users\MAX\AppData\Local\Temp\TestSaveSettingsKeepsServiceWhenDataDirUnchanged1646780151\001
+open C:\Users\MAX\AppData\Local\Temp\TestSaveSettingsKeepsServiceWhenDataDirUnchanged1646780151\001\Legacy Wallet\settings.json
+open C:\Users\MAX\AppData\Local\Temp
+getenv GOTMPDIR
+getenv APPDATA
+getenv LEGACYCOIN_DATADIR
+getenv APPDATA
+stat C:\Users\MAX\AppData\Local\Temp\TestSaveSettingsRecreatesServiceWhenDataDirChanges584747054
+getenv LEGACYCOIN_DATADIR
+getenv APPDATA
+getenv LOCALAPPDATA
+stat C:\Users\MAX\AppData\Local\LegacyWallet\logs
+open C:\Users\MAX\AppData\Local\LegacyWallet\logs\legacy-wallet-lifecycle.log
+getenv LOCALAPPDATA
+stat C:\Users\MAX\AppData\Local\LegacyWallet\logs
+open C:\Users\MAX\AppData\Local\LegacyWallet\logs\legacy-wallet-lifecycle.log
+getenv AppData
+stat C:\Users\MAX\AppData\Local\Temp\TestSaveSettingsRecreatesServiceWhenDataDirChanges584747054\001\Legacy Wallet
+stat C:\Users\MAX\AppData\Local\Temp\TestSaveSettingsRecreatesServiceWhenDataDirChanges584747054\001
+open C:\Users\MAX\AppData\Local\Temp\TestSaveSettingsRecreatesServiceWhenDataDirChanges584747054\001\Legacy Wallet\settings.json
+open C:\Users\MAX\AppData\Local\Temp
