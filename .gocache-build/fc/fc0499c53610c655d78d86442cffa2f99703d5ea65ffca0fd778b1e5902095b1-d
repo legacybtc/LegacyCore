@@ -1,4 +1,0 @@
-./server.go
-./server_blocktemplate_test.go
-./server_compat_test.go
-./server_jsonrpc_test.go

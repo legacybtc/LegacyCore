@@ -44,3 +44,9 @@ build/
 Thumbs.db
 .vscode/
 .idea/
+
+# Go build cache accidentally generated locally
+.gocache-build/
+
+# Go build cache accidentally generated locally
+.gocache-build/

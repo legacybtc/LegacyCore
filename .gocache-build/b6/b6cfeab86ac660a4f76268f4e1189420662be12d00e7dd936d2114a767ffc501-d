@@ -1,5 +1,0 @@
-./bind.go
-./bind_windows.go
-./impl.go
-./procs.go
-./registry.go
