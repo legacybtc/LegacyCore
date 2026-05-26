@@ -372,3 +372,169 @@ func TestPeerSetAdvertisedHeightRefreshesMetadataWithoutLoweringHeight(t *testin
 		t.Fatalf("height downgraded to %d; expected to keep 430", gotHeight)
 	}
 }
+
+func TestSyncStatusReportsPeerAheadCatchUpPending(t *testing.T) {
+	s, _, cleanup := newP2PTestServerWithGenesis(t)
+	defer cleanup()
+
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	p := &peer{
+		conn:             serverConn,
+		remote:           "127.0.0.1:19555",
+		height:           12,
+		lastSeen:         time.Now(),
+		lastPong:         time.Now(),
+		lastHeightUpdate: time.Now(),
+	}
+	s.registerPeer(p)
+
+	status := s.SyncStatus()
+	if status["sync_state"] != "syncing" {
+		t.Fatalf("sync_state=%v want syncing", status["sync_state"])
+	}
+	if status["catch_up_pending"] != true {
+		t.Fatalf("catch_up_pending=%v want true", status["catch_up_pending"])
+	}
+	if status["peer_reported_height"] != int32(12) {
+		t.Fatalf("peer_reported_height=%v want 12", status["peer_reported_height"])
+	}
+	if status["local_best_hash"] == "" {
+		t.Fatalf("local_best_hash missing")
+	}
+}
+
+func TestRequestSyncFromPeerIfBehindDoesNotSpamRetry(t *testing.T) {
+	s, params, cleanup := newP2PTestServerWithGenesis(t)
+	defer cleanup()
+
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	p := &peer{
+		conn:             serverConn,
+		remote:           "pipe-test",
+		height:           3,
+		lastSeen:         time.Now(),
+		lastPong:         time.Now(),
+		lastHeightUpdate: time.Now(),
+		lastSyncRequest:  time.Now(),
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- s.requestSyncFromPeerIfBehind(p, false)
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("requestSyncFromPeerIfBehind: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("requestSyncFromPeerIfBehind did not return")
+	}
+
+	_ = clientConn.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+	if msg, err := wire.ReadMessage(clientConn, params.MessageStart); err == nil {
+		t.Fatalf("unexpected sync retry message: %s", msg.Command)
+	}
+}
+
+func TestSyncStatusCountsStalePeerMetadata(t *testing.T) {
+	s, _, cleanup := newP2PTestServerWithGenesis(t)
+	defer cleanup()
+
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	p := &peer{
+		conn:             serverConn,
+		remote:           "127.0.0.1:19555",
+		height:           2,
+		lastSeen:         time.Now().Add(-peerStaleThreshold - time.Minute),
+		lastPong:         time.Now(),
+		lastHeightUpdate: time.Now().Add(-peerStaleThreshold - time.Minute),
+	}
+	s.registerPeer(p)
+
+	status := s.SyncStatus()
+	if status["stale_peer_count"] != 1 {
+		t.Fatalf("stale_peer_count=%v want 1", status["stale_peer_count"])
+	}
+	if status["catch_up_pending"] != true {
+		t.Fatalf("catch_up_pending=%v want true", status["catch_up_pending"])
+	}
+}
+
+func TestDisconnectNodeAllowsReplacementPeerMetadata(t *testing.T) {
+	s, _, cleanup := newP2PTestServerWithGenesis(t)
+	defer cleanup()
+
+	serverConn, clientConn := net.Pipe()
+	p := &peer{
+		conn:             serverConn,
+		remote:           "127.0.0.1:19555",
+		height:           2,
+		lastSeen:         time.Now(),
+		lastPong:         time.Now(),
+		lastHeightUpdate: time.Now(),
+	}
+	s.registerPeer(p)
+	if !s.DisconnectNode("127.0.0.1:19555") {
+		t.Fatalf("DisconnectNode returned false")
+	}
+	_ = clientConn.Close()
+	s.unregisterPeer(p)
+
+	replacementServer, replacementClient := net.Pipe()
+	defer replacementServer.Close()
+	defer replacementClient.Close()
+	replacement := &peer{
+		conn:             replacementServer,
+		remote:           "127.0.0.1:19555",
+		height:           4,
+		lastSeen:         time.Now(),
+		lastPong:         time.Now(),
+		lastHeightUpdate: time.Now(),
+	}
+	s.registerPeer(replacement)
+
+	status := s.SyncStatus()
+	if status["peer_count"] != 1 {
+		t.Fatalf("peer_count=%v want 1", status["peer_count"])
+	}
+	if status["peer_reported_height"] != int32(4) {
+		t.Fatalf("peer_reported_height=%v want 4", status["peer_reported_height"])
+	}
+}
+
+func newP2PTestServerWithGenesis(t *testing.T) (*Server, chaincfg.Params, func()) {
+	t.Helper()
+	params := chaincfg.MainNet
+	genesisBlock, err := genesis.NewBlock(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	genesisHash, err := p2pTestHasher{}.HashHeader(genesisBlock.Header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params.GenesisHash = genesisHash.String()
+
+	chain, err := blockchain.New(params, p2pTestHasher{}, storage.NewFileStore(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.EnsureGenesis(); err != nil {
+		t.Fatal(err)
+	}
+	s := New(params, chain, nil, log.New(io.Discard, "", 0))
+	return s, params, func() {
+		for _, p := range s.snapshotPeers() {
+			_ = p.conn.Close()
+			s.unregisterPeer(p)
+		}
+	}
+}

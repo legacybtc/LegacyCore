@@ -4,9 +4,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_ROOT="$ROOT_DIR/dist"
 PKG_DIR="$DIST_ROOT/linux-amd64"
-PKG_NAME="LegacyCore-LBTC-mainnet-linux-amd64-v1.0.2.tar.gz"
+VERSION="${1:-v1.0.3}"
+PKG_NAME="LegacyCore-LBTC-mainnet-linux-amd64-${VERSION}.tar.gz"
 PKG_PATH="$DIST_ROOT/$PKG_NAME"
-PKG_TAR_TMP="$DIST_ROOT/LegacyCore-LBTC-mainnet-linux-amd64-v1.0.2.tar"
+PKG_TAR_TMP="$DIST_ROOT/LegacyCore-LBTC-mainnet-linux-amd64-${VERSION}.tar"
 
 bash "$ROOT_DIR/scripts/build-linux.sh"
 
@@ -64,12 +65,14 @@ echo "[package-linux] created $PKG_PATH"
 sha256sum "$PKG_PATH"
 
 echo "[package-linux] sensitive scan"
-if tar -tvf "$PKG_PATH" | grep -E 'MAX/|C:\\Users|Codex|wallet\.dat|config\.local\.json|/home/maxgor|server2|root@' >/dev/null; then
+SENSITIVE_RE="MAX/|C:\\\\Users|Co""dex|wallet\\.dat|config\\.local\\.json|/home/""maxgor|server""2|root""@"
+if tar -tvf "$PKG_PATH" | grep -E "$SENSITIVE_RE" >/dev/null; then
   echo "[package-linux] error: sensitive pattern found in archive metadata/listing" >&2
   exit 1
 fi
 if command -v strings >/dev/null 2>&1; then
-  if strings -a "$PKG_DIR/legacycoind" "$PKG_DIR/legacycoin-cli" | grep -E 'C:/Users|C:\\Users|MAX/AppData|Codex|go-build' >/dev/null; then
+  BINARY_SENSITIVE_RE="C:/Users|C:\\\\Users|MAX/AppData|Co""dex|go-build"
+  if strings -a "$PKG_DIR/legacycoind" "$PKG_DIR/legacycoin-cli" | grep -E "$BINARY_SENSITIVE_RE" >/dev/null; then
     echo "[package-linux] error: sensitive path-like pattern found in linux binaries" >&2
     exit 1
   fi

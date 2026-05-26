@@ -2,7 +2,9 @@ package mempool
 
 import (
 	"bytes"
+	"encoding/hex"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 
@@ -10,9 +12,11 @@ import (
 	btcecdsa "github.com/btcsuite/btcd/btcec/v2/ecdsa"
 
 	"legacycoin/legacy-go/internal/blockchain"
+	"legacycoin/legacy-go/internal/chaincfg"
 	"legacycoin/legacy-go/internal/chainhash"
 	"legacycoin/legacy-go/internal/pqc"
 	"legacycoin/legacy-go/internal/script"
+	"legacycoin/legacy-go/internal/storage"
 	"legacycoin/legacy-go/internal/wire"
 )
 
@@ -562,4 +566,131 @@ func TestCheckReplacementPolicyDisabledForV4(t *testing.T) {
 	if err := checkReplacementPolicy(candidateTx, candidate, []Entry{conflict}, map[string]map[string]struct{}{}); err == nil || !strings.Contains(err.Error(), "RBF replacement is disabled") {
 		t.Fatalf("expected disabled RBF rejection, got %v", err)
 	}
+}
+
+func TestValidSignedTxAcceptedAndRemovedAfterBlock(t *testing.T) {
+	chain, spend := matureSpendFixture(t)
+	pool := New()
+	entry, err := pool.Add(chain, spend.validTx)
+	if err != nil {
+		t.Fatalf("valid tx rejected: %v", err)
+	}
+	if pool.Count() != 1 {
+		t.Fatalf("mempool count=%d want 1", pool.Count())
+	}
+	txHash, _ := spend.validTx.TxHash()
+	if entry.TxID != txHash.String() {
+		t.Fatalf("entry txid=%s want %s", entry.TxID, txHash.String())
+	}
+	pool.RemoveForBlock(&wire.MsgBlock{Transactions: []*wire.MsgTx{spend.validTx}})
+	if pool.Count() != 0 {
+		t.Fatalf("mempool not cleared after block inclusion")
+	}
+}
+
+func TestDoubleSpendRejected(t *testing.T) {
+	chain, spend := matureSpendFixture(t)
+	pool := New()
+	if _, err := pool.Add(chain, spend.validTx); err != nil {
+		t.Fatalf("valid tx rejected: %v", err)
+	}
+	if _, err := pool.Add(chain, spend.doubleSpendTx); err == nil || !strings.Contains(err.Error(), "input already spent") {
+		t.Fatalf("expected double-spend/RBF rejection, got %v", err)
+	}
+}
+
+func TestInvalidSignatureRejected(t *testing.T) {
+	chain, spend := matureSpendFixture(t)
+	pool := New()
+	if _, err := pool.Add(chain, spend.badSigTx); err == nil {
+		t.Fatalf("expected invalid signature rejection")
+	}
+}
+
+type matureSpend struct {
+	validTx       *wire.MsgTx
+	doubleSpendTx *wire.MsgTx
+	badSigTx      *wire.MsgTx
+}
+
+func matureSpendFixture(t *testing.T) (*blockchain.Chain, matureSpend) {
+	t.Helper()
+	store := storage.NewFileStore(t.TempDir())
+	fundingKey, err := btcec.NewPrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fundingScript, err := script.PayToPubKeyHashScript(script.Hash160(fundingKey.PubKey().SerializeCompressed()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fundingHash := chainhash.DoubleHashB([]byte("mature mempool funding output"))
+	block := &wire.MsgBlock{Header: wire.BlockHeader{Version: 1, Timestamp: 1, Bits: 1, Nonce: 1}}
+	blockHash, err := block.Header.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx := blockchain.BlockIndex{Height: int32(chaincfg.CoinbaseMaturity), Hash: blockHash.String(), Time: 1, Bits: 1, Nonce: 1}
+	utxo := blockchain.UTXOEntry{
+		Key:      blockchain.OutPointKey(fundingHash.String(), 0),
+		TxID:     fundingHash.String(),
+		Vout:     0,
+		Value:    100_000,
+		PkScript: hex.EncodeToString(fundingScript),
+		Height:   0,
+		Coinbase: true,
+	}
+	if err := store.SaveBlock(block, idx, []blockchain.UTXOEntry{utxo}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	chain, err := blockchain.New(chaincfg.MainNet, mempoolTestHasher{}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := signedSpendTx(t, fundingKey, fundingHash, fundingScript, 99_000, 1)
+	doubleSpend := signedSpendTx(t, fundingKey, fundingHash, fundingScript, 98_500, 2)
+	badSig := signedSpendTx(t, fundingKey, fundingHash, fundingScript, 99_000, 3)
+	badSig.TxIn[0].SignatureScript[len(badSig.TxIn[0].SignatureScript)-1] ^= 0x01
+	return chain, matureSpend{validTx: valid, doubleSpendTx: doubleSpend, badSigTx: badSig}
+}
+
+type mempoolTestHasher struct{}
+
+func (mempoolTestHasher) HashHeader(header wire.BlockHeader) (chainhash.Hash, error) {
+	b, err := header.Bytes()
+	if err != nil {
+		return chainhash.Hash{}, err
+	}
+	return chainhash.DoubleHashB(b), nil
+}
+
+func signedSpendTx(t *testing.T, key *btcec.PrivateKey, fundingHash chainhash.Hash, prevScript []byte, value int64, tag uint32) *wire.MsgTx {
+	t.Helper()
+	dest, err := btcec.NewPrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	destScript, err := script.PayToPubKeyHashScript(script.Hash160(dest.PubKey().SerializeCompressed()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx := &wire.MsgTx{
+		Version: 1,
+		TxIn: []wire.TxIn{{
+			PreviousOutPoint: wire.OutPoint{Hash: fundingHash, Index: 0},
+			Sequence:         math.MaxUint32 - tag,
+		}},
+		TxOut: []wire.TxOut{{Value: value, PkScript: destScript}},
+	}
+	sighash, err := script.SignatureHash(tx, 0, prevScript, script.SigHashAll)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := btcecdsa.Sign(key, sighash[:]).Serialize()
+	sigScript, err := script.SignatureScript(sig, key.PubKey().SerializeCompressed())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx.TxIn[0].SignatureScript = sigScript
+	return tx
 }

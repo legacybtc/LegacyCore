@@ -58,7 +58,7 @@ type NodeTestResult struct {
 	Message string `json:"message"`
 }
 
-const lifecycleBuildMarker = "lifecycle-fix-v1.0.2-build-20260526-rpc-truth"
+const lifecycleBuildMarker = "integration-hardening-v1.0.3-build-20260526"
 
 func NewApp() *App {
 	s := defaultSettings()

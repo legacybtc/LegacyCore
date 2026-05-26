@@ -2,9 +2,9 @@ package version
 
 const (
 	WalletName    = "Legacy Wallet"
-	WalletVersion = "1.0.2"
+	WalletVersion = "1.0.3"
 	CoreName      = "Legacy Core"
-	CoreVersion   = "1.0.2"
+	CoreVersion   = "1.0.3"
 )
 
 func WalletFull() string {

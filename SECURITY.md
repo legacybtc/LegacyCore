@@ -1,55 +1,81 @@
 # Security Policy
 
-Legacy Core is release-candidate software for the Legacy Coin / LBTC network.
-Use careful operational security, verify checksums, back up wallets/private
-keys, and do not expose wallet RPC publicly.
+Legacy Core is early mainnet software. Treat RPC, wallet storage, private keys, seed material, backups, and release binaries as sensitive.
 
-## Supported branches
+## Supported Versions
 
-| Branch | Status |
-|---|---|
-| `main` | Security fixes and release candidates |
-| release tags | Security fixes for published releases |
+| Version | Status |
+| --- | --- |
+| v1.0.3 integration hardening | active development |
+| v1.0.2 mainnet candidate | supported for current release assets |
+| older versions | unsupported |
 
-## Reporting vulnerabilities
+## Critical Warnings
 
-Please report security issues privately to the project maintainer. Include:
+- RPC port `19556` must stay private/firewalled.
+- P2P port `19555` may be public.
+- Never expose wallet/RPC publicly.
+- Back up wallet data before use, mining, imports, or upgrades.
+- Never share wallet.dat, private keys, seed material, wallet backups, or RPC cookies.
+- Verify SHA256 checksums before running release assets.
+- Unsigned Windows builds may trigger SmartScreen.
+- Seed operators should firewall RPC even when P2P is public.
+- Exchanges should assume hot wallet compromise risk and keep reserves cold.
 
-- affected commit or release tag
-- clear reproduction steps
-- expected vs actual behavior
+## RPC Security
+
+Cookie auth and `rpcuser`/`rpcpassword` auth are implemented. Public unauthenticated non-local RPC is refused. Operators should still keep RPC on localhost or a private network.
+
+## Reporting Vulnerabilities
+
+Please report security issues privately to project maintainers before public disclosure. Include:
+
+- affected version or commit
+- operating system
 - whether funds, consensus, RPC credentials, wallet keys, or node availability are affected
-- suggested patch, if available
+- reproduction steps
+- logs with secrets removed
 
-Do not publish a working exploit before maintainers have had a reasonable
-opportunity to fix and ship a patch.
+Do not include private keys, wallet backups, RPC cookies, passwords, or seed material in reports.
 
-## Severity guide
+## Scope
 
-| Severity | Examples |
-|---|---|
-| Critical | consensus split, remote wallet-key extraction, unauthenticated fund movement, deterministic key compromise |
-| High | remote crash/DoS, RPC auth bypass, block validation bypass, mempool exhaustion from unauthenticated peers |
-| Medium | local privilege issues, corruptible chainstate recovery failure, sensitive-data logging |
-| Low | hardening gaps, docs mistakes, non-sensitive information disclosure |
+High-priority examples:
 
-## Required release security checks
+- consensus validation bypass
+- wallet key exposure
+- RPC authentication bypass
+- remote crash or denial of service
+- transaction validation flaw
+- P2P issue that can force a bad chain state
+- release package path/secret leak
 
-Before public release:
+Out of scope:
 
-```bash
-CGO_ENABLED=1 go test ./...
-CGO_ENABLED=1 go vet ./...
-staticcheck ./...
-govulncheck ./...
-gosec ./...
+- public P2P port visibility by itself
+- SmartScreen warnings for unsigned binaries
+- reports requiring leaked user secrets
+
+## Build Verification
+
+Run:
+
+```powershell
+.\legacycoind.exe params
+.\scripts\verify-mainnet-identity.ps1 -Binary .\legacycoind.exe
 ```
 
-Production binaries that validate/mine/submit blocks must report:
+```bash
+./legacycoind params
+pwsh ./scripts/verify-mainnet-identity.ps1 -Binary ./legacycoind
+```
+
+Expected production yespower backend:
 
 ```text
 yespower backend: cgo-c-reference
 ```
 
-Publish signed source or verifiable source archives and SHA256 checksums for
-all binaries.
+## Consensus Safety
+
+v1.0.3 integration hardening must not change consensus, genesis, chain ID, message start, yespower params, DGW/difficulty rules, ports, address/WIF formats, wallet DB compatibility, reward/supply schedule, halving interval, coinbase maturity, transaction validation consensus rules, P2P identity, or mainnet identity.

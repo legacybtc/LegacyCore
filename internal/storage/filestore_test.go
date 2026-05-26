@@ -3,6 +3,7 @@ package storage
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"legacycoin/legacy-go/internal/blockchain"
@@ -161,5 +162,61 @@ func TestLoadIndexByHeightRepairsMissingActiveHeightIndex(t *testing.T) {
 	}
 	if _, err := os.Stat(store.heightIndexPath(1)); err != nil {
 		t.Fatalf("height index was not recreated: %v", err)
+	}
+}
+
+func TestEmptyDatadirStartupReadsAsNoTip(t *testing.T) {
+	store := NewFileStore(t.TempDir())
+	tip, err := store.LoadTip()
+	if err != nil {
+		t.Fatalf("LoadTip on empty datadir: %v", err)
+	}
+	if tip != nil {
+		t.Fatalf("tip=%+v want nil", tip)
+	}
+	stats, err := store.UTXOStats()
+	if err != nil {
+		t.Fatalf("UTXOStats on empty datadir: %v", err)
+	}
+	if stats.Count != 0 || stats.Total != 0 {
+		t.Fatalf("stats=%+v want zero", stats)
+	}
+}
+
+func TestSaveBlockCreatesStorageParents(t *testing.T) {
+	dir := t.TempDir()
+	store := NewFileStore(filepath.Join(dir, "missing", "chain"))
+	block := &wire.MsgBlock{Header: wire.BlockHeader{Version: 1, Timestamp: 1, Bits: 1, Nonce: 1}}
+	hash, err := block.Header.Hash()
+	if err != nil {
+		t.Fatal(err)
+	}
+	idx := blockchain.BlockIndex{Height: 0, Hash: hash.String(), Time: 1, Bits: 1, Nonce: 1}
+	if err := store.SaveBlock(block, idx, nil, nil, nil); err != nil {
+		t.Fatalf("SaveBlock: %v", err)
+	}
+	for _, path := range []string{
+		store.blocksDir(),
+		filepath.Dir(store.hashIndexPath(hash.String())),
+		filepath.Dir(store.heightIndexPath(0)),
+		store.utxoDir(),
+		store.undoDir(),
+	} {
+		if info, err := os.Stat(path); err != nil || !info.IsDir() {
+			t.Fatalf("expected directory %s, info=%v err=%v", path, info, err)
+		}
+	}
+}
+
+func TestLoadIndexByHeightReportsCorruptIndex(t *testing.T) {
+	store := NewFileStore(t.TempDir())
+	if err := store.ensureDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.heightIndexPath(7), []byte("{not-json"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LoadIndexByHeight(7); err == nil {
+		t.Fatalf("expected corrupt height index error")
 	}
 }

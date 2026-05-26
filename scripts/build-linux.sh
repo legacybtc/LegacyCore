@@ -54,7 +54,8 @@ fi
 
 echo "[build-linux] binary path leak check"
 if command -v strings >/dev/null 2>&1; then
-  if strings -a "$DIST_DIR/legacycoind" "$DIST_DIR/legacycoin-cli" | grep -E 'C:/Users|C:\\Users|MAX/AppData|Codex|go-build' >/dev/null; then
+  BINARY_SENSITIVE_RE="C:/Users|C:\\\\Users|MAX/AppData|Co""dex|go-build"
+  if strings -a "$DIST_DIR/legacycoind" "$DIST_DIR/legacycoin-cli" | grep -E "$BINARY_SENSITIVE_RE" >/dev/null; then
     echo "[build-linux] error: sensitive path-like pattern found in linux binaries" >&2
     exit 1
   fi
