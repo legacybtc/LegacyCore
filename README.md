@@ -16,8 +16,6 @@ This repository does not include a mining pool server, public block explorer ser
 
 ## Mainnet Identity
 
-These values are not changed by v1.0.3:
-
 | Field | Value |
 | --- | --- |
 | Coin | Legacy Coin / LBTC |
@@ -47,11 +45,10 @@ Release assets are published at:
 
 https://github.com/legacybtc/LegacyCore/releases
 
-Expected v1.0.3 asset names:
+Expected asset names:
 
-- Windows wallet package: `LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.3.zip`
-- Linux core package: `LegacyCore-LBTC-mainnet-linux-amd64-v1.0.3.tar.gz`
-- Clean source archive: `LegacyCore-v1.0.3-source-clean.zip`
+- Windows wallet package: `LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.2.zip`
+- Linux core package: `LegacyCore-LBTC-mainnet-linux-amd64-v1.0.2.tar.gz`
 
 Always verify SHA256 checksums before running downloaded binaries.
 
@@ -136,7 +133,7 @@ Linux:
 
 Windows release packages include the desktop wallet. Start it from the extracted release folder. The wallet starts and controls a local Legacy Core node.
 
-Linux desktop wallet packaging is not the primary v1.0.3 target; Linux headless daemon and CLI are supported.
+Linux desktop wallet packaging is not the primary v1.0.2 target; Linux headless daemon and CLI are supported.
 
 ## Mining
 
@@ -181,13 +178,13 @@ See [docs/SEED_NODE_OPERATOR.md](docs/SEED_NODE_OPERATOR.md).
 Windows:
 
 ```powershell
-Get-FileHash -Algorithm SHA256 .\LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.3.zip
+Get-FileHash -Algorithm SHA256 .\LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.2.zip
 ```
 
 Linux:
 
 ```bash
-sha256sum LegacyCore-LBTC-mainnet-linux-amd64-v1.0.3.tar.gz
+sha256sum LegacyCore-LBTC-mainnet-linux-amd64-v1.0.2.tar.gz
 ```
 
 Compare against the release `SHA256SUMS` file.
@@ -215,7 +212,7 @@ See [SECURITY.md](SECURITY.md) and [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.
 - External pool testing: still required.
 - Exchange/explorer production certification: still required.
 - Fork choice is audited as height-based rather than explicit cumulative chainwork-based.
-- Linux GUI wallet packaging is not the focus of v1.0.3.
+- Linux GUI wallet packaging is not the focus of v1.0.2.
 
 ## Docs Index
 
@@ -232,10 +229,6 @@ See [SECURITY.md](SECURITY.md) and [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.
 - [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md)
 - [docs/CONFIRMATIONS_AND_REORGS.md](docs/CONFIRMATIONS_AND_REORGS.md)
 - [docs/WINDOWS_BUILD.md](docs/WINDOWS_BUILD.md)
-
-## Release Status
-
-`v1.0.3-integration-hardening` is a source-code hardening, docs, CI, RPC, P2P, storage, tests, and release-process upgrade. It is not a chain rewrite and does not change mainnet identity.
 
 ## GitHub Metadata Suggestion
 
