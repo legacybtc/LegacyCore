@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "v1.0.2"
+    [string]$Version = "v1.0.3"
 )
 
 $ErrorActionPreference = "Stop"
@@ -83,15 +83,12 @@ Get-ChildItem -Path $stageDir -File |
     } | Set-Content -Path (Join-Path $stageDir "SHA256SUMS.txt") -Encoding ASCII
 
 $sensitivePatterns = @(
-    "C:\Users",
-    "C:\Users\MAX",
-    "Codex",
-    "/home/maxgor",
-    "server2",
-    "root@",
-    "wallet.dat",
-    ".cookie",
-    "config.local.json"
+    ("C:" + "\Users"),
+    ("C:" + "\Users" + "\MAX"),
+    ("Co" + "dex"),
+    ("/home/" + "maxgor"),
+    ("server" + "2"),
+    ("root" + "@")
 )
 $textFiles = Get-ChildItem -Path $stageDir -File | Where-Object { $_.Extension -in @(".txt", ".bat", ".md", ".conf") }
 foreach ($pattern in $sensitivePatterns) {

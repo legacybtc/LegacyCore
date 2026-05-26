@@ -2,12 +2,33 @@ name: CI
 
 on:
   push:
-    branches: ["main", "infrastructure-ready-source", "v1.0.2-pool-rpc-framework-hardening"]
+    branches:
+      - main
+      - v1.0.2-mainnet-candidate
+      - v1.0.3-integration-hardening
+      - infrastructure-ready-source
+      - v1.0.2-pool-rpc-framework-hardening
   pull_request:
-    branches: ["main"]
+    branches:
+      - main
+      - v1.0.2-mainnet-candidate
+      - v1.0.3-integration-hardening
 
 jobs:
+  source-cleanliness:
+    name: Source cleanliness and leak scans
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Scan tracked source
+        shell: pwsh
+        run: ./scripts/scan-source-cleanliness.ps1 -Root . -FailOnWorkingTree
+
   build-test:
+    name: Build and test (${{ matrix.os }})
+    needs: source-cleanliness
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -49,24 +70,30 @@ jobs:
           update: true
           install: mingw-w64-ucrt-x86_64-gcc
 
-      - name: Build and test (Linux)
+      - name: Test and vet (Linux)
         if: runner.os == 'Linux'
         env:
           CGO_ENABLED: "1"
           CC: gcc
         run: |
           go mod download
-          go test ./internal/p2p ./internal/rpc ./internal/wallet ./internal/mempool
-          go vet ./internal/p2p ./internal/rpc ./internal/wallet ./internal/mempool
-          go test ./cmd/... ./internal/...
-          go vet ./cmd/... ./internal/...
+          go test ./...
+          go vet ./...
+
+      - name: Build binaries (Linux)
+        if: runner.os == 'Linux'
+        env:
+          CGO_ENABLED: "1"
+          CC: gcc
+        run: |
           go build -trimpath -o legacycoind ./cmd/legacycoind
           go build -trimpath -o legacycoin-cli ./cmd/legacycoin-cli
           go build -trimpath -o legacy-wallet-internal ./cmd/legacywallet
           ./legacycoind params | tee params.txt
           grep -q "yespower backend: cgo-c-reference" params.txt
+          pwsh ./scripts/verify-mainnet-identity.ps1 -Binary ./legacycoind
 
-      - name: Build and test (Windows)
+      - name: Test and vet (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         env:
@@ -75,13 +102,25 @@ jobs:
         run: |
           $env:Path = "C:\msys64\ucrt64\bin;$env:Path"
           go mod download
-          go test ./internal/p2p ./internal/rpc ./internal/wallet ./internal/mempool
-          go vet ./internal/p2p ./internal/rpc ./internal/wallet ./internal/mempool
-          go test ./cmd/... ./internal/...
-          go vet ./cmd/... ./internal/...
+          go test ./...
+          go vet ./...
+
+      - name: Build binaries (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          CGO_ENABLED: "1"
+          CC: gcc
+        run: |
+          $env:Path = "C:\msys64\ucrt64\bin;$env:Path"
           go build -trimpath -o legacycoind.exe ./cmd/legacycoind
           go build -trimpath -o legacycoin-cli.exe ./cmd/legacycoin-cli
           go build -trimpath -o legacy-wallet-internal.exe ./cmd/legacywallet
           $params = .\legacycoind.exe params | Out-String
           $params
           if ($params -notmatch "yespower backend:\s+cgo-c-reference") { throw "Expected cgo-c-reference backend for production build." }
+          ./scripts/verify-mainnet-identity.ps1 -Binary .\legacycoind.exe
+
+      - name: Final source scan
+        shell: pwsh
+        run: ./scripts/scan-source-cleanliness.ps1 -Root .

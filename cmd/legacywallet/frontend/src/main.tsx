@@ -255,7 +255,7 @@ function App() {
         <section className="workspace">
           <header>
             <div>
-              <p className="eyebrow">Legacy Wallet 1.0.2</p>
+              <p className="eyebrow">Legacy Wallet 1.0.3</p>
               <h2>{tabs.find(([id]) => id === tab)?.[2] || "Overview"}</h2>
             </div>
             <div className="toolbar">
@@ -1493,8 +1493,8 @@ function SettingsPage({ snap, run }: PageProps) {
         </div>
       </section>
       <InfoPanel title="About" rows={[
-        ["Product", "Legacy Wallet 1.0.2"],
-        ["Core Engine", "Legacy Core 1.0.2"],
+        ["Product", "Legacy Wallet 1.0.3"],
+        ["Core Engine", "Legacy Core 1.0.3"],
         ["Network", "Legacy Coin Mainnet"],
         ["Coin", "Legacy Coin / LBTC"],
         ["P2P port", snap.coin?.p2p_port],

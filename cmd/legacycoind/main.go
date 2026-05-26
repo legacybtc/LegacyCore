@@ -87,9 +87,15 @@ RPC:
   submitblock
   disconnecttip
   generate
+  setupwallet
+  getwalletsummary
+  getminingaddress
   startminer
   stopminer
+  restartminer
+  setminerthreads
   doctor
+  checkstorage
   getnetworkinfo
   getpeerinfo
   getconnectioncount
