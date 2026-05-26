@@ -274,11 +274,26 @@ func processNameForPID(pid int) string {
 }
 
 func probeLocalRPCNetworkInfo(dataDir string) (map[string]any, error) {
+	raw, err := callLocalRPC(dataDir, "getnetworkinfo", []any{}, 1200*time.Millisecond)
+	if err != nil {
+		return nil, err
+	}
+	out, ok := raw.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("unexpected rpc response type for getnetworkinfo")
+	}
+	return out, nil
+}
+
+func callLocalRPC(dataDir, method string, params []any, timeout time.Duration) (any, error) {
+	if timeout <= 0 {
+		timeout = 1500 * time.Millisecond
+	}
 	reqBody := map[string]any{
 		"jsonrpc": "1.0",
-		"id":      "wallet-port-probe",
-		"method":  "getnetworkinfo",
-		"params":  []any{},
+		"id":      "wallet-service",
+		"method":  method,
+		"params":  params,
 	}
 	encoded, err := json.Marshal(reqBody)
 	if err != nil {
@@ -302,7 +317,7 @@ func probeLocalRPCNetworkInfo(dataDir string) (map[string]any, error) {
 	if auth.Enabled {
 		req.SetBasicAuth(auth.User, auth.Password)
 	}
-	client := &http.Client{Timeout: 1200 * time.Millisecond}
+	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -312,13 +327,18 @@ func probeLocalRPCNetworkInfo(dataDir string) (map[string]any, error) {
 		return nil, fmt.Errorf("rpc status %d", resp.StatusCode)
 	}
 	var payload struct {
-		Result map[string]any `json:"result"`
-		Error  any            `json:"error"`
+		Result any `json:"result"`
+		Error  any `json:"error"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return nil, err
 	}
 	if payload.Error != nil {
+		if m, ok := payload.Error.(map[string]any); ok {
+			if msg, ok := m["message"].(string); ok && strings.TrimSpace(msg) != "" {
+				return nil, errors.New(msg)
+			}
+		}
 		return nil, fmt.Errorf("rpc error: %v", payload.Error)
 	}
 	return payload.Result, nil
@@ -488,7 +508,18 @@ func (s *Service) Start() error {
 		s.mu.Unlock()
 	}()
 
-	return s.waitForRPCReady(dataDir, done, 6*time.Second)
+	if err := s.waitForRPCReady(dataDir, done, 8*time.Second); err != nil {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
+		s.mu.Lock()
+		s.lastStartErr = err.Error()
+		s.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 func (s *Service) waitForRPCReady(dataDir string, done <-chan struct{}, timeout time.Duration) error {
@@ -515,8 +546,7 @@ func (s *Service) waitForRPCReady(dataDir string, done <-chan struct{}, timeout 
 				return nil
 			}
 		case <-deadline.C:
-			// Keep startup non-blocking for slower systems once the process is alive.
-			return nil
+			return fmt.Errorf("internal node start timeout: RPC listener 127.0.0.1:%d did not become ready", chaincfg.MainNet.RPCPort)
 		}
 	}
 }
@@ -609,6 +639,14 @@ func (s *Service) Status() Status {
 	st.RPCPortChainID = rpcProbe.ChainID
 	st.RPCPortPID = rpcProbe.PID
 	st.RPCPortProcess = rpcProbe.Process
+	if st.WalletOwned && st.Running {
+		if !(rpcProbe.InUse && rpcProbe.State == "wallet_internal") {
+			st.Running = false
+			if st.Error == "" {
+				st.Error = "internal node error: RPC offline"
+			}
+		}
+	}
 	return st
 }
 
@@ -1365,75 +1403,43 @@ func (s *Service) CheckStorage() (map[string]any, error) {
 }
 
 func (s *Service) GetMinerStatus() (map[string]any, error) {
-	n, err := s.current()
-	if err != nil {
-		return nil, err
+	result, err := callLocalRPC(s.dataDir, "getminerstatus", []any{}, 1800*time.Millisecond)
+	if err == nil {
+		if out, ok := result.(map[string]any); ok {
+			out["status_source"] = "rpc"
+			return out, nil
+		}
 	}
 	s.minerMu.Lock()
 	defer s.minerMu.Unlock()
-	uptime := int64(0)
-	if s.minerActive && !s.minerStarted.IsZero() {
-		uptime = int64(time.Since(s.minerStarted).Seconds())
-	}
-	localKHPS := s.minerLocalHashPS / 1000
-	hashesPerThread := float64(0)
-	if s.minerThreads > 0 {
-		hashesPerThread = s.minerLocalHashPS / float64(s.minerThreads)
-	}
-	currentBits := ""
-	if tip := n.Chain().Tip(); tip != nil {
-		currentBits = fmt.Sprintf("%08x", tip.Bits)
-	}
-	network := s.estimateNetworkHashPS(n, 20)
-	eta := float64(0)
-	if s.minerLocalHashPS > 0 {
-		if nh, ok := network["hps"].(float64); ok && nh > 0 {
-			eta = float64(chaincfg.TargetSpacing.Seconds()) * nh / s.minerLocalHashPS
-		}
-	}
-	miningNow := s.minerEnabled && s.minerPausedReason == "" && s.minerLoopRunning
+	miningNow := s.minerEnabled && s.minerLoopRunning
 	activeThreads := 0
 	threadState := "configured_only"
 	if miningNow {
 		activeThreads = s.minerThreads
 		threadState = "active"
-	} else if s.minerEnabled && s.minerPausedReason != "" {
-		threadState = "paused"
 	}
 	return map[string]any{
-		"mining_enabled":                    s.minerEnabled,
-		"active_mining":                     miningNow,
-		"miner_loop_running":                s.minerLoopRunning,
-		"mining_paused_reason":              s.minerPausedReason,
-		"last_template_refresh_time":        unixOrZero(s.minerLastTemplate),
-		"last_template_refresh_ago_seconds": secondsSince(s.minerLastTemplate),
-		"last_mined_template_height":        s.minerLastTemplateHeight,
-		"watchdog_last_recovery_action":     s.minerLastRecovery,
-		"configured_threads":                s.minerThreads,
-		"active_threads":                    activeThreads,
-		"effective_threads":                 s.minerThreads,
-		"thread_state":                      threadState,
-		"local_hashps":                      s.minerLocalHashPS,
-		"local_khps":                        localKHPS,
-		"session_hashes":                    s.minerSessionHashes,
-		"hashes_per_thread":                 hashesPerThread,
-		"network_hashps":                    network,
-		"estimated_time_to_block_seconds":   eta,
-		"accepted_blocks":                   s.minerBlocks,
-		"session_blocks":                    s.minerBlocks,
-		"stale_blocks":                      s.minerStaleBlocks,
-		"rejected_blocks":                   s.minerRejectBlocks,
-		"last_block_hash":                   s.minerLastHash,
-		"last_nonce":                        s.minerLastNonce,
-		"last_error":                        s.minerLastError,
-		"last_stop_reason":                  s.minerStopReason,
-		"uptime_seconds":                    uptime,
-		"mining_pubkey_hash":                s.minerRewardHashHex,
-		"active_mining_address":             s.minerRewardAddress,
-		"current_bits":                      currentBits,
-		"peers":                             n.P2P().PeerCount(),
-		"storage":                           n.Chain().StorageHealth(),
-		"profiles":                          []string{"eco", "balanced", "performance", "stress"},
+		"status_source":      "local_fallback",
+		"rpc_offline":        true,
+		"rpc_error":          fmt.Sprint(err),
+		"active_mining":      miningNow,
+		"mining_enabled":     s.minerEnabled,
+		"active_threads":     activeThreads,
+		"configured_threads": s.minerThreads,
+		"thread_state":       threadState,
+		"miner_loop_running": s.minerLoopRunning,
+		"local_hashps":       s.minerLocalHashPS,
+		"local_khps":         s.minerLocalHashPS / 1000,
+		"session_hashes":     s.minerSessionHashes,
+		"last_nonce":         s.minerLastNonce,
+		"last_error":         "RPC offline: miner status is local fallback",
+		"mining_paused_reason": func() string {
+			if strings.TrimSpace(s.minerPausedReason) != "" {
+				return s.minerPausedReason
+			}
+			return "rpc offline"
+		}(),
 	}, nil
 }
 
@@ -1514,80 +1520,22 @@ func (s *Service) resolveMiningAddress(n *node.Node) (wallet.MiningAddressInfo, 
 }
 
 func (s *Service) StartMiner(threads int) (map[string]any, error) {
-	n, err := s.current()
-	if err != nil {
-		s.setMinerStartBlocked("node not running", "mining cannot start: no node running")
-		return nil, fmt.Errorf("mining cannot start: no node running")
-	}
 	if threads <= 0 {
 		threads = 1
 	}
-	if reason := s.miningPauseReason(n); reason != "" {
-		switch reason {
-		case "no peers":
-			s.setMinerStartBlocked(reason, "mining cannot start: no peers connected")
-			return nil, fmt.Errorf("mining cannot start: no peers connected")
-		case "syncing":
-			s.setMinerStartBlocked(reason, "mining cannot start: node is still syncing")
-			return nil, fmt.Errorf("mining cannot start: node is still syncing")
-		case "node stale":
-			s.setMinerStartBlocked(reason, "mining cannot start: node appears stalled")
-			return nil, fmt.Errorf("mining cannot start: node appears stalled")
-		default:
-			s.setMinerStartBlocked(reason, fmt.Sprintf("mining cannot start: %s", reason))
-			return nil, fmt.Errorf("mining cannot start: %s", reason)
-		}
-	}
-	s.minerMu.Lock()
-	if s.minerActive {
-		activeThreads := s.minerThreads
-		s.minerMu.Unlock()
-		return map[string]any{"active_mining": true, "threads": activeThreads, "message": "miner already running"}, nil
-	}
-	miningInfo, err := s.resolveMiningAddress(n)
+	result, err := callLocalRPC(s.dataDir, "startminer", []any{threads}, 2500*time.Millisecond)
 	if err != nil {
-		s.minerMu.Unlock()
-		msg := strings.ToLower(err.Error())
-		if strings.Contains(msg, "locked") {
-			s.setMinerStartBlocked("wallet locked", "mining cannot start: wallet locked and no reusable mining address is available")
-			return nil, fmt.Errorf("mining cannot start: wallet locked and no reusable mining address is available")
-		}
-		s.setMinerStartBlocked("address unavailable", fmt.Sprintf("mining cannot start: %v", err))
 		return nil, fmt.Errorf("mining cannot start: %w", err)
 	}
-	pubHash, err := hex.DecodeString(miningInfo.PubKeyHashHex)
-	if err != nil || len(pubHash) != 20 {
-		s.minerMu.Unlock()
-		s.setMinerStartBlocked("invalid mining address", "mining cannot start: invalid mining pubkey hash")
-		return nil, fmt.Errorf("invalid mining pubkey hash")
+	if out, ok := result.(map[string]any); ok {
+		out["status_source"] = "rpc"
+		return out, nil
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	s.minerActive = true
-	s.minerEnabled = true
-	s.minerLoopRunning = true
-	s.minerPausedReason = ""
-	s.minerLastTemplate = time.Time{}
-	s.minerLastTemplateHeight = 0
-	s.minerLastRecovery = ""
-	s.minerCancel = cancel
-	s.minerThreads = threads
-	s.minerBlocks = 0
-	s.minerLastHash = ""
-	s.minerLastError = ""
-	s.minerLocalHashPS = 0
-	s.minerStarted = time.Now()
-	s.minerStaleBlocks = 0
-	s.minerRejectBlocks = 0
-	s.minerRewardHashHex = miningInfo.PubKeyHashHex
-	s.minerRewardAddress = miningInfo.Address
-	s.minerSessionHashes = 0
-	s.minerStopReason = ""
-	s.minerMu.Unlock()
-	go s.minerLoop(ctx, n, pubHash, threads)
-	return map[string]any{"active_mining": true, "threads": threads, "mining_pubkey_hash": miningInfo.PubKeyHashHex, "mining_address": miningInfo.Address}, nil
+	return map[string]any{"active_mining": true, "threads": threads, "status_source": "rpc"}, nil
 }
 
 func (s *Service) StopMiner() (map[string]any, error) {
+	// Always cancel any legacy local loop first so users can recover even if RPC is unavailable.
 	s.minerMu.Lock()
 	active := s.minerActive
 	cancel := s.minerCancel
@@ -1604,7 +1552,29 @@ func (s *Service) StopMiner() (map[string]any, error) {
 	s.minerLastError = "stopped"
 	s.minerStopReason = "stopped by user"
 	s.minerMu.Unlock()
-	return map[string]any{"active_mining": false, "was_active": active, "session_blocks": blocks, "last_block_hash": last, "last_stop_reason": "stopped by user"}, nil
+	result, err := callLocalRPC(s.dataDir, "stopminer", []any{}, 2200*time.Millisecond)
+	if err == nil {
+		if out, ok := result.(map[string]any); ok {
+			out["status_source"] = "rpc"
+			out["local_loop_was_active"] = active
+			return out, nil
+		}
+	}
+	return map[string]any{
+		"active_mining":            false,
+		"was_active":               active,
+		"session_blocks":           blocks,
+		"last_block_hash":          last,
+		"last_stop_reason":         "stopped by user",
+		"status_source":            "local_fallback",
+		"rpc_stop_error":           fmt.Sprint(err),
+		"local_loop_was_active":    active,
+		"local_loop_force_stopped": true,
+	}, nil
+}
+
+func (s *Service) ForceStopMiner() (map[string]any, error) {
+	return s.StopMiner()
 }
 
 func (s *Service) setMinerStartBlocked(reason, message string) {

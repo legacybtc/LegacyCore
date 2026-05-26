@@ -82,6 +82,7 @@ type Backend = {
   GetMinerStatus(): Promise<Dict>;
   StartMiner(threads: number): Promise<Dict>;
   StopMiner(): Promise<Dict>;
+  ForceStopMiner(): Promise<Dict>;
   SetMinerThreads(threads: number): Promise<Dict>;
   GetNodeConfig(): Promise<Dict>;
   SaveNetworkSettings(s: { mode: string; nodes: string[] }): Promise<Dict>;
@@ -175,7 +176,7 @@ function App() {
     try {
       const result = await fn();
       setToast(`${label} complete`);
-      await refresh();
+      void refresh();
       return result;
     } catch (e) {
       setToast(cleanError(e));
@@ -1009,6 +1010,12 @@ function MiningPage({ snap, run }: PageProps) {
   const [threads, setThreads] = useState<number>(mining.configured_threads || snap.settings?.defaultThreads || 1);
   const [selectedProfile, setSelectedProfile] = useState<string>(() => profileForThreads(mining.configured_threads || snap.settings?.defaultThreads || 1, snap.settings?.defaultThreads || 4));
   const [startError, setStartError] = useState("");
+  const [startAttempted, setStartAttempted] = useState(false);
+  const rpcOffline = Boolean(mining.rpc_offline);
+  const activeMining = !rpcOffline && Boolean(mining.active_mining);
+  const canStartMining = !rpcOffline && Boolean(mining.can_start ?? !activeMining);
+  const blockedReason = mining.mining_paused_reason || mining.last_error || "";
+  const emergencyStopEnabled = rpcOffline || activeMining || startAttempted || Number(mining.local_hashps || 0) > 0 || Number(mining.session_hashes || 0) > 0 || Boolean(mining.miner_loop_running);
   const profiles = [
     { id: "eco", label: "Eco", threads: 1, note: "low heat" },
     { id: "balanced", label: "Balanced", threads: 4, note: "recommended" },
@@ -1022,8 +1029,18 @@ function MiningPage({ snap, run }: PageProps) {
   }
   async function startMining() {
     setStartError("");
+    setStartAttempted(true);
     try {
       await run("Start miner", () => api().StartMiner(threads));
+      const status = await api().GetMinerStatus();
+      if (status?.rpc_offline) {
+        setStartError(`Mining status is unavailable: RPC offline (${status?.rpc_error || "no RPC response"})`);
+        return;
+      }
+      if (!status?.active_mining) {
+        const reason = status?.mining_paused_reason || status?.last_error || "backend did not report active mining";
+        setStartError(`Mining did not enter active state: ${reason}`);
+      }
     } catch (e) {
       setStartError(cleanError(e));
     }
@@ -1032,6 +1049,19 @@ function MiningPage({ snap, run }: PageProps) {
     setStartError("");
     try {
       await run("Stop miner", () => api().StopMiner());
+      const status = await api().GetMinerStatus();
+      if (!status?.active_mining) {
+        setStartAttempted(false);
+      }
+    } catch (e) {
+      setStartError(cleanError(e));
+    }
+  }
+  async function forceStopMining() {
+    setStartError("");
+    try {
+      await run("Force stop miner", () => api().ForceStopMiner());
+      setStartAttempted(false);
     } catch (e) {
       setStartError(cleanError(e));
     }
@@ -1039,8 +1069,8 @@ function MiningPage({ snap, run }: PageProps) {
   return (
     <div className="page miningPage">
       <div className="metricGrid miningMetrics">
-        <Metric label="Mining" value={mining.active_mining ? "Running" : mining.mining_enabled ? "Paused" : "Stopped"} />
-        <Metric label="Mining safety" value={mining.mining_paused_reason ? `Paused: ${mining.mining_paused_reason}` : "Safe"} />
+        <Metric label="Mining" value={rpcOffline ? "Unknown (RPC offline)" : mining.active_mining ? "Running" : mining.mining_enabled ? "Paused" : "Stopped"} />
+        <Metric label="Mining safety" value={rpcOffline ? "Unsafe: RPC offline" : mining.mining_paused_reason ? `Paused: ${mining.mining_paused_reason}` : "Safe"} />
         <Metric label="Threads" value={`${mining.active_threads || 0} active / ${mining.configured_threads || threads} set`} />
         <Metric label="Local KH/s" value={fmtNumber(mining.local_khps)} />
         <Metric label="Network KH/s" value={networkHashLabel(mining.network_hashps)} />
@@ -1051,7 +1081,9 @@ function MiningPage({ snap, run }: PageProps) {
       </div>
       <section className="panel minerControls">
         <h3>Miner controls</h3>
+        {mining.rpc_offline && <Notice tone="danger" text={`Wallet state mismatch detected: GUI/internal node is up but RPC is offline (${mining.rpc_error || "no RPC response"}). Use Restart Internal Node and Force stop miner.`} />}
         {startError && <Notice tone="danger" text={startError} />}
+        {!startError && !activeMining && !canStartMining && <Notice tone="warn" text={`Mining is blocked: ${blockedReason || "safety checks are preventing miner start"}`} />}
         {!startError && mining.last_error && <Notice tone="warn" text={`Last miner error: ${mining.last_error}`} />}
         <div className="profileGrid">
           {profiles.map((profile) => <button key={profile.id} onClick={() => chooseProfile(profile)} className={selectedProfile === profile.id ? "active profileCard" : "profileCard"}><strong>{profile.label}</strong><span>{profile.threads} threads</span><small>{profile.note}</small></button>)}
@@ -1060,8 +1092,9 @@ function MiningPage({ snap, run }: PageProps) {
           <label className="inline">Threads<input type="number" min={1} value={threads} onChange={(e) => { setThreads(Number(e.target.value)); setSelectedProfile("custom"); }} /></label>
           <span className="pill">Configured profile: {title(selectedProfile)}</span>
           <button onClick={() => run("Set threads", () => api().SetMinerThreads(threads))}>Set threads</button>
-          <button className="primary" onClick={() => void startMining()}>Start mining</button>
-          <button onClick={() => void stopMining()}>Stop mining</button>
+          <button className="primary" onClick={() => void startMining()} disabled={activeMining || !canStartMining}>Start mining</button>
+          <button onClick={() => void stopMining()} disabled={!emergencyStopEnabled}>Stop mining</button>
+          <button className="warn" onClick={() => void forceStopMining()} disabled={!emergencyStopEnabled}>Force stop miner</button>
         </div>
       </section>
       <div className="miningLower">
@@ -1091,8 +1124,8 @@ function MiningPage({ snap, run }: PageProps) {
           <h3>Mining Activity</h3>
           {mining.mining_paused_reason && <Notice tone="warn" text={`Mining is paused because ${mining.mining_paused_reason}. It will resume automatically when safe.`} />}
           <div className="activityTicker">
-            <StatusDot ok={Boolean(mining.active_mining)} />
-            <strong>{mining.active_mining ? "Mining active..." : mining.mining_enabled ? "Mining paused" : "Miner idle"}</strong>
+            <StatusDot ok={!rpcOffline && Boolean(mining.active_mining)} />
+            <strong>{rpcOffline ? "Miner status unavailable (RPC offline)" : mining.active_mining ? "Mining active..." : mining.mining_enabled ? "Mining paused" : "Miner idle"}</strong>
             <span>{mining.active_threads || 0} active thread workers</span>
           </div>
           <div className="activityStats">
@@ -1104,7 +1137,7 @@ function MiningPage({ snap, run }: PageProps) {
             <div><span>Rejected blocks</span><strong>{mining.rejected_blocks || 0}</strong></div>
           </div>
           <div className="activityFeed">
-          <div><span>{mining.active_mining ? "Mining active..." : `Mining stopped: ${mining.last_stop_reason || "idle"}`}</span><small>{seconds(mining.uptime_seconds)}</small></div>
+          <div><span>{rpcOffline ? `Mining state unknown: RPC offline (${mining.rpc_error || "no RPC response"})` : mining.active_mining ? "Mining active..." : `Mining stopped: ${mining.last_stop_reason || "idle"}`}</span><small>{seconds(mining.uptime_seconds)}</small></div>
             <div><span>Thread workers: {mining.active_threads || 0}</span><small>{mining.thread_state || "stopped"}</small></div>
             <div><span>Hashrate: {fmtNumber(mining.local_hashps)} H/s ({fmtNumber(mining.local_khps)} KH/s)</span><small>live</small></div>
             <div><span>Profile selected: {title(selectedProfile)}</span><small>{threads} threads</small></div>
