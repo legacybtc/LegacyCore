@@ -58,7 +58,7 @@ type NodeTestResult struct {
 	Message string `json:"message"`
 }
 
-const lifecycleBuildMarker = "lifecycle-fix-v1.0.2-build-20260525"
+const lifecycleBuildMarker = "lifecycle-fix-v1.0.2-build-20260526-rpc-truth"
 
 func NewApp() *App {
 	s := defaultSettings()
@@ -314,24 +314,54 @@ func (a *App) ForcePeerSync() (map[string]any, error) {
 func (a *App) GetMinerStatus() (map[string]any, error) { return a.service.GetMinerStatus() }
 
 func (a *App) StartMiner(threads int) (map[string]any, error) {
-	a.lifecycleLogf("mining start requested threads=%d service_id=%s", threads, a.service.InstanceID())
+	a.lifecycleLogf("GUI start mining clicked threads=%d service_id=%s", threads, a.service.InstanceID())
+	a.lifecycleLogf("backend StartMiner called threads=%d service_id=%s", threads, a.service.InstanceID())
 	out, err := a.service.StartMiner(threads)
 	if err != nil {
 		a.lifecycleLogf("mining start blocked reason=%v", err)
 		return nil, err
 	}
-	a.lifecycleLogf("mining start success threads=%d", threads)
+	active, _ := out["active_mining"].(bool)
+	activeThreads := threads
+	if t, ok := out["threads"].(int); ok && t > 0 {
+		activeThreads = t
+	}
+	a.lifecycleLogf("miner started active=%t threads=%d", active, activeThreads)
+	if status, serr := a.service.GetMinerStatus(); serr == nil {
+		sActive, _ := status["active_mining"].(bool)
+		sThreads := asInt(status["active_threads"])
+		a.lifecycleLogf("miner state after start active_mining=%t active_threads=%d", sActive, sThreads)
+	}
 	return out, nil
 }
 
 func (a *App) StopMiner() (map[string]any, error) {
-	a.lifecycleLogf("mining stop requested service_id=%s", a.service.InstanceID())
+	a.lifecycleLogf("GUI stop mining clicked service_id=%s", a.service.InstanceID())
+	a.lifecycleLogf("backend StopMiner called service_id=%s", a.service.InstanceID())
 	out, err := a.service.StopMiner()
 	if err != nil {
 		a.lifecycleLogf("mining stop error=%v", err)
 		return nil, err
 	}
-	a.lifecycleLog("mining stop success")
+	active, _ := out["active_mining"].(bool)
+	a.lifecycleLogf("miner stopped active=%t", active)
+	if status, serr := a.service.GetMinerStatus(); serr == nil {
+		sActive, _ := status["active_mining"].(bool)
+		sThreads := asInt(status["active_threads"])
+		a.lifecycleLogf("miner state after stop active_mining=%t active_threads=%d", sActive, sThreads)
+	}
+	return out, nil
+}
+
+func (a *App) ForceStopMiner() (map[string]any, error) {
+	a.lifecycleLogf("GUI force stop miner clicked service_id=%s", a.service.InstanceID())
+	out, err := a.service.ForceStopMiner()
+	if err != nil {
+		a.lifecycleLogf("force stop miner error=%v", err)
+		return nil, err
+	}
+	active, _ := out["active_mining"].(bool)
+	a.lifecycleLogf("force stop miner result active=%t", active)
 	return out, nil
 }
 
@@ -468,15 +498,19 @@ func (a *App) SearchExplorer(query string) (map[string]any, error) {
 }
 
 func (a *App) Snapshot() map[string]any {
+	nodeStatus := a.NodeStatus()
 	out := map[string]any{
 		"coin":          a.CoinInfo(),
 		"wallet_exists": a.WalletExists(),
-		"node":          a.NodeStatus(),
+		"node":          nodeStatus,
 		"settings":      a.settings,
 		"lifecycle": map[string]any{
 			"marker": lifecycleBuildMarker,
 			"log":    lifecycleLogPath(),
 		},
+	}
+	if !nodeStatus.Running {
+		return out
 	}
 	if info, err := a.GetBlockchainInfo(); err == nil {
 		out["blockchain"] = info
@@ -793,4 +827,22 @@ func reportJSON(m map[string]any) string {
 		return fmt.Sprintf("%v", m)
 	}
 	return string(b)
+}
+
+func asInt(v any) int {
+	switch t := v.(type) {
+	case int:
+		return t
+	case int32:
+		return int(t)
+	case int64:
+		return int(t)
+	case float64:
+		return int(t)
+	case json.Number:
+		if n, err := t.Int64(); err == nil {
+			return int(n)
+		}
+	}
+	return 0
 }
