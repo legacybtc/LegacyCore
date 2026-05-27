@@ -1,44 +1,28 @@
 # Pool Integration
 
-Status: `integration-ready candidate, external pool testing still required`.
+Purpose: integrate pool software with Legacy Core mining RPCs.  
+Audience: mining pool operators and pool developers.  
+Status: integration-ready candidate for v1.0.4.  
+Safety warning: keep RPC private; never expose node wallet RPC to public workers.
 
-Legacy Core exposes `getblocktemplate`, `submitblock`, address validation, chain height/hash, peer, mempool, and storage health RPCs. It does not include a stratum server.
+## What This Is
 
-## RPC Setup
+Legacy Core provides pool-critical RPC methods:
 
-Keep RPC private. Bind to localhost or a private interface behind firewall rules. Never expose port `19556` to the public internet.
+- `getblocktemplate`
+- `submitblock`
+- `validateaddress`
+- chain/sync/network/mempool RPCs
 
-Windows config example:
+Legacy Core does **not** include a built-in stratum server.
 
-```text
-rpcbind=127.0.0.1
-rpcuser=legacyrpc
-rpcpassword=change_this_long_random_password
-```
+## yespower / Chain Identity
 
-Linux config example:
-
-```text
-rpcbind=127.0.0.1
-rpcuser=legacyrpc
-rpcpassword=change_this_long_random_password
-```
-
-Cookie auth is supported for local automation. `rpcuser`/`rpcpassword` is better for a pool process running as a separate service account.
-
-## Required Mainnet Values
-
-- P2P: `19555`
-- RPC: `19556`
-- Message start: `a4 ac c6 4d`
-- Genesis hash: `5b4c78e4556afcd51acf7b9eb2e387fbea2d1414e6042d80d38e6256987154f5`
-- yespower personalization: `LegacyCoinPoW`
+- PoW: yespower
+- Personalization: `LegacyCoinPoW`
+- P2P/RPC ports: `19555` / `19556`
 
 Verify:
-
-```powershell
-.\legacycoind.exe params
-```
 
 ```bash
 ./legacycoind params
@@ -46,59 +30,48 @@ Verify:
 
 ## getblocktemplate Flow
 
-1. Pool calls `getblocktemplate`.
-2. Pool builds candidate coinbase paying a pool-controlled Legacy Coin address.
-3. Pool builds header and merkle root from template transactions.
-4. Workers search nonce/extra-nonce using yespower with personalization `LegacyCoinPoW`.
-5. Pool serializes the full block and calls `submitblock`.
-6. Pool confirms acceptance by checking height/hash with `getblockhash` and `getblock`.
+1. Call `getblocktemplate`.
+2. Build pool coinbase and merkle root.
+3. Mine candidate with yespower (`LegacyCoinPoW` personalization).
+4. Submit full block using `submitblock`.
+5. Confirm acceptance with `getblock`/`getblockhash`.
 
-Example:
+## submitblock Behavior
+
+- Success: `null` result.
+- Rejections: structured reject strings or decode errors.
+
+## Reward and Maturity
+
+- Subsidy schedule remains chain consensus.
+- Coinbase maturity is 100 blocks.
+- Pool payout logic must account for maturity.
+
+## RPC Private Warning
+
+- Bind RPC to localhost/private interfaces.
+- Use cookie auth or strong credentials.
+- Apply strict firewall rules.
+
+## Pool Smoke Script
+
+Use:
 
 ```powershell
-.\legacycoin-cli.exe getblocktemplate
-.\legacycoin-cli.exe submitblock <block_hex>
+powershell -ExecutionPolicy Bypass -File scripts\pool-rpc-smoke.ps1
 ```
+
+or:
 
 ```bash
-./legacycoin-cli getblocktemplate
-./legacycoin-cli submitblock <block_hex>
+bash scripts/pool-rpc-smoke.sh
 ```
 
-## Header and Hash Expectations
+## External Certification Status
 
-Legacy Coin block identity uses the chain's yespower header hash. Do not use wire-header SHA256d as the block id for pool accounting, P2P inventory, or submit confirmation.
-
-## Coinbase and Reward Notes
-
-- Coinbase maturity: 100 blocks.
-- Pool reward address must be a valid Legacy Coin mainnet address.
-- Coinbase value must not exceed subsidy plus fees.
-- Pool payout transactions must obey normal transaction and mempool policy.
-
-## Difficulty and Target Notes
-
-Use `bits` and `target` from `getblocktemplate`. DGW/difficulty rules are consensus and must not be changed by pool software.
-
-## Example Pool Operator Checklist
-
-- Can pool call `getblocktemplate`? `yes, implemented`
-- Can pool submitblock? `yes, implemented`
-- Can pool validate payout address? `yes, validateaddress implemented`
-- Can pool read chain height/hash? `yes, getblockcount/getblockhash implemented`
-- Can pool detect reorg? `partial, use height/hash scanning and getsyncstatus`
-- Can pool confirm submitted block? `yes, getblock/getblockhash`
-
-## Security
-
-- Put pool-to-node RPC on localhost or private network only.
-- Use firewall rules so public workers never reach RPC.
-- Keep wallet keys outside worker machines.
-- Back up pool wallet data before mining payouts.
-- Monitor `checkstorage`, `getblockchaininfo`, `getsyncstatus`, and `getpeerinfo`.
+Third-party production pool certification is still required before public claims of pool production readiness.
 
 ## Known Limitations
 
-- External stratum pool testing is still required.
-- No built-in stratum server.
-- `txindex` / `addressindex` are optional (`txindex=1`, `addressindex=1`) and rebuildable via `reindex`.
+- No built-in stratum service.
+- Optional indexes (`txindex`, `addressindex`) require explicit enablement and rebuild on existing data.

@@ -1,137 +1,115 @@
 # Troubleshooting
 
-## RPC Cookie Not Found
+Purpose: quick fixes for common Legacy Core operational issues.  
+Audience: wallet users, miners, and node operators.  
+Status: active for v1.0.4.  
+Safety warning: back up wallet before repair or maintenance actions.
 
-Start the daemon first or pass explicit RPC credentials.
+## RPC Offline
 
-Windows:
+Symptoms: connection refused.
 
-```powershell
-.\legacycoind.exe run
-.\legacycoin-cli.exe getnetworkinfo
-```
-
-Linux:
+Check:
 
 ```bash
 ./legacycoind run
 ./legacycoin-cli getnetworkinfo
 ```
 
-## RPC Unauthorized
+Also verify correct `-datadir` and `-rpcport` values.
 
-Check `rpcuser` and `rpcpassword`, or ensure the CLI uses the same data directory as the daemon.
+## Port Already In Use
 
-```powershell
-.\legacycoin-cli.exe -rpcuser=legacyrpc -rpcpassword=change_this getnetworkinfo
-```
+Symptoms: daemon fails to bind 19555 or 19556.
 
-```bash
-./legacycoin-cli -rpcuser=legacyrpc -rpcpassword=change_this getnetworkinfo
-```
+Action:
 
-## RPC Port Conflict
+- stop old instance cleanly (`legacycoin-cli stop`)
+- verify process manager is not auto-restarting another instance
 
-Only one daemon can bind RPC `19556` on the same interface.
+## No Peers
 
-```powershell
-.\legacycoin-cli.exe stop
-```
+Check:
 
 ```bash
-./legacycoin-cli stop
-```
-
-Then confirm no service manager immediately restarted another copy.
-
-## Node Is Behind
-
-Check sync:
-
-```powershell
-.\legacycoin-cli.exe getsyncstatus
-.\legacycoin-cli.exe getpeerinfo
-```
-
-```bash
-./legacycoin-cli getsyncstatus
 ./legacycoin-cli getpeerinfo
+./legacycoin-cli getsyncstatus
 ```
 
-Watch `catch_up_pending`, `peer_reported_height`, `last_sync_attempt`, `last_sync_error`, and stale peer counts.
+Verify firewall and seed/addnode configuration.
 
-## Storage Error
+## Stuck at Height 0
 
-Run:
+Check:
 
-```powershell
-.\legacycoin-cli.exe checkstorage
+```bash
+./legacycoin-cli getblockchaininfo
+./legacycoin-cli getsyncstatus
 ```
+
+If no peers or stale peers persist, add known nodes and retry.
+
+## txindex Disabled
+
+Symptoms: historical `getrawtransaction` misses older txs.
+
+Fix:
+
+1. set `txindex=1` in config
+2. run `reindex`
+
+## addressindex Disabled
+
+Symptoms: address RPC returns disabled error.
+
+Fix:
+
+1. set `addressindex=1`
+2. run `reindex`
+
+## Reindex Needed
+
+Use:
 
 ```bash
 ./legacycoin-cli checkstorage
-```
-
-Repair path:
-
-```powershell
-.\legacycoin-cli.exe reindex
-```
-
-```bash
 ./legacycoin-cli reindex
 ```
 
-Or:
-
-```powershell
-.\legacycoin-cli.exe checkstorage true
-```
+or offline:
 
 ```bash
-./legacycoin-cli checkstorage true
+./legacycoind reindex
 ```
 
-## Miner Will Not Start
+## Mining Not Starting
 
-Run:
-
-```powershell
-.\legacycoin-cli.exe getminingaddress
-.\legacycoin-cli.exe checkstorage
-.\legacycoin-cli.exe getminerstatus
-```
+Check:
 
 ```bash
 ./legacycoin-cli getminingaddress
-./legacycoin-cli checkstorage
 ./legacycoin-cli getminerstatus
+./legacycoin-cli checkstorage
+./legacycoin-cli getsyncstatus
 ```
 
-Common causes:
+Common blockers:
 
-- No mining pubkey hash configured.
-- Wallet is encrypted and locked.
-- Storage health failed.
-- `peer_required` is true and no peers are connected.
+- wallet locked
+- no peers when peer safety is required
+- storage not healthy
+- mining address missing
 
-## Manual GUI Lifecycle Checklist
+## Windows Firewall
 
-Status: manual checklist. Use this before signing a wallet release or accepting a GUI runtime change.
+Allow:
 
-- Start Mining: miner starts, `getminerstatus` reports `active_mining=true`, UI state matches RPC.
-- Stop Mining: miner stops, `getminerstatus` reports `active_mining=false`.
-- Force Stop Miner: repeated stop is safe and idempotent.
-- Restart Internal Node: node stops and starts without losing wallet state.
-- Stop Internal Node: RPC port `19556` and P2P port `19555` close after shutdown.
-- Open Lifecycle Log: log opens and contains start/stop/miner events.
-- Copy Diagnostics Report: report includes node, RPC, wallet, storage, and miner status without secrets.
-- Close Application: no orphan node or miner process remains.
+- P2P `19555` (if node should accept inbound peers)
 
-## Windows SmartScreen
+Keep private:
 
-Unsigned Windows builds may trigger SmartScreen. Verify SHA256 checksums before running any binary.
+- RPC `19556`
 
-## Early Mainnet Warning
+## Known Limitations
 
-Legacy Core is early mainnet software. Back up wallets, verify checksums, keep RPC private, and test operations with small amounts first.
+- Early mainnet requires conservative operational policy and strong backup discipline.

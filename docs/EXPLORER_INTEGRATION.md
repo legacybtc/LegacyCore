@@ -1,87 +1,63 @@
 # Explorer Integration
 
-Status: block and transaction primitives are implemented; optional native `txindex` and `addressindex` can be enabled for richer explorer lookup.
+Purpose: guide explorers/indexers integrating with Legacy Core RPC.  
+Audience: explorer builders and indexing teams.  
+Status: active for v1.0.4.  
+Safety warning: keep RPC private; expose explorer API, not wallet RPC, to users.
 
-## Supported Queries
+## What This Is
 
-Block by height:
+A practical RPC integration guide for block, transaction, mempool, and optional index lookups.
 
-```powershell
-.\legacycoin-cli.exe getblockhash 100
-.\legacycoin-cli.exe getblock <hash>
-```
+## Quick Start
 
 ```bash
-./legacycoin-cli getblockhash 100
+./legacycoin-cli getblockchaininfo
+./legacycoin-cli getblockcount
+./legacycoin-cli getblockhash <height>
 ./legacycoin-cli getblock <hash>
-```
-
-Block by hash:
-
-```powershell
-.\legacycoin-cli.exe getblock <hash>
-```
-
-```bash
-./legacycoin-cli getblock <hash>
-```
-
-Transaction by txid:
-
-```powershell
-.\legacycoin-cli.exe getrawtransaction <txid> true
-```
-
-```bash
-./legacycoin-cli getrawtransaction <txid> true
-```
-
-Mempool:
-
-```powershell
-.\legacycoin-cli.exe getrawmempool
-.\legacycoin-cli.exe getmempoolinfo
-```
-
-```bash
 ./legacycoin-cli getrawmempool
-./legacycoin-cli getmempoolinfo
 ```
+
+## Index Features in v1.0.4
+
+- `txindex=1`: available as an opt-in foundation for txid historical lookup.
+- `addressindex=1`: available as an opt-in foundation for address RPCs.
+- `getrawtransaction` works best with `txindex=1`.
+- `getaddresstxids`, `getaddressutxos`, `getaddressbalance` require `addressindex=1`.
+
+## Important Warning About Address History
+
+Address index support in v1.0.4 is a **foundation**, not a complete rich historical explorer index model.
+
+Do not claim full historical address analytics unless your explorer adds its own full historical indexing layer.
+
+## Recommended Explorer Flow
+
+1. Read active chain tip (`getblockcount`).
+2. Iterate heights: `getblockhash` -> `getblock`.
+3. Store block/tx/input/output rows in explorer DB.
+4. Track `(height, hash)` for reorg handling.
+5. Poll mempool with `getrawmempool` and `getmempoolinfo`.
 
 ## Supply and Emission
 
-Use the consensus schedule:
+Base values:
 
-- Initial subsidy: 50 LBTC
-- Halving interval: 210,000 blocks
-- Max supply: 21,000,000 LBTC
-- Coinbase maturity: 100 blocks
+- max supply: 21,000,000 LBTC
+- initial reward: 50 LBTC
+- halving interval: 210,000 blocks
+- coinbase maturity: 100 blocks
 
-Explorers should compute issued supply from height and subsidy schedule, then clearly distinguish immature coinbase outputs from spendable supply.
+Compute issued/matured views in explorer logic, and clearly label immature coinbase balances.
 
-## Network Hash Estimate
+## Troubleshooting
 
-`getnetworkhashps` and `getchaintiming` are implemented. They are estimates based on recent block timing and current difficulty, not an oracle.
+- `getrawtransaction` not found: enable `txindex=1` and rebuild indexes.
+- address RPC disabled error: enable `addressindex=1` and rebuild indexes.
+- sync lag: inspect `getsyncstatus` and `getpeerinfo`.
 
-## Local Explorer Limitations
+## Known Limitations
 
-- Address RPCs require `addressindex=1`; disabled nodes return explicit unavailable errors.
-- `getrawtransaction` historical coverage is strongest with `txindex=1`.
-- Rich token explorer views remain `partial`, depending on token RPC coverage and index design.
-
-Do not fake address search by scanning only the wallet or mempool. Use `addressindex=1` or maintain an explorer-side index.
-
-## Recommended Explorer Architecture
-
-1. Run a fully synced Legacy Core node.
-2. Scan `getblockhash height` then `getblock hash` sequentially.
-3. Store block, tx, output, input, and address-derived rows in the explorer database.
-4. Track active chain hash at every height.
-5. On reorg, roll back to the last common height and rescan.
-6. Poll `getrawmempool` for pending transactions.
-
-## Native Indexes
-
-- `txindex=1`: enables txid-to-block lookup.
-- `addressindex=1`: enables `getaddresstxids`, `getaddressutxos`, and `getaddressbalance`.
-- `reindex`: rebuilds active-chain indexes, including optional tx/address indexes when enabled.
+- Native address index is intentionally conservative in scope.
+- External explorer DB/index remains recommended for rich public UX.

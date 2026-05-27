@@ -1,14 +1,21 @@
 # Windows Service Notes
 
-Legacy Core can run headless on Windows through service wrappers (for example NSSM, WinSW, or Task Scheduler startup tasks).
+Purpose: run Legacy Core daemon in managed Windows service environments.  
+Audience: Windows node operators.  
+Status: active for v1.0.4.  
+Safety warning: RPC port `19556` must remain private.
 
-## Recommended Baseline
+## What This Is
 
-- Run `legacycoind.exe run -seed-peers`
-- Keep RPC private (`127.0.0.1`) unless explicitly secured
-- Use a dedicated data directory and service account where possible
+Operational notes for wrapping `legacycoind.exe` in a service manager (for example NSSM/WinSW/Task Scheduler).
 
-## Operational Checks
+## Baseline Command
+
+```powershell
+.\legacycoind.exe run -seed-peers
+```
+
+## Health Checks
 
 ```powershell
 .\legacycoin-cli.exe getblockchaininfo
@@ -16,12 +23,14 @@ Legacy Core can run headless on Windows through service wrappers (for example NS
 .\legacycoin-cli.exe checkstorage
 ```
 
-## Restart/Upgrade Strategy
+## Upgrade Procedure
 
 1. Stop service cleanly.
-2. Back up wallet data.
+2. Back up wallet/config.
 3. Replace binaries.
 4. Start service.
-5. Verify with CLI health commands.
+5. Verify identity and health commands.
 
-Do not expose RPC directly to public internet.
+## Known Limitations
+
+- This repository provides guidance and examples, not a single mandatory Windows service wrapper.

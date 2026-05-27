@@ -1,36 +1,61 @@
 # Monitoring
 
+Purpose: operator monitoring checklist for Legacy Core nodes.  
+Audience: node operators, seed operators, miners, and integrators.  
+Status: active for v1.0.4.  
+Safety warning: monitor from private infrastructure; do not expose privileged RPC publicly.
+
 ## Core Health Commands
 
 ```bash
-legacycoin-cli getblockchaininfo
-legacycoin-cli getnetworkinfo
-legacycoin-cli getpeerinfo
-legacycoin-cli getsyncstatus
-legacycoin-cli getrawmempool
-legacycoin-cli getmempoolinfo
-legacycoin-cli getnetworkhashps
-legacycoin-cli checkstorage
-legacycoin-cli doctor
+./legacycoin-cli getblockchaininfo
+./legacycoin-cli getnetworkinfo
+./legacycoin-cli getpeerinfo
+./legacycoin-cli getsyncstatus
+./legacycoin-cli getrawmempool
+./legacycoin-cli getmempoolinfo
+./legacycoin-cli getnetworkhashps
+./legacycoin-cli checkstorage
+./legacycoin-cli doctor
 ```
 
-## What To Watch
+## Pretty Logs / Log Options
 
-- Height progression and best hash movement
-- Peer count and peer freshness
-- Sync watchdog status and last watchdog action
-- Mempool size / pending tx behavior
-- RPC reachability
-- Storage health (`checkstorage`)
+Config options:
 
-## P2P Ping/Pong Monitoring
+- `pretty_logs=true|false`
+- `log_icons=true|false`
+- `peer_ping_interval_seconds=15` (minimum 10; 15-30 recommended)
 
-`getpeerinfo` includes live ping/pong metadata (latency and freshness fields). Use these fields to detect stale peers and reconnect conditions before sync stalls.
+## Ping/Pong and Peer Liveness
 
-## Alerting Suggestions
+`getpeerinfo` includes fields for:
 
-- No peers for > 5 minutes
-- Height unchanged while peers report ahead
-- Repeated watchdog reconnect actions
-- Storage health not OK
-- RPC endpoint unreachable
+- `last_ping_time`
+- `last_pong_time`
+- `ping_latency_ms`
+- `missed_pongs`
+- `stale`
+- `sync_state`
+- `reported_height`
+
+Use these to detect stale peers before sync stalls.
+
+## What To Alert On
+
+- RPC unreachable
+- no peers for extended periods
+- `blocks_behind` rising
+- repeated watchdog recovery actions
+- stale peer count growing
+- storage health failures
+
+## Troubleshooting
+
+- If peers are stale, inspect firewall, connectivity, and addnode configuration.
+- If sync is stalled, inspect `getsyncstatus` and `last_sync_error`.
+- If storage warnings appear, run `checkstorage` and repair if needed.
+
+## Known Limitations
+
+- Network hash rate remains an estimate, not a direct census of all network hash power.

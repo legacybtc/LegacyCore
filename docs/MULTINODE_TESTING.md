@@ -1,28 +1,33 @@
 # Multi-node Testing
 
-Use these smoke harnesses for basic multi-node catch-up validation:
+Purpose: validate peer connect, sync, and reconnect behavior across isolated nodes.  
+Audience: developers and operators validating releases.  
+Status: active for v1.0.4.  
+Safety warning: use isolated test datadirs/ports only.
 
-- `scripts/multinode-smoke.ps1` (Windows)
-- `scripts/multinode-smoke.sh` (Linux/macOS)
+## Scripts
+
+- `scripts/multinode-smoke.ps1`
+- `scripts/multinode-smoke.sh`
 
 ## Scenario
 
-1. Start node A with isolated datadir and ports.
-2. Start node B with isolated datadir and ports.
+1. Start node A with isolated datadir/ports.
+2. Start node B with isolated datadir/ports.
 3. Connect B to A.
-4. Mine block(s) on A.
-5. Verify B catches up by height/hash.
-6. Stop both nodes cleanly.
+4. Verify both establish peer connectivity.
+5. Verify height/hash alignment.
+6. Restart follower and verify reconnect/alignment again.
 
-## Why This Exists
+## Expected Output
 
-This harness catches regressions where:
+Script should complete with explicit alignment/reconnect success messages and nonzero peer counts.
 
-- nodes remain behind despite peer connectivity
-- sync watchdog/reconnect behavior regresses
-- port/data-directory isolation behavior breaks
+## Troubleshooting
 
-## Notes
+- RPC auth/cookie mismatch: ensure CLI and daemon use same datadir.
+- no connect: verify `-connect`/`addnode` target and firewall rules.
 
-- These scripts use runtime port override flags for test isolation.
-- Do not use test overrides unintentionally in production service units.
+## Known Limitations
+
+- Smoke harness is intentionally lightweight and not a full adversarial network simulation.

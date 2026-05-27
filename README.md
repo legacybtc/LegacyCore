@@ -1,32 +1,19 @@
 # Legacy Core
 
-Legacy Core is the official Go full-node, CLI, miner, and desktop wallet stack for Legacy Coin / LBTC.
-
-This repository targets infrastructure-grade readiness for:
-
-- wallet users
-- node operators
-- solo miners
-- pool/exchange/explorer integrators
-- source builders and contributors
+Legacy Core is the official full-node, CLI, miner, and desktop wallet stack for Legacy Coin (LBTC).
 
 ## What Is Legacy Core
 
-Included in this repository:
+This repository provides:
 
 - `legacycoind` (full node daemon)
-- `legacycoin-cli` (JSON-RPC CLI)
-- Legacy Wallet source (`cmd/legacywallet`, Wails desktop UI)
-- consensus/network/wallet/mining/storage implementation
-- release/CI/build/test tooling
+- `legacycoin-cli` (RPC command-line client)
+- Legacy Wallet source (`cmd/legacywallet`)
+- Core chain, wallet, mining, P2P, storage, and RPC implementation
 
-Not included in this repository:
+This repository does **not** include hosted pool, exchange, or explorer infrastructure services.
 
-- production mining-pool server implementation
-- hosted public explorer service deployment
-- hosted exchange backend infrastructure
-
-## Mainnet Identity (Must Not Change)
+## Mainnet Identity
 
 | Field | Value |
 | --- | --- |
@@ -38,10 +25,10 @@ Not included in this repository:
 | P2P port | `19555` |
 | RPC port | `19556` |
 | yespower personalization | `LegacyCoinPoW` |
-| Data dir (Linux) | `~/.legacycoin` |
+| Data dir (Linux default) | `~/.legacycoin` |
 | DNS seeds | `legacycoinseed.space`, `legacycoinseed2.space` |
 
-Verify a build:
+Verify any build:
 
 ```powershell
 .\legacycoind.exe params
@@ -51,45 +38,27 @@ Verify a build:
 ./legacycoind params
 ```
 
-## Release Matrix
+## Download / Release Note
 
-| Platform | Architecture | Archive | GUI Wallet | Status |
-| --- | --- | --- | --- | --- |
-| Windows | x86_64 | `LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.4.zip` | Included | Supported |
-| Linux | x86_64 | `LegacyCore-LBTC-mainnet-linux-amd64-v1.0.4.tar.gz` | CLI/daemon | Supported |
-| Linux | arm64 | `LegacyCore-LBTC-mainnet-linux-arm64-v1.0.4.tar.gz` | CLI/daemon | Experimental |
-| macOS | x86_64 | `LegacyCore-LBTC-mainnet-macos-amd64-v1.0.4.tar.gz` | CLI/daemon | Experimental |
-| macOS | arm64 | `LegacyCore-LBTC-mainnet-macos-arm64-v1.0.4.tar.gz` | CLI/daemon | Experimental |
+Release assets are published on GitHub Releases:  
+[LegacyCore Releases](https://github.com/legacybtc/LegacyCore/releases)
 
-Release assets are published at:
+Current release naming includes:
 
-- <https://github.com/legacybtc/LegacyCore/releases>
+- `LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.4.zip`
+- `LegacyCore-LBTC-mainnet-linux-amd64-v1.0.4.tar.gz`
 
-## Download Verification
-
-Windows:
-
-```powershell
-Get-FileHash -Algorithm SHA256 .\LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.4.zip
-```
-
-Linux/macOS:
-
-```bash
-sha256sum LegacyCore-LBTC-mainnet-linux-amd64-v1.0.4.tar.gz
-```
-
-Compare with `SHA256SUMS.txt` from the release.
+Always verify SHA256 checksums before use.
 
 ## Quick Start
 
-Windows wallet package:
+Windows:
 
-1. Extract release ZIP.
+1. Extract the wallet ZIP.
 2. Run `START_HERE.bat`.
-3. Verify node status in wallet diagnostics.
+3. Check status with wallet diagnostics or CLI.
 
-Linux headless package:
+Linux:
 
 ```bash
 chmod +x legacycoind legacycoin-cli
@@ -101,17 +70,9 @@ Second terminal:
 ```bash
 ./legacycoin-cli getblockchaininfo
 ./legacycoin-cli getpeerinfo
-./legacycoin-cli getminerstatus
 ```
 
 ## Build From Source
-
-Requirements:
-
-- Go (per `go.mod`)
-- Node.js 20 + npm (wallet frontend build)
-- CGO-capable C compiler
-- Windows production build: MSYS2 UCRT64 GCC (`cgo-c-reference` yespower backend)
 
 Windows:
 
@@ -126,38 +87,35 @@ Linux:
 bash scripts/build-linux.sh amd64
 ```
 
-Cross-platform Make targets:
+Frontend build (wallet source):
 
-```bash
-make frontend
-make test
-make vet
-make package-linux
-make package-windows
+```powershell
+cd cmd\legacywallet\frontend
+npm install
+npm run build
+cd ..\..\..
 ```
 
-## Run Node / CLI / Wallet
-
-Node:
+## Run Node
 
 ```bash
 ./legacycoind run -seed-peers
 ```
 
-CLI:
+## Run CLI
 
 ```bash
 ./legacycoin-cli getblockchaininfo
 ./legacycoin-cli getsyncstatus
 ```
 
-Wallet:
+## Run Wallet
 
-- Desktop package includes `legacy-wallet(.exe)` and internal node lifecycle controls.
+Build/run from source in `cmd/legacywallet`, or use the Windows wallet release package.
 
 ## Mining
 
-Solo CPU mining:
+Solo CPU mining quick start:
 
 ```bash
 ./legacycoin-cli setupwallet "strong passphrase"
@@ -167,67 +125,21 @@ Solo CPU mining:
 ./legacycoin-cli getminerstatus
 ```
 
-Network hashrate in RPC/UI is an estimate from recent chain data, not total node count.
+## Docs Index
 
-## Pool / Exchange / Explorer Integration
-
-Smoke scripts:
-
-- `scripts/pool-rpc-smoke.ps1` / `scripts/pool-rpc-smoke.sh`
-- `scripts/exchange-rpc-smoke.ps1` / `scripts/exchange-rpc-smoke.sh`
-- `scripts/explorer-rpc-smoke.ps1` / `scripts/explorer-rpc-smoke.sh`
-
-Important:
-
-- Address search/index RPCs are real only when `addressindex=1`; otherwise RPC returns a clear disabled error.
-- `txindex=1` enables on-disk tx lookup; when disabled, `getrawtransaction` falls back to active-chain + mempool scan.
-
-## Seed Operator / Monitoring
-
-Use:
-
-```bash
-legacycoin-cli getblockchaininfo
-legacycoin-cli getnetworkinfo
-legacycoin-cli getpeerinfo
-legacycoin-cli getsyncstatus
-legacycoin-cli checkstorage
-legacycoin-cli doctor
-```
+See [docs/README.md](docs/README.md) for organized documentation by audience.
 
 ## Security Warnings
 
-- Keep RPC (`19556`) private/firewalled.
+- Keep RPC (`19556`) private.
 - P2P (`19555`) may be public.
-- Do not expose wallet or privileged RPC to public internet.
-- Back up wallet before migration/reindex/upgrade.
-- Verify release checksums before execution.
-- Treat exchange hot wallets as high-risk; use cold-wallet controls.
+- Never share wallet backups, private keys, or RPC credentials.
+- Verify checksums before running binaries.
+- Back up wallet data before upgrades or reindex operations.
 
 ## Known Limitations
 
-- Fork choice now prefers the valid branch with greatest cumulative chainwork.
-- `txindex` and `addressindex` are optional and off by default; enable in config for explorer/exchange style workloads.
-- Address index RPCs require `addressindex=1` and return explicit disabled errors when unavailable.
-- macOS and Linux ARM64 packaging is experimental and environment-dependent.
-- External pool certification is pending third-party production validation.
-
-## Docs Index
-
-- [docs/RPC.md](docs/RPC.md)
-- [docs/MINING.md](docs/MINING.md)
-- [docs/POOL_INTEGRATION.md](docs/POOL_INTEGRATION.md)
-- [docs/EXCHANGE_INTEGRATION.md](docs/EXCHANGE_INTEGRATION.md)
-- [docs/EXPLORER_INTEGRATION.md](docs/EXPLORER_INTEGRATION.md)
-- [docs/SEED_NODE_OPERATOR.md](docs/SEED_NODE_OPERATOR.md)
-- [docs/P2P_PROTOCOL.md](docs/P2P_PROTOCOL.md)
-- [docs/MONITORING.md](docs/MONITORING.md)
-- [docs/STORAGE_AND_REINDEX.md](docs/STORAGE_AND_REINDEX.md)
-- [docs/CONFIRMATIONS_AND_REORGS.md](docs/CONFIRMATIONS_AND_REORGS.md)
-- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
-- [docs/MULTINODE_TESTING.md](docs/MULTINODE_TESTING.md)
-- [docs/RELEASE_PROCESS.md](docs/RELEASE_PROCESS.md)
-- [docs/RELEASE_SCORECARD.md](docs/RELEASE_SCORECARD.md)
-- [docs/RELEASE_NOTES_TEMPLATE.md](docs/RELEASE_NOTES_TEMPLATE.md)
-- [docs/WINDOWS_SERVICE.md](docs/WINDOWS_SERVICE.md)
-- [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md)
+- `txindex` and `addressindex` are opt-in foundations (`txindex=1`, `addressindex=1`) and require rebuild/reindex when enabled on existing data.
+- Address index RPCs are available only when `addressindex=1`.
+- External third-party pool certification is still required.
+- macOS and Linux ARM64 packaging remains environment-dependent.

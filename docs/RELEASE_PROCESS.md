@@ -1,17 +1,19 @@
 # Release Process
 
-## 1. Validate Source
+Purpose: standard release workflow for Legacy Core source and assets.  
+Audience: maintainers and release engineers.  
+Status: active for v1.0.4.  
+Safety warning: never publish assets before identity/checksum verification.
+
+## 1) Validate Source
 
 ```powershell
 .\scripts\scan-source-cleanliness.ps1 -Root . -FailOnWorkingTree
-```
-
-```powershell
 go test ./...
 go vet ./...
 ```
 
-## 2. Build Assets
+## 2) Build Release Assets
 
 Windows:
 
@@ -19,13 +21,13 @@ Windows:
 .\scripts\package-windows.ps1 -Version v1.0.4
 ```
 
-Linux amd64:
+Linux:
 
 ```bash
 bash scripts/package-linux.sh v1.0.4 amd64
 ```
 
-Optional/experimental:
+Optional experimental targets:
 
 ```bash
 bash scripts/package-linux.sh v1.0.4 arm64
@@ -33,24 +35,22 @@ bash scripts/package-macos.sh v1.0.4 amd64
 bash scripts/package-macos.sh v1.0.4 arm64
 ```
 
-## 3. Verify Assets
+## 3) Verify Release Assets
 
 ```powershell
 .\scripts\verify-release-assets.ps1 .\dist\*.zip .\dist\*.tar.gz
-```
-
-```powershell
 .\scripts\verify-mainnet-identity.ps1 -Binary .\legacycoind.exe
 ```
 
-## 4. Build Clean Source Archive
+## 4) Build Clean Source Archive
 
 ```powershell
 .\scripts\release-source-archive.ps1 -Version v1.0.4 -OutputDir dist
 ```
 
-## 5. Publish
+## 5) Publish
 
-- Upload archives and checksum files to GitHub Releases.
-- Copy checksums into release notes.
-- Include known limitations and no-consensus-change statement.
+1. Upload artifacts to GitHub Releases.
+2. Publish SHA256 checksums.
+3. Include known limitations.
+4. Include explicit no-consensus-change statement.

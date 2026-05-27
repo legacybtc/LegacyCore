@@ -1,31 +1,50 @@
 # P2P Protocol Notes
 
-Legacy Core uses Bitcoin-style wire framing with Legacy Coin mainnet identity.
+Purpose: describe network identity, peer liveness, and sync metadata behavior.  
+Audience: node operators, seed operators, integrators, and developers.  
+Status: active for v1.0.4.  
+Safety warning: P2P peers are untrusted; never bypass block/tx validation.
 
-## Identity
+## Network Identity
 
 - Message start: `a4 ac c6 4d`
-- Default P2P port: `19555`
+- P2P port: `19555`
 - Chain ID: `legacy-mainnet-1.0.0-rc2-5b4c78e4`
 
-## Heartbeats and Liveness
+## Ping/Pong Behavior
 
-- Periodic ping/pong exchange is enabled for peer liveness.
-- Configurable ping interval via `peer_ping_interval_seconds` (minimum 10).
-- `getpeerinfo` includes ping/pong latency and freshness fields.
+- Periodic ping is sent to connected peers.
+- Peer ping interval is configurable via `peer_ping_interval_seconds`.
+- Recommended interval: 15-30 seconds.
+- Minimum supported interval: 10 seconds.
 
-## Sync Watchdog
+## Latency and Stale Detection
 
-`getsyncstatus` exposes watchdog and sync internals:
+Peer metadata tracks:
 
-- local and best peer heights
-- blocks behind
-- last header/block/message/sync request ages
-- stale peer counts
-- watchdog actions and reconnect counts
+- last ping/pong timestamps
+- ping latency (ms)
+- missed pong count
+- stale state
 
-## Logging Modes
+Stale peers are monitored and may be reconnected by watchdog logic when sync usefulness degrades.
 
-- ASCII-safe server logs are always available.
-- Pretty local logs can be enabled through log configuration.
-- Avoid enabling noisy debug traces on constrained production hosts unless needed.
+## Sync State Fields
+
+Operational sync fields exposed through RPC include:
+
+- `reported_height`
+- `sync_state`
+- `last_sync_request_*`
+- `last_sync_error`
+
+Use with `getsyncstatus` for full sync diagnostics.
+
+## Troubleshooting
+
+- If a peer is connected but stale, inspect latency/missed pongs and local firewall/NAT.
+- If no peers connect, check seed/addnode configuration and outbound restrictions.
+
+## Known Limitations
+
+- Peer diagnostics are operational telemetry and may fluctuate during network churn.

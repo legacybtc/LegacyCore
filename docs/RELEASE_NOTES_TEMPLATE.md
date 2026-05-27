@@ -1,4 +1,9 @@
-# Legacy Core Release Notes Template
+# Release Notes Template
+
+Purpose: standard public release note structure.  
+Audience: maintainers and release publishers.  
+Status: active template for v1.0.4+ releases.  
+Safety warning: publish only verified identities/checksums.
 
 ## Version
 
@@ -15,7 +20,7 @@
 - P2P/RPC ports: `19555 / 19556`
 - yespower personalization: `LegacyCoinPoW`
 
-## Assets
+## Asset Matrix
 
 | Platform | Architecture | Archive | SHA256 |
 | --- | --- | --- | --- |
@@ -26,26 +31,26 @@
 | macOS | arm64 | `LegacyCore-LBTC-mainnet-macos-arm64-vX.Y.Z.tar.gz` | `<sha256 or N/A>` |
 | Source | clean | `LegacyCore-vX.Y.Z-source-clean.zip` | `<sha256>` |
 
-## Installation / Quick Start
+## Quick Start
 
-- Windows wallet: extract ZIP and run `START_HERE.bat`.
-- Linux/macOS daemon: extract tar, `chmod +x legacycoind legacycoin-cli`, run `./legacycoind run -seed-peers`.
+- Windows wallet: extract ZIP, run `START_HERE.bat`.
+- Linux/macOS: `chmod +x legacycoind legacycoin-cli`, then `./legacycoind run -seed-peers`.
 
 ## Upgrade Notes
 
-- `<notable migrations>`
-- `<required config changes>`
-- `<compatibility notes>`
+- `<config changes>`
+- `<migration notes>`
+- `<operational cautions>`
 
 ## Security Warnings
 
-- Keep RPC private/firewalled.
+- Keep RPC private.
 - Verify checksums before execution.
-- Back up wallet data before upgrade.
+- Back up wallet before upgrade.
 
 ## Known Limitations
 
-- `<list real limitations>`
+- `<real limitations here>`
 
 ## No-Consensus-Change Statement
 

@@ -1,47 +1,70 @@
 # Storage and Reindex
 
-Legacy Core stores chain data in the data directory (`~/.legacycoin` on Linux by default).
+Purpose: explain storage checks and repair/reindex behavior in v1.0.4.  
+Audience: node operators, integrators, and developers.  
+Status: active for v1.0.4.  
+Safety warning: back up wallet data before repair operations.
 
-## Check Storage Health
+## What This Is
+
+Legacy Core storage health and active-chain index rebuild workflow.
+
+## Storage Health Check
 
 ```bash
-legacycoin-cli checkstorage
+./legacycoin-cli checkstorage
 ```
 
-This reports:
+Checks include:
 
-- active tip readability
-- height index readability/match
+- best block readability
+- height index readability and tip match
+- chainwork readability
 - UTXO stats readability
 
-## Repair Height Index
+## Reindex / Repair Paths
 
 RPC:
 
 ```bash
-legacycoin-cli reindex
-```
-
-or:
-
-```bash
-legacycoin-cli checkstorage true
+./legacycoin-cli reindex
+./legacycoin-cli checkstorage true
 ```
 
 Daemon offline command:
 
 ```bash
-legacycoind reindex
+./legacycoind reindex
 ```
 
-Current reindex scope:
+## v1.0.4 Rebuild Scope
 
-- rebuilds active-chain height and hash indexes from stored tip and block linkage
-- rebuilds optional txindex/addressindex when enabled
-- verifies post-repair storage health
+When repair/reindex runs, it rebuilds:
 
-## Safety Notes
+- height index
+- hash index
+- `txindex` if enabled (`txindex=1`)
+- `addressindex` if enabled (`addressindex=1`)
+- chainwork cache/check visibility for active tip
 
-- Back up wallet data before repair operations.
-- Do not run repair scripts against active production nodes without maintenance windows.
-- This operation does not change consensus rules or chain identity.
+## Safe Failure Behavior
+
+If required files are unreadable/corrupt, commands return explicit errors instead of silently claiming success.
+
+## Expected Output
+
+Successful checks/rebuilds report:
+
+- `ok: true`
+- tip hash/height
+- index/chainwork health fields
+
+## Troubleshooting
+
+- If `txindex` lookup fails, verify config and run reindex.
+- If address RPC is disabled, enable `addressindex=1` and rebuild.
+- If daemon is already running in a conflicting maintenance flow, stop it cleanly before offline repair steps.
+
+## Known Limitations
+
+- Reindex is active-chain focused and not a substitute for external historical analytics indexing.
