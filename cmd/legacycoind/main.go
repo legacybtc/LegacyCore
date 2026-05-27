@@ -64,7 +64,7 @@ Usage:
   legacycoind run [-addnode ip:port] [-connect ip:port] [-noseednode] [-seed-peers] [-datadir path] [-p2pport port] [-rpcport port]
   legacycoind params
   legacycoind genesis [threads]
-  legacycoind reindex
+  legacycoind reindex [-datadir path]
   legacycoind pqc-demo
   legacycoind mining-address
   legacycoind mineblock [threads] [pubkeyhash-hex]
@@ -290,26 +290,8 @@ func runMineBlock() {
 }
 
 func applyRuntimeNodeFlags(args []string) error {
-	dataDir := ""
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		key, val, hasEq := strings.Cut(arg, "=")
-		if key != "-datadir" && key != "--datadir" {
-			continue
-		}
-		if !hasEq {
-			i++
-			if i >= len(args) {
-				return fmt.Errorf("%s requires value", key)
-			}
-			val = args[i]
-		}
-		dataDir = strings.TrimSpace(val)
-	}
-	if dataDir != "" {
-		if err := os.Setenv("LEGACYCOIN_DATADIR", dataDir); err != nil {
-			return err
-		}
+	if err := applyDataDirOverride(args); err != nil {
+		return err
 	}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -323,7 +305,7 @@ func applyRuntimeNodeFlags(args []string) error {
 				}
 				val = args[i]
 			}
-			dataDir = strings.TrimSpace(val)
+			_ = strings.TrimSpace(val)
 		case "-addnode", "--addnode":
 			if !hasEq {
 				i++
@@ -388,6 +370,31 @@ func applyRuntimeNodeFlags(args []string) error {
 	return nil
 }
 
+func applyDataDirOverride(args []string) error {
+	dataDir := ""
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		key, val, hasEq := strings.Cut(arg, "=")
+		if key != "-datadir" && key != "--datadir" {
+			continue
+		}
+		if !hasEq {
+			i++
+			if i >= len(args) {
+				return fmt.Errorf("%s requires value", key)
+			}
+			val = args[i]
+		}
+		dataDir = strings.TrimSpace(val)
+	}
+	if dataDir != "" {
+		if err := os.Setenv("LEGACYCOIN_DATADIR", dataDir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func shouldShowSecrets() bool {
 	return strings.TrimSpace(os.Getenv("LEGACYCOIN_SHOW_SECRETS")) == "1"
 }
@@ -412,6 +419,10 @@ func runNode() {
 }
 
 func runReindex() {
+	if err := applyDataDirOverride(os.Args[2:]); err != nil {
+		fmt.Fprintf(os.Stderr, "reindex flags: %v\n", err)
+		os.Exit(2)
+	}
 	store := storage.NewFileStore(config.DefaultDataDir())
 	if err := store.RepairHeightIndex(); err != nil {
 		fmt.Fprintf(os.Stderr, "reindex failed: %v\n", err)
