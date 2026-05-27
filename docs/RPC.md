@@ -1,6 +1,6 @@
 # Legacy Core RPC Audit
 
-Status terms: `implemented` means callable in v1.0.3 source; `partial` means useful but not a full Bitcoin Core compatible surface; `missing` means not callable; `planned` means documented future work.
+Status terms: `implemented` means callable in v1.0.4 source; `partial` means useful but not a full Bitcoin Core compatible surface; `missing` means not callable; `planned` means documented future work.
 
 Examples assume the daemon is running locally. Windows commands use `.\legacycoin-cli.exe`; Linux commands use `./legacycoin-cli`. JSON-RPC examples use cookie auth or `rpcuser`/`rpcpassword` over private localhost RPC only.
 
@@ -324,15 +324,23 @@ Never expose RPC port `19556` publicly.
 
 - Status: implemented.
 - Purpose: report storage health for best block, height index, and UTXO stats.
-- Parameters: none.
-- CLI: `.\legacycoin-cli.exe checkstorage`
-- JSON-RPC: `{"jsonrpc":"2.0","id":"storage","method":"checkstorage","params":[]}`
+- Parameters: optional boolean `repair` (`true` triggers active-chain height-index rebuild).
+- CLI: `.\legacycoin-cli.exe checkstorage` or `.\legacycoin-cli.exe checkstorage true`
+- JSON-RPC: `{"jsonrpc":"2.0","id":"storage","method":"checkstorage","params":[true]}`
 - Example response: `{"ok":true,"tip_height":123,"tip_hash":"...","height_index_matches_tip":true}`
 - Error cases: corrupt JSON index, missing best block, unreadable UTXO dir.
-- Integration notes: v1.0.3 has health checks and limited height-index repair; full reindex is planned.
+
+### reindex
+
+- Status: implemented.
+- Purpose: rebuild active-chain height index from current tip linkage and return post-repair health.
+- Parameters: none.
+- CLI: `.\legacycoin-cli.exe reindex`
+- JSON-RPC: `{"jsonrpc":"2.0","id":"reindex","method":"reindex","params":[]}`
+- Integration notes: this is a safe active-chain index repair path; full txindex/addressindex rebuild flows remain planned.
 
 ## Compatibility Notes
 
 - Address search by address is not implemented because no address index exists yet.
-- Full historical txindex is planned; explorer integrations should scan blocks by height and maintain their own index for now.
-- Fork choice is currently height-based for side-chain activation. A staged chainwork implementation should be prioritized for v1.0.4.
+- Full historical txindex remains staged; explorer integrations should scan blocks by height and maintain their own index for now.
+- Fork choice remains height-based for side-chain activation; explicit cumulative-chainwork fork choice is staged consensus-safe infrastructure work.

@@ -58,6 +58,9 @@ rpcbind=127.0.0.1
 seed_peers=true
 peer_safety=true
 chain_id_enforce=true
+peer_ping_interval_seconds=30
+pretty_logs=true
+log_icons=true
 ```
 
 ## Operations Checklist

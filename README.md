@@ -1,20 +1,32 @@
 # Legacy Core
 
-Legacy Core is the official Go full-node, CLI, miner, and wallet stack for Legacy Coin / LBTC.
+Legacy Core is the official Go full-node, CLI, miner, and desktop wallet stack for Legacy Coin / LBTC.
 
-Legacy Coin is a UTXO proof-of-work mainnet focused on local verification: run a node, hold keys locally, mine with CPU, and integrate through documented RPC rather than hosted trust.
+This repository targets infrastructure-grade readiness for:
 
-This repository contains:
+- wallet users
+- node operators
+- solo miners
+- pool/exchange/explorer integrators
+- source builders and contributors
 
-- `legacycoind`: full node daemon
-- `legacycoin-cli`: JSON-RPC command-line client
-- `Legacy Wallet`: Wails desktop wallet source
-- shared consensus, wallet, P2P, RPC, storage, mining, and script packages
-- release and CI hardening scripts
+## What Is Legacy Core
 
-This repository does not include a mining pool server, public block explorer service, exchange backend, or launchpad service.
+Included in this repository:
 
-## Mainnet Identity
+- `legacycoind` (full node daemon)
+- `legacycoin-cli` (JSON-RPC CLI)
+- Legacy Wallet source (`cmd/legacywallet`, Wails desktop UI)
+- consensus/network/wallet/mining/storage implementation
+- release/CI/build/test tooling
+
+Not included in this repository:
+
+- production mining-pool server implementation
+- hosted public explorer service deployment
+- hosted exchange backend infrastructure
+
+## Mainnet Identity (Must Not Change)
 
 | Field | Value |
 | --- | --- |
@@ -26,7 +38,7 @@ This repository does not include a mining pool server, public block explorer ser
 | P2P port | `19555` |
 | RPC port | `19556` |
 | yespower personalization | `LegacyCoinPoW` |
-| Linux data directory | `~/.legacycoin` |
+| Data dir (Linux) | `~/.legacycoin` |
 | DNS seeds | `legacycoinseed.space`, `legacycoinseed2.space` |
 
 Verify a build:
@@ -39,114 +51,113 @@ Verify a build:
 ./legacycoind params
 ```
 
-## Downloads
+## Release Matrix
+
+| Platform | Architecture | Archive | GUI Wallet | Status |
+| --- | --- | --- | --- | --- |
+| Windows | x86_64 | `LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.4.zip` | Included | Supported |
+| Linux | x86_64 | `LegacyCore-LBTC-mainnet-linux-amd64-v1.0.4.tar.gz` | CLI/daemon | Supported |
+| Linux | arm64 | `LegacyCore-LBTC-mainnet-linux-arm64-v1.0.4.tar.gz` | CLI/daemon | Experimental |
+| macOS | x86_64 | `LegacyCore-LBTC-mainnet-macos-amd64-v1.0.4.tar.gz` | CLI/daemon | Experimental |
+| macOS | arm64 | `LegacyCore-LBTC-mainnet-macos-arm64-v1.0.4.tar.gz` | CLI/daemon | Experimental |
 
 Release assets are published at:
 
-https://github.com/legacybtc/LegacyCore/releases
+- <https://github.com/legacybtc/LegacyCore/releases>
 
-Expected asset names:
-
-- Windows wallet package: `LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.2.zip`
-- Linux core package: `LegacyCore-LBTC-mainnet-linux-amd64-v1.0.2.tar.gz`
-
-Always verify SHA256 checksums before running downloaded binaries.
-
-## Build From Source
-
-Required:
-
-- Go matching `go.mod`
-- Node.js 20 and npm
-- Windows production builds: MSYS2 UCRT64 GCC for CGO yespower
-- Linux production builds: GCC
+## Download Verification
 
 Windows:
 
 ```powershell
-cd cmd\legacywallet\frontend
-npm install
-npm run build
-cd ..\..\..
+Get-FileHash -Algorithm SHA256 .\LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.4.zip
+```
 
-go test ./...
-go vet ./...
-go build -trimpath -o legacycoind.exe ./cmd/legacycoind
-go build -trimpath -o legacycoin-cli.exe ./cmd/legacycoin-cli
-go build -trimpath -o legacy-wallet-internal.exe ./cmd/legacywallet
+Linux/macOS:
+
+```bash
+sha256sum LegacyCore-LBTC-mainnet-linux-amd64-v1.0.4.tar.gz
+```
+
+Compare with `SHA256SUMS.txt` from the release.
+
+## Quick Start
+
+Windows wallet package:
+
+1. Extract release ZIP.
+2. Run `START_HERE.bat`.
+3. Verify node status in wallet diagnostics.
+
+Linux headless package:
+
+```bash
+chmod +x legacycoind legacycoin-cli
+./legacycoind run -seed-peers
+```
+
+Second terminal:
+
+```bash
+./legacycoin-cli getblockchaininfo
+./legacycoin-cli getpeerinfo
+./legacycoin-cli getminerstatus
+```
+
+## Build From Source
+
+Requirements:
+
+- Go (per `go.mod`)
+- Node.js 20 + npm (wallet frontend build)
+- CGO-capable C compiler
+- Windows production build: MSYS2 UCRT64 GCC (`cgo-c-reference` yespower backend)
+
+Windows:
+
+```powershell
+.\scripts\check-windows-build-env.ps1
+.\scripts\build-windows.ps1
 ```
 
 Linux:
 
 ```bash
-cd cmd/legacywallet/frontend
-npm install
-npm run build
-cd ../../..
-
-go test ./...
-go vet ./...
-go build -trimpath -o legacycoind ./cmd/legacycoind
-go build -trimpath -o legacycoin-cli ./cmd/legacycoin-cli
-go build -trimpath -o legacy-wallet-internal ./cmd/legacywallet
+bash scripts/build-linux.sh amd64
 ```
 
-Production yespower builds should report:
+Cross-platform Make targets:
 
-```text
-yespower backend: cgo-c-reference
+```bash
+make frontend
+make test
+make vet
+make package-linux
+make package-windows
 ```
 
-## Run Node
+## Run Node / CLI / Wallet
 
-Windows:
-
-```powershell
-.\legacycoind.exe run -seed-peers
-```
-
-Linux:
+Node:
 
 ```bash
 ./legacycoind run -seed-peers
 ```
 
-## Run CLI
-
-Windows:
-
-```powershell
-.\legacycoin-cli.exe getblockchaininfo
-.\legacycoin-cli.exe getnetworkinfo
-.\legacycoin-cli.exe getpeerinfo
-```
-
-Linux:
+CLI:
 
 ```bash
 ./legacycoin-cli getblockchaininfo
-./legacycoin-cli getnetworkinfo
-./legacycoin-cli getpeerinfo
+./legacycoin-cli getsyncstatus
 ```
 
-## Run Wallet
+Wallet:
 
-Windows release packages include the desktop wallet. Start it from the extracted release folder. The wallet starts and controls a local Legacy Core node.
-
-Linux desktop wallet packaging is not the primary v1.0.2 target; Linux headless daemon and CLI are supported.
+- Desktop package includes `legacy-wallet(.exe)` and internal node lifecycle controls.
 
 ## Mining
 
-Solo CPU mining is implemented. Stratum/pool server functionality is not implemented in this repository.
-
-```powershell
-.\legacycoin-cli.exe setupwallet "strong passphrase"
-.\legacycoin-cli.exe getminingaddress
-.\legacycoin-cli.exe setminerthreads 4
-.\legacycoin-cli.exe startminer
-.\legacycoin-cli.exe getminerstatus
-.\legacycoin-cli.exe stopminer
-```
+Solo CPU mining:
 
 ```bash
 ./legacycoin-cli setupwallet "strong passphrase"
@@ -154,65 +165,52 @@ Solo CPU mining is implemented. Stratum/pool server functionality is not impleme
 ./legacycoin-cli setminerthreads 4
 ./legacycoin-cli startminer
 ./legacycoin-cli getminerstatus
-./legacycoin-cli stopminer
 ```
 
-See [docs/MINING.md](docs/MINING.md).
+Network hashrate in RPC/UI is an estimate from recent chain data, not total node count.
 
-## Seed Node Operation
+## Pool / Exchange / Explorer Integration
 
-Seed nodes may expose P2P `19555`. RPC `19556` must remain private/firewalled.
+Smoke scripts:
 
-See [docs/SEED_NODE_OPERATOR.md](docs/SEED_NODE_OPERATOR.md).
+- `scripts/pool-rpc-smoke.ps1` / `scripts/pool-rpc-smoke.sh`
+- `scripts/exchange-rpc-smoke.ps1` / `scripts/exchange-rpc-smoke.sh`
+- `scripts/explorer-rpc-smoke.ps1` / `scripts/explorer-rpc-smoke.sh`
 
-## Integration Guides
+Important:
 
-- Pool integration: [docs/POOL_INTEGRATION.md](docs/POOL_INTEGRATION.md)
-- Exchange integration: [docs/EXCHANGE_INTEGRATION.md](docs/EXCHANGE_INTEGRATION.md)
-- Explorer integration: [docs/EXPLORER_INTEGRATION.md](docs/EXPLORER_INTEGRATION.md)
-- RPC audit: [docs/RPC.md](docs/RPC.md)
-- Confirmations and reorgs: [docs/CONFIRMATIONS_AND_REORGS.md](docs/CONFIRMATIONS_AND_REORGS.md)
+- Address search/index RPCs are planned and are not faked.
+- Dedicated txindex/addressindex foundations are still staged work.
 
-## Verify Checksums
+## Seed Operator / Monitoring
 
-Windows:
-
-```powershell
-Get-FileHash -Algorithm SHA256 .\LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.2.zip
-```
-
-Linux:
+Use:
 
 ```bash
-sha256sum LegacyCore-LBTC-mainnet-linux-amd64-v1.0.2.tar.gz
+legacycoin-cli getblockchaininfo
+legacycoin-cli getnetworkinfo
+legacycoin-cli getpeerinfo
+legacycoin-cli getsyncstatus
+legacycoin-cli checkstorage
+legacycoin-cli doctor
 ```
-
-Compare against the release `SHA256SUMS` file.
 
 ## Security Warnings
 
-- RPC port `19556` must stay private.
-- P2P port `19555` may be public.
-- Never expose wallet/RPC publicly.
-- Back up wallet data before use, mining, imports, or upgrades.
-- Never share wallet.dat, private keys, seed material, or RPC cookies.
-- Verify SHA256 checksums before running assets.
-- Unsigned Windows builds may trigger SmartScreen.
-- Legacy Core is early mainnet software; test operational flows with small amounts first.
-- Seed operators should firewall RPC.
-- Exchanges should treat hot wallets as high risk and maintain cold-wallet procedures.
-
-See [SECURITY.md](SECURITY.md) and [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md).
+- Keep RPC (`19556`) private/firewalled.
+- P2P (`19555`) may be public.
+- Do not expose wallet or privileged RPC to public internet.
+- Back up wallet before migration/reindex/upgrade.
+- Verify release checksums before execution.
+- Treat exchange hot wallets as high-risk; use cold-wallet controls.
 
 ## Known Limitations
 
-- Native address index: planned.
-- Native full txindex: planned.
-- Native reindex command: planned.
-- External pool testing: still required.
-- Exchange/explorer production certification: still required.
-- Fork choice is audited as height-based rather than explicit cumulative chainwork-based.
-- Linux GUI wallet packaging is not the focus of v1.0.2.
+- Active fork-choice remains height-driven; explicit cumulative-chainwork winner selection is staged work.
+- Dedicated txindex and addressindex are not yet fully implemented.
+- Address search APIs are intentionally not exposed until address index support is real.
+- macOS and Linux ARM64 packaging is experimental and environment-dependent.
+- External pool certification is pending third-party production validation.
 
 ## Docs Index
 
@@ -222,24 +220,14 @@ See [SECURITY.md](SECURITY.md) and [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.
 - [docs/EXCHANGE_INTEGRATION.md](docs/EXCHANGE_INTEGRATION.md)
 - [docs/EXPLORER_INTEGRATION.md](docs/EXPLORER_INTEGRATION.md)
 - [docs/SEED_NODE_OPERATOR.md](docs/SEED_NODE_OPERATOR.md)
-- [docs/MAINNET_LAUNCH.md](docs/MAINNET_LAUNCH.md)
-- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
-- [docs/RELEASE_PROCESS.md](docs/RELEASE_PROCESS.md)
+- [docs/P2P_PROTOCOL.md](docs/P2P_PROTOCOL.md)
+- [docs/MONITORING.md](docs/MONITORING.md)
 - [docs/STORAGE_AND_REINDEX.md](docs/STORAGE_AND_REINDEX.md)
-- [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md)
 - [docs/CONFIRMATIONS_AND_REORGS.md](docs/CONFIRMATIONS_AND_REORGS.md)
-- [docs/WINDOWS_BUILD.md](docs/WINDOWS_BUILD.md)
-
-## GitHub Metadata Suggestion
-
-About:
-
-```text
-Legacy Core -- the official Go full-node, CLI, miner, and wallet stack for Legacy Coin / LBTC.
-```
-
-Topics:
-
-```text
-legacycoin lbtc legacy-core cryptocurrency blockchain full-node proof-of-work cpu-mining yespower mainnet go wallet p2p utxo
-```
+- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
+- [docs/MULTINODE_TESTING.md](docs/MULTINODE_TESTING.md)
+- [docs/RELEASE_PROCESS.md](docs/RELEASE_PROCESS.md)
+- [docs/RELEASE_SCORECARD.md](docs/RELEASE_SCORECARD.md)
+- [docs/RELEASE_NOTES_TEMPLATE.md](docs/RELEASE_NOTES_TEMPLATE.md)
+- [docs/WINDOWS_SERVICE.md](docs/WINDOWS_SERVICE.md)
+- [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md)

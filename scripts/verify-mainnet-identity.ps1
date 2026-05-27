@@ -17,6 +17,7 @@ $checks = [ordered]@{
     "genesis time" = "genesis time:\s+1779235200"
     "genesis nonce" = "genesis nonce:\s+3"
     "yespower personalization" = "yespower personalization:\s+LegacyCoinPoW"
+    "yespower backend" = "yespower backend:\s+cgo-c-reference"
     "p2p port" = "p2p port:\s+19555"
     "rpc port" = "rpc port:\s+19556"
 }

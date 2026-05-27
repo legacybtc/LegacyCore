@@ -72,7 +72,25 @@ Run:
 ./legacycoin-cli checkstorage
 ```
 
-v1.0.3 can detect useful storage failures and repair missing active height index entries in limited cases. Full reindex is planned, so keep backups before manual repair.
+Repair path:
+
+```powershell
+.\legacycoin-cli.exe reindex
+```
+
+```bash
+./legacycoin-cli reindex
+```
+
+Or:
+
+```powershell
+.\legacycoin-cli.exe checkstorage true
+```
+
+```bash
+./legacycoin-cli checkstorage true
+```
 
 ## Miner Will Not Start
 

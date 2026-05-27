@@ -45,6 +45,8 @@ func main() {
 		runMiningAddress()
 	case "mineblock":
 		runMineBlock()
+	case "reindex":
+		runReindex()
 	case "run", "server", "daemon":
 		runNode()
 	default:
@@ -59,9 +61,10 @@ func printUsage() {
 
 Usage:
   legacycoind help
-  legacycoind run [-addnode ip:port] [-connect ip:port] [-noseednode] [-seed-peers]
+  legacycoind run [-addnode ip:port] [-connect ip:port] [-noseednode] [-seed-peers] [-datadir path] [-p2pport port] [-rpcport port]
   legacycoind params
   legacycoind genesis [threads]
+  legacycoind reindex
   legacycoind pqc-demo
   legacycoind mining-address
   legacycoind mineblock [threads] [pubkeyhash-hex]
@@ -96,6 +99,7 @@ RPC:
   setminerthreads
   doctor
   checkstorage
+  reindex
   getnetworkinfo
   getpeerinfo
   getconnectioncount
@@ -353,6 +357,28 @@ func applyRuntimeNodeFlags(args []string) error {
 			if err := config.AppendConfigLine(config.DefaultConfigPath(), "seed_peers", "true"); err != nil {
 				return err
 			}
+		case "-p2pport", "--p2pport", "-port", "--port":
+			if !hasEq {
+				i++
+				if i >= len(args) {
+					return fmt.Errorf("%s requires value", key)
+				}
+				val = args[i]
+			}
+			if err := config.AppendConfigLine(config.DefaultConfigPath(), "p2pport", strings.TrimSpace(val)); err != nil {
+				return err
+			}
+		case "-rpcport", "--rpcport":
+			if !hasEq {
+				i++
+				if i >= len(args) {
+					return fmt.Errorf("%s requires value", key)
+				}
+				val = args[i]
+			}
+			if err := config.AppendConfigLine(config.DefaultConfigPath(), "rpcport", strings.TrimSpace(val)); err != nil {
+				return err
+			}
 		case "":
 			continue
 		default:
@@ -383,4 +409,13 @@ func runNode() {
 		fmt.Fprintf(os.Stderr, "run node: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func runReindex() {
+	store := storage.NewFileStore(config.DefaultDataDir())
+	if err := store.RepairHeightIndex(); err != nil {
+		fmt.Fprintf(os.Stderr, "reindex failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("reindex complete: active-chain height index repaired from current tip")
 }

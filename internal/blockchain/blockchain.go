@@ -1191,6 +1191,10 @@ type StorageHealth struct {
 	Error                 string `json:"error,omitempty"`
 }
 
+type heightIndexRepairer interface {
+	RepairHeightIndex() error
+}
+
 func (c *Chain) StorageHealth() StorageHealth {
 	c.mu.RLock()
 	tip := c.tip
@@ -1237,4 +1241,33 @@ func (c *Chain) StorageHealth() StorageHealth {
 		h.OK = false
 	}
 	return h
+}
+
+func (c *Chain) ReindexActiveChain() (map[string]any, error) {
+	c.mu.RLock()
+	tip := c.tip
+	c.mu.RUnlock()
+
+	if repairer, ok := c.store.(heightIndexRepairer); ok {
+		if err := repairer.RepairHeightIndex(); err != nil {
+			return nil, err
+		}
+	}
+
+	health := c.StorageHealth()
+	result := map[string]any{
+		"ok":              health.OK,
+		"tip_height":      health.TipHeight,
+		"tip_hash":        health.TipHash,
+		"height_index_ok": health.HeightIndexReadable && health.HeightIndexMatchesTip,
+		"note":            "active-chain height index rebuilt from stored tip",
+	}
+	if tip != nil {
+		result["active_tip_height_before"] = tip.Height
+		result["active_tip_hash_before"] = tip.Hash
+	}
+	if !health.OK && health.Error != "" {
+		result["warning"] = health.Error
+	}
+	return result, nil
 }

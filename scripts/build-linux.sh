@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DIST_DIR="$ROOT_DIR/dist/linux-amd64"
+ARCH="${1:-amd64}"
+DIST_DIR="$ROOT_DIR/dist/linux-${ARCH}"
 TMP_ROOT="$ROOT_DIR/.tmp-linux-build"
 
 mkdir -p "$DIST_DIR"
@@ -31,7 +32,7 @@ go vet ./internal/p2p ./internal/rpc ./internal/wallet ./internal/mempool
 go vet ./cmd/... ./internal/...
 
 export GOOS=linux
-export GOARCH=amd64
+export GOARCH="$ARCH"
 if [[ -n "${LINUX_CC:-}" ]]; then
   export CC="$LINUX_CC"
 elif [[ -n "$HOST_CC" ]]; then

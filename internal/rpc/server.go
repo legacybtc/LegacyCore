@@ -143,7 +143,8 @@ var rpcHelpEntries = []rpcHelpEntry{
 	{Method: "addnode", Usage: "addnode <addr>", Category: "network", Description: "Connect to a peer."},
 	{Method: "disconnectnode", Usage: "disconnectnode <addr>", Category: "network", Description: "Disconnect a matching peer."},
 	{Method: "doctor", Usage: "doctor", Category: "ops", Description: "Return operator health checks."},
-	{Method: "checkstorage", Usage: "checkstorage", Category: "ops", Description: "Return block/index/UTXO storage health."},
+	{Method: "checkstorage", Usage: "checkstorage [repair]", Category: "ops", Description: "Return block/index/UTXO storage health. Use repair=true to rebuild active-chain height index."},
+	{Method: "reindex", Usage: "reindex", Category: "ops", Description: "Rebuild active-chain height index from tip and return post-repair health."},
 	{Method: "help", Usage: "help [method]", Category: "meta", Description: "List supported RPC methods or show one method summary."},
 	{Method: "stop", Usage: "stop", Category: "meta", Description: "Stop Legacy Core daemon."},
 }
@@ -1343,7 +1344,35 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		summary := s.walletSummary([]string{cfg.PubKeyHash})
 		return summary["immature_outputs"], nil
 	case "checkstorage":
+		var args []json.RawMessage
+		_ = json.Unmarshal(params, &args)
+		repair := false
+		if len(args) > 0 {
+			if err := json.Unmarshal(args[0], &repair); err != nil {
+				var str string
+				if err2 := json.Unmarshal(args[0], &str); err2 == nil {
+					l := strings.ToLower(strings.TrimSpace(str))
+					repair = l == "1" || l == "true" || l == "yes" || l == "repair"
+				}
+			}
+		}
+		if repair {
+			report, err := s.chain.ReindexActiveChain()
+			if err != nil {
+				return nil, &rpcError{Code: -32603, Message: "checkstorage repair failed: " + err.Error()}
+			}
+			report["repair_requested"] = true
+			report["health"] = s.chain.StorageHealth()
+			return report, nil
+		}
 		return s.chain.StorageHealth(), nil
+	case "reindex":
+		report, err := s.chain.ReindexActiveChain()
+		if err != nil {
+			return nil, &rpcError{Code: -32603, Message: "reindex failed: " + err.Error()}
+		}
+		report["health"] = s.chain.StorageHealth()
+		return report, nil
 	case "getmininginfo":
 		cfg, _ := config.LoadMiningConfig(config.DefaultConfigPath())
 		storage := s.chain.StorageHealth()
@@ -2278,7 +2307,21 @@ func (s *Server) getBlockchainInfo() map[string]any {
 		"genesis_hash":               p.GenesisHash,
 		"genesis_time":               p.GenesisTime,
 		"storage":                    storage,
-		"warnings":                   []string{},
+		"txindex": map[string]any{
+			"enabled": false,
+			"mode":    "legacy-chain-scan",
+			"note":    "dedicated txindex is planned; current lookup scans active chain and mempool",
+		},
+		"addressindex": map[string]any{
+			"enabled": false,
+			"note":    "planned; no fake address search is exposed",
+		},
+		"reindex": map[string]any{
+			"supported": true,
+			"rpc":       "reindex",
+			"check":     "checkstorage true",
+		},
+		"warnings": []string{},
 	}
 }
 

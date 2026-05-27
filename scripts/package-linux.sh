@@ -3,13 +3,14 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_ROOT="$ROOT_DIR/dist"
-PKG_DIR="$DIST_ROOT/linux-amd64"
-VERSION="${1:-v1.0.3}"
-PKG_NAME="LegacyCore-LBTC-mainnet-linux-amd64-${VERSION}.tar.gz"
+VERSION="${1:-v1.0.4}"
+ARCH="${2:-amd64}"
+PKG_DIR="$DIST_ROOT/linux-${ARCH}"
+PKG_NAME="LegacyCore-LBTC-mainnet-linux-${ARCH}-${VERSION}.tar.gz"
 PKG_PATH="$DIST_ROOT/$PKG_NAME"
-PKG_TAR_TMP="$DIST_ROOT/LegacyCore-LBTC-mainnet-linux-amd64-${VERSION}.tar"
+PKG_TAR_TMP="$DIST_ROOT/LegacyCore-LBTC-mainnet-linux-${ARCH}-${VERSION}.tar"
 
-bash "$ROOT_DIR/scripts/build-linux.sh"
+bash "$ROOT_DIR/scripts/build-linux.sh" "$ARCH"
 
 mkdir -p "$PKG_DIR"
 cp "$ROOT_DIR/LICENSE" "$PKG_DIR/LICENSE"
@@ -49,14 +50,14 @@ chmod 644 "$PKG_DIR/README_FIRST.txt" "$PKG_DIR/LICENSE" "$PKG_DIR/NOTICE" "$PKG
   cd "$DIST_ROOT"
   rm -f "$PKG_TAR_TMP" "$PKG_PATH"
   tar --owner=0 --group=0 --numeric-owner --mode='0755' -cf "$PKG_TAR_TMP" \
-    linux-amd64/legacycoind \
-    linux-amd64/legacycoin-cli
+    "linux-${ARCH}/legacycoind" \
+    "linux-${ARCH}/legacycoin-cli"
   tar --owner=0 --group=0 --numeric-owner --mode='0644' -rf "$PKG_TAR_TMP" \
-    linux-amd64/legacycoin.conf.example \
-    linux-amd64/LICENSE \
-    linux-amd64/NOTICE \
-    linux-amd64/README_FIRST.txt \
-    linux-amd64/SHA256SUMS.txt
+    "linux-${ARCH}/legacycoin.conf.example" \
+    "linux-${ARCH}/LICENSE" \
+    "linux-${ARCH}/NOTICE" \
+    "linux-${ARCH}/README_FIRST.txt" \
+    "linux-${ARCH}/SHA256SUMS.txt"
   gzip -n -c "$PKG_TAR_TMP" > "$PKG_PATH"
   rm -f "$PKG_TAR_TMP"
 )

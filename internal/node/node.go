@@ -153,8 +153,21 @@ func NewWithOptions(opts Options) (*Node, error) {
 	if strings.TrimSpace(paths.ConfigPath) == "" {
 		paths.ConfigPath = filepath.Join(paths.DataDir, config.ConfigFile)
 	}
+
+	params := chaincfg.MainNet
+	if portOverride, err := config.LoadRuntimePortOverride(paths.ConfigPath); err == nil {
+		if portOverride.P2P != 0 {
+			params.DefaultPort = portOverride.P2P
+		}
+		if portOverride.RPC != 0 {
+			params.RPCPort = portOverride.RPC
+		}
+	} else {
+		return nil, fmt.Errorf("load runtime port override: %w", err)
+	}
+
 	store := storage.NewFileStore(paths.DataDir)
-	chain, err := blockchain.New(chaincfg.MainNet, pow.YespowerHasher{Personalization: chaincfg.MainNet.YespowerPers}, store)
+	chain, err := blockchain.New(params, pow.YespowerHasher{Personalization: params.YespowerPers}, store)
 	if err != nil {
 		return nil, err
 	}
@@ -168,7 +181,7 @@ func NewWithOptions(opts Options) (*Node, error) {
 		return nil, fmt.Errorf("load logging config: %w", err)
 	}
 	logger := log.New(newNodeLogWriter(logCfg), "", log.LstdFlags)
-	p2pServer := p2p.New(chaincfg.MainNet, chain, pool, logger)
+	p2pServer := p2p.New(params, chain, pool, logger)
 	addnodes, err := config.LoadAddNodes(paths.ConfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("load config addnode entries: %w", err)
@@ -210,6 +223,7 @@ func NewWithOptions(opts Options) (*Node, error) {
 	}
 	p2pServer.SetPeerPolicy(chainID, peerPol.EnforceChainID, peerPol.PeerSafety, peerPol.BanThreshold, peerPol.SeedPeers, peerPol.ConnectOnly)
 	p2pServer.SetPrettyLogging(logCfg.Mode == "pretty", logCfg.P2PHeartbeat, logCfg.P2PCompactHeartbeat, logCfg.P2PShowLatency, logCfg.P2PShowPeerHeight, logCfg.TrustedPeerName, logCfg.P2PHeartbeatSeconds)
+	p2pServer.SetPeerPingInterval(logCfg.PeerPingIntervalSeconds)
 	p2pServer.SetBootstrapPeers(addnodes)
 	p2pServer.SetListenHost(p2pBind.Host)
 	if len(addnodes) > 0 {
