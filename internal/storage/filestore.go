@@ -2,20 +2,28 @@ package storage
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
+	"legacycoin/legacy-go/internal/address"
 	"legacycoin/legacy-go/internal/blockchain"
+	"legacycoin/legacy-go/internal/chaincfg"
+	"legacycoin/legacy-go/internal/chainhash"
 	"legacycoin/legacy-go/internal/fsutil"
+	"legacycoin/legacy-go/internal/script"
 	"legacycoin/legacy-go/internal/wire"
 )
 
 type FileStore struct {
-	dir string
+	dir                 string
+	txIndexEnabled      bool
+	addressIndexEnabled bool
 }
 
 type journalOp string
@@ -35,8 +43,31 @@ type storeJournal struct {
 	Undo         *blockchain.UndoData   `json:"undo,omitempty"`
 }
 
+type addressUTXORecord struct {
+	Address     string `json:"address"`
+	TxID        string `json:"txid"`
+	Vout        uint32 `json:"vout"`
+	Value       int64  `json:"value"`
+	Height      int32  `json:"height"`
+	Coinbase    bool   `json:"coinbase"`
+	PkScriptHex string `json:"script_pub_key"`
+}
+
 func NewFileStore(dir string) *FileStore {
 	return &FileStore{dir: dir}
+}
+
+func (s *FileStore) SetIndexOptions(txIndex bool, addressIndex bool) {
+	s.txIndexEnabled = txIndex
+	s.addressIndexEnabled = addressIndex
+}
+
+func (s *FileStore) TxIndexEnabled() bool {
+	return s.txIndexEnabled
+}
+
+func (s *FileStore) AddressIndexEnabled() bool {
+	return s.addressIndexEnabled
 }
 
 func (s *FileStore) tipPath() string {
@@ -57,6 +88,14 @@ func (s *FileStore) indexDir() string {
 
 func (s *FileStore) utxoDir() string {
 	return filepath.Join(s.dir, "utxo")
+}
+
+func (s *FileStore) txIndexDir() string {
+	return filepath.Join(s.indexDir(), "tx")
+}
+
+func (s *FileStore) addressIndexDir() string {
+	return filepath.Join(s.indexDir(), "address")
 }
 
 func (s *FileStore) undoDir() string {
@@ -81,6 +120,32 @@ func (s *FileStore) utxoPath(key string) string {
 
 func (s *FileStore) undoPath(hash string) string {
 	return filepath.Join(s.undoDir(), hash+".json")
+}
+
+func (s *FileStore) txIndexPath(txid string) string {
+	return filepath.Join(s.txIndexDir(), strings.ToLower(strings.TrimSpace(txid))+".json")
+}
+
+func (s *FileStore) addressKey(address string) string {
+	repl := strings.NewReplacer(":", "_", "/", "_", "\\", "_", " ", "_")
+	return repl.Replace(strings.ToLower(strings.TrimSpace(address)))
+}
+
+func (s *FileStore) addressDir(address string) string {
+	return filepath.Join(s.addressIndexDir(), s.addressKey(address))
+}
+
+func (s *FileStore) addressTxIDsPath(address string) string {
+	return filepath.Join(s.addressDir(address), "txids.json")
+}
+
+func (s *FileStore) addressUTXODir(address string) string {
+	return filepath.Join(s.addressDir(address), "utxos")
+}
+
+func (s *FileStore) addressUTXOPath(address string, key string) string {
+	key = strings.ReplaceAll(strings.ToLower(strings.TrimSpace(key)), ":", "_")
+	return filepath.Join(s.addressUTXODir(address), key+".json")
 }
 
 func (s *FileStore) LoadTip() (*blockchain.BlockIndex, error) {
@@ -165,6 +230,16 @@ func (s *FileStore) SaveBlock(block *wire.MsgBlock, idx blockchain.BlockIndex, a
 	}
 	if err := fsutil.WriteFileAtomic(s.undoPath(idx.Hash), undoBytes, 0600); err != nil {
 		return err
+	}
+	if s.txIndexEnabled {
+		if err := s.indexBlockTransactions(block, idx); err != nil {
+			return err
+		}
+	}
+	if s.addressIndexEnabled {
+		if err := s.indexAddressConnect(block, idx, adds, spentEntries); err != nil {
+			return err
+		}
 	}
 	if err := s.SaveTip(idx); err != nil {
 		return err
@@ -292,6 +367,8 @@ func (s *FileStore) ensureDirs() error {
 		filepath.Dir(s.heightIndexPath(0)),
 		s.utxoDir(),
 		s.undoDir(),
+		s.txIndexDir(),
+		s.addressIndexDir(),
 	} {
 		if err := os.MkdirAll(dir, 0700); err != nil {
 			return err
@@ -384,6 +461,10 @@ func (s *FileStore) rollbackConnect(j storeJournal) error {
 }
 
 func (s *FileStore) applyDisconnect(hash string, prevTip *blockchain.BlockIndex, undo blockchain.UndoData) error {
+	disconnectedBlock, _, loadErr := s.LoadBlock(hash)
+	if loadErr != nil {
+		disconnectedBlock = nil
+	}
 	for _, key := range undo.AddedKeys {
 		if err := os.Remove(s.utxoPath(key)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
@@ -399,7 +480,26 @@ func (s *FileStore) applyDisconnect(hash string, prevTip *blockchain.BlockIndex,
 	if err := os.Remove(s.heightIndexPath(prevTip.Height + 1)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return s.SaveTip(*prevTip)
+	if err := s.SaveTip(*prevTip); err != nil {
+		return err
+	}
+	if s.txIndexEnabled || s.addressIndexEnabled {
+		if disconnectedBlock != nil {
+			if s.txIndexEnabled {
+				for _, tx := range disconnectedBlock.Transactions {
+					h, err := tx.TxHash()
+					if err != nil {
+						continue
+					}
+					_ = os.Remove(s.txIndexPath(h.String()))
+				}
+			}
+		}
+		if err := s.rebuildOptionalIndexesFromActiveTip(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *FileStore) readTipNoRecover() (*blockchain.BlockIndex, error) {
@@ -467,6 +567,356 @@ func (s *FileStore) RepairHeightIndex() error {
 		return nil
 	}
 	return err
+}
+
+func (s *FileStore) RepairIndexes() error {
+	if err := s.RepairHeightIndex(); err != nil {
+		return err
+	}
+	if err := s.rebuildHashIndexFromActiveTip(); err != nil {
+		return err
+	}
+	return s.rebuildOptionalIndexesFromActiveTip()
+}
+
+func (s *FileStore) rebuildHashIndexFromActiveTip() error {
+	tip, err := s.readTipNoRecover()
+	if err != nil {
+		return err
+	}
+	if tip == nil || tip.Hash == "" || tip.Height < 0 {
+		return nil
+	}
+	for h := int32(0); h <= tip.Height; h++ {
+		idx, err := s.LoadIndexByHeight(h)
+		if err != nil {
+			return err
+		}
+		b, err := json.MarshalIndent(idx, "", "  ")
+		if err != nil {
+			return err
+		}
+		if err := fsutil.WriteFileAtomic(s.hashIndexPath(idx.Hash), b, 0600); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func decodeOutputAddressFromScript(pkScript []byte) string {
+	switch {
+	case script.IsPayToPubKeyHash(pkScript) && len(pkScript) >= 23:
+		return address.EncodeBase58Check(chaincfg.PublicKeyHashVersion, pkScript[3:23])
+	case script.IsPayToHybridPubKeyHash(pkScript) && len(pkScript) >= 23:
+		return address.HybridPrefix + address.EncodeBase58Check(address.HybridVersion, pkScript[3:23])
+	default:
+		return ""
+	}
+}
+
+func (s *FileStore) indexBlockTransactions(block *wire.MsgBlock, idx blockchain.BlockIndex) error {
+	for txPos, tx := range block.Transactions {
+		h, err := tx.TxHash()
+		if err != nil {
+			return err
+		}
+		rec := blockchain.TxIndexRecord{
+			TxID:        h.String(),
+			BlockHash:   idx.Hash,
+			BlockHeight: idx.Height,
+			TxPosition:  txPos,
+		}
+		b, err := json.MarshalIndent(rec, "", "  ")
+		if err != nil {
+			return err
+		}
+		if err := fsutil.WriteFileAtomic(s.txIndexPath(rec.TxID), b, 0600); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *FileStore) readAddressTxIDs(address string) ([]string, error) {
+	b, err := os.ReadFile(s.addressTxIDsPath(address))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []string{}, nil
+		}
+		return nil, err
+	}
+	var txids []string
+	if err := json.Unmarshal(b, &txids); err != nil {
+		return nil, err
+	}
+	return txids, nil
+}
+
+func (s *FileStore) writeAddressTxIDs(address string, txids []string) error {
+	if err := os.MkdirAll(s.addressDir(address), 0700); err != nil {
+		return err
+	}
+	seen := make(map[string]struct{}, len(txids))
+	out := make([]string, 0, len(txids))
+	for _, txid := range txids {
+		txid = strings.ToLower(strings.TrimSpace(txid))
+		if txid == "" {
+			continue
+		}
+		if _, ok := seen[txid]; ok {
+			continue
+		}
+		seen[txid] = struct{}{}
+		out = append(out, txid)
+	}
+	sort.Strings(out)
+	b, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		return err
+	}
+	return fsutil.WriteFileAtomic(s.addressTxIDsPath(address), b, 0600)
+}
+
+func (s *FileStore) addAddressTxID(address string, txid string) error {
+	txids, err := s.readAddressTxIDs(address)
+	if err != nil {
+		return err
+	}
+	txids = append(txids, txid)
+	return s.writeAddressTxIDs(address, txids)
+}
+
+func (s *FileStore) writeAddressUTXO(rec addressUTXORecord) error {
+	if err := os.MkdirAll(s.addressUTXODir(rec.Address), 0700); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(rec, "", "  ")
+	if err != nil {
+		return err
+	}
+	return fsutil.WriteFileAtomic(s.addressUTXOPath(rec.Address, blockchain.OutPointKey(rec.TxID, rec.Vout)), b, 0600)
+}
+
+func (s *FileStore) removeAddressUTXO(address string, txid string, vout uint32) error {
+	path := s.addressUTXOPath(address, blockchain.OutPointKey(txid, vout))
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func (s *FileStore) indexAddressConnect(block *wire.MsgBlock, idx blockchain.BlockIndex, adds []blockchain.UTXOEntry, spent []blockchain.UTXOEntry) error {
+	for _, sp := range spent {
+		raw, err := hex.DecodeString(sp.PkScript)
+		if err != nil {
+			continue
+		}
+		addr := decodeOutputAddressFromScript(raw)
+		if addr == "" {
+			continue
+		}
+		if err := s.removeAddressUTXO(addr, sp.TxID, sp.Vout); err != nil {
+			return err
+		}
+	}
+	for _, add := range adds {
+		raw, err := hex.DecodeString(add.PkScript)
+		if err != nil {
+			continue
+		}
+		addr := decodeOutputAddressFromScript(raw)
+		if addr == "" {
+			continue
+		}
+		if err := s.addAddressTxID(addr, add.TxID); err != nil {
+			return err
+		}
+		rec := addressUTXORecord{
+			Address:     addr,
+			TxID:        add.TxID,
+			Vout:        add.Vout,
+			Value:       add.Value,
+			Height:      add.Height,
+			Coinbase:    add.Coinbase,
+			PkScriptHex: add.PkScript,
+		}
+		if err := s.writeAddressUTXO(rec); err != nil {
+			return err
+		}
+	}
+	// Ensure outputs to indexed addresses are tracked even if the wallet UTXO set
+	// did not retain them (e.g. same-block spends).
+	for _, tx := range block.Transactions {
+		txHash, err := tx.TxHash()
+		if err != nil {
+			continue
+		}
+		for _, out := range tx.TxOut {
+			addr := decodeOutputAddressFromScript(out.PkScript)
+			if addr == "" {
+				continue
+			}
+			if err := s.addAddressTxID(addr, txHash.String()); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *FileStore) rebuildOptionalIndexesFromActiveTip() error {
+	if !s.txIndexEnabled && !s.addressIndexEnabled {
+		return nil
+	}
+	tip, err := s.readTipNoRecover()
+	if err != nil {
+		return err
+	}
+	if tip == nil || tip.Hash == "" || tip.Height < 0 {
+		return nil
+	}
+	if s.txIndexEnabled {
+		if err := os.RemoveAll(s.txIndexDir()); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(s.txIndexDir(), 0700); err != nil {
+			return err
+		}
+	}
+	if s.addressIndexEnabled {
+		if err := os.RemoveAll(s.addressIndexDir()); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(s.addressIndexDir(), 0700); err != nil {
+			return err
+		}
+	}
+	for h := int32(0); h <= tip.Height; h++ {
+		idx, err := s.LoadIndexByHeight(h)
+		if err != nil {
+			return err
+		}
+		block, _, err := s.LoadBlock(idx.Hash)
+		if err != nil {
+			return err
+		}
+		if s.txIndexEnabled {
+			if err := s.indexBlockTransactions(block, *idx); err != nil {
+				return err
+			}
+		}
+		if s.addressIndexEnabled {
+			adds := make([]blockchain.UTXOEntry, 0)
+			spent := make([]blockchain.UTXOEntry, 0)
+			undo, _ := s.LoadUndo(idx.Hash)
+			if undo != nil {
+				spent = append(spent, undo.Spent...)
+			}
+			for _, tx := range block.Transactions {
+				txHash, err := tx.TxHash()
+				if err != nil {
+					continue
+				}
+				for vout, out := range tx.TxOut {
+					adds = append(adds, blockchain.UTXOEntry{
+						Key:      blockchain.OutPointKey(txHash.String(), uint32(vout)),
+						TxID:     txHash.String(),
+						Vout:     uint32(vout),
+						Value:    out.Value,
+						PkScript: hex.EncodeToString(out.PkScript),
+						Height:   idx.Height,
+						Coinbase: len(tx.TxIn) > 0 && tx.TxIn[0].PreviousOutPoint.Hash == (chainhash.Hash{}) && tx.TxIn[0].PreviousOutPoint.Index == ^uint32(0),
+					})
+				}
+			}
+			if err := s.indexAddressConnect(block, *idx, adds, spent); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *FileStore) LookupTxIndex(txid string) (*blockchain.TxIndexRecord, error) {
+	if !s.txIndexEnabled {
+		return nil, os.ErrNotExist
+	}
+	b, err := os.ReadFile(s.txIndexPath(txid))
+	if err != nil {
+		return nil, err
+	}
+	var rec blockchain.TxIndexRecord
+	if err := json.Unmarshal(b, &rec); err != nil {
+		return nil, err
+	}
+	return &rec, nil
+}
+
+func (s *FileStore) AddressTxIDs(address string) ([]string, error) {
+	if !s.addressIndexEnabled {
+		return nil, os.ErrNotExist
+	}
+	return s.readAddressTxIDs(address)
+}
+
+func (s *FileStore) AddressUTXOs(address string) ([]blockchain.AddressIndexUTXO, error) {
+	if !s.addressIndexEnabled {
+		return nil, os.ErrNotExist
+	}
+	entries, err := os.ReadDir(s.addressUTXODir(address))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []blockchain.AddressIndexUTXO{}, nil
+		}
+		return nil, err
+	}
+	out := make([]blockchain.AddressIndexUTXO, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(s.addressUTXODir(address), entry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		var rec addressUTXORecord
+		if err := json.Unmarshal(b, &rec); err != nil {
+			return nil, err
+		}
+		out = append(out, blockchain.AddressIndexUTXO{
+			Address:     rec.Address,
+			TxID:        rec.TxID,
+			Vout:        rec.Vout,
+			Value:       rec.Value,
+			Height:      rec.Height,
+			Coinbase:    rec.Coinbase,
+			PkScriptHex: rec.PkScriptHex,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Height == out[j].Height {
+			if out[i].TxID == out[j].TxID {
+				return out[i].Vout < out[j].Vout
+			}
+			return out[i].TxID < out[j].TxID
+		}
+		return out[i].Height < out[j].Height
+	})
+	return out, nil
+}
+
+func (s *FileStore) AddressBalance(address string) (int64, int64, error) {
+	utxos, err := s.AddressUTXOs(address)
+	if err != nil {
+		return 0, 0, err
+	}
+	var confirmed int64
+	var total int64
+	for _, u := range utxos {
+		total += u.Value
+		confirmed += u.Value
+	}
+	return confirmed, total, nil
 }
 
 func (s *FileStore) loadIndex(path string) (*blockchain.BlockIndex, error) {

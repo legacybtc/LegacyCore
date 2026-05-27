@@ -40,6 +40,7 @@ func (w *nodeLogWriter) Write(p []byte) (int, error) {
 	if line == "" {
 		return len(p), nil
 	}
+	line = repairPrettyLogArtifacts(line, w.cfg.Emoji)
 	if w.cfg.Mode != "pretty" {
 		fmt.Fprintln(os.Stdout, line)
 		return len(p), nil
@@ -51,7 +52,7 @@ func (w *nodeLogWriter) Write(p []byte) (int, error) {
 		w.writeSuppressed(line, "seed")
 		return len(p), nil
 	}
-	fmt.Fprintln(os.Stdout, prettyLine(line))
+	fmt.Fprintln(os.Stdout, repairPrettyLogArtifacts(prettyLine(line, w.cfg.Emoji), w.cfg.Emoji))
 	return len(p), nil
 }
 
@@ -75,7 +76,7 @@ func (w *nodeLogWriter) suppressPretty(line string) bool {
 
 func (w *nodeLogWriter) writeSuppressed(line, key string) {
 	if !w.cfg.SuppressRepeatedWarnings {
-		fmt.Fprintln(os.Stdout, prettyLine(line))
+		fmt.Fprintln(os.Stdout, repairPrettyLogArtifacts(prettyLine(line, w.cfg.Emoji), w.cfg.Emoji))
 		return
 	}
 	w.mu.Lock()
@@ -85,14 +86,19 @@ func (w *nodeLogWriter) writeSuppressed(line, key string) {
 	if w.repeats[key] == 1 || now.Sub(w.last[key]) >= 5*time.Minute {
 		w.last[key] = now
 		if w.repeats[key] == 1 {
-			fmt.Fprintln(os.Stdout, prettyLine(line))
+			fmt.Fprintln(os.Stdout, repairPrettyLogArtifacts(prettyLine(line, w.cfg.Emoji), w.cfg.Emoji))
 		} else {
-			fmt.Fprintf(os.Stdout, "[%s] 🌱 DNS seed warnings repeated %d times | suppressing repeats for 5m\n", now.Format("15:04:05"), w.repeats[key])
+			prefix := "[WARN]"
+			if w.cfg.Emoji {
+				prefix = "⚠️ [WARN]"
+			}
+			prefix = repairPrettyLogArtifacts(prefix, w.cfg.Emoji)
+			fmt.Fprintf(os.Stdout, "[%s] %s DNS seed warnings repeated %d times | suppressing repeats for 5m\n", now.Format("15:04:05"), prefix, w.repeats[key])
 		}
 	}
 }
 
-func prettyLine(line string) string {
+func prettyLine(line string, emoji bool) string {
 	if strings.HasPrefix(line, "20") || strings.HasPrefix(line, "19") {
 		return line
 	}
@@ -103,19 +109,61 @@ func prettyLine(line string) string {
 		return withTime(line)
 	}
 	if strings.Contains(line, "Legacy Coin P2P listening") {
-		return withTime("🌐 " + line)
+		if emoji {
+			return withTime("🌐 [P2P] " + line)
+		}
+		return withTime("[P2P] " + line)
 	}
 	if strings.Contains(line, "rpc auth enabled") {
-		return withTime("🔐 RPC cookie/auth enabled")
+		if emoji {
+			return withTime("🔐 [RPC] RPC cookie/auth enabled")
+		}
+		return withTime("[RPC] RPC cookie/auth enabled")
 	}
 	if strings.Contains(line, "configured bootstrap peers") {
-		return withTime("🌐 " + line)
+		if emoji {
+			return withTime("🌐 [P2P] " + line)
+		}
+		return withTime("[P2P] " + line)
 	}
 	return withTime(line)
 }
 
 func withTime(line string) string {
 	return fmt.Sprintf("[%s] %s", time.Now().Format("15:04:05"), line)
+}
+
+func repairPrettyLogArtifacts(line string, emoji bool) string {
+	repaired := strings.NewReplacer(
+		"рџЊ±", "🌱",
+		"рџ›ЎпёЏ", "🛡️",
+		"рџљ«", "🚫",
+		"рџЏ“", "📡",
+		"рџџў", "🏓",
+		"рџ’ё", "💸",
+		"рџ“Ј", "📣",
+		"рџЊђ", "🌐",
+		"рџ”ђ", "🔐",
+		"вњ…", "✅",
+		"в†ђ", "←",
+		"в†’", "→",
+	).Replace(line)
+	if emoji {
+		return repaired
+	}
+	return strings.NewReplacer(
+		"🌱 ", "",
+		"🛡️ ", "",
+		"🚫 ", "",
+		"📡 ", "",
+		"🏓 ", "",
+		"💸 ", "",
+		"📣 ", "",
+		"🌐 ", "",
+		"🔐 ", "",
+		"✅ ", "",
+		"⚠️ ", "",
+	).Replace(repaired)
 }
 
 type Node struct {
@@ -153,8 +201,26 @@ func NewWithOptions(opts Options) (*Node, error) {
 	if strings.TrimSpace(paths.ConfigPath) == "" {
 		paths.ConfigPath = filepath.Join(paths.DataDir, config.ConfigFile)
 	}
+
+	params := chaincfg.MainNet
+	if portOverride, err := config.LoadRuntimePortOverride(paths.ConfigPath); err == nil {
+		if portOverride.P2P != 0 {
+			params.DefaultPort = portOverride.P2P
+		}
+		if portOverride.RPC != 0 {
+			params.RPCPort = portOverride.RPC
+		}
+	} else {
+		return nil, fmt.Errorf("load runtime port override: %w", err)
+	}
+
 	store := storage.NewFileStore(paths.DataDir)
-	chain, err := blockchain.New(chaincfg.MainNet, pow.YespowerHasher{Personalization: chaincfg.MainNet.YespowerPers}, store)
+	indexCfg, err := config.LoadIndexConfig(paths.ConfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("load index config: %w", err)
+	}
+	store.SetIndexOptions(indexCfg.TxIndex, indexCfg.AddressIndex)
+	chain, err := blockchain.New(params, pow.YespowerHasher{Personalization: params.YespowerPers}, store)
 	if err != nil {
 		return nil, err
 	}
@@ -168,7 +234,7 @@ func NewWithOptions(opts Options) (*Node, error) {
 		return nil, fmt.Errorf("load logging config: %w", err)
 	}
 	logger := log.New(newNodeLogWriter(logCfg), "", log.LstdFlags)
-	p2pServer := p2p.New(chaincfg.MainNet, chain, pool, logger)
+	p2pServer := p2p.New(params, chain, pool, logger)
 	addnodes, err := config.LoadAddNodes(paths.ConfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("load config addnode entries: %w", err)
@@ -210,10 +276,29 @@ func NewWithOptions(opts Options) (*Node, error) {
 	}
 	p2pServer.SetPeerPolicy(chainID, peerPol.EnforceChainID, peerPol.PeerSafety, peerPol.BanThreshold, peerPol.SeedPeers, peerPol.ConnectOnly)
 	p2pServer.SetPrettyLogging(logCfg.Mode == "pretty", logCfg.P2PHeartbeat, logCfg.P2PCompactHeartbeat, logCfg.P2PShowLatency, logCfg.P2PShowPeerHeight, logCfg.TrustedPeerName, logCfg.P2PHeartbeatSeconds)
-	p2pServer.SetBootstrapPeers(addnodes)
+	p2pServer.SetPeerPingInterval(logCfg.PeerPingIntervalSeconds)
+	bootstrap := append([]string{}, addnodes...)
+	if len(peerPol.ConnectOnly) > 0 {
+		seen := make(map[string]struct{}, len(bootstrap))
+		for _, addr := range bootstrap {
+			seen[strings.TrimSpace(addr)] = struct{}{}
+		}
+		for _, addr := range peerPol.ConnectOnly {
+			addr = strings.TrimSpace(addr)
+			if addr == "" {
+				continue
+			}
+			if _, ok := seen[addr]; ok {
+				continue
+			}
+			seen[addr] = struct{}{}
+			bootstrap = append(bootstrap, addr)
+		}
+	}
+	p2pServer.SetBootstrapPeers(bootstrap)
 	p2pServer.SetListenHost(p2pBind.Host)
-	if len(addnodes) > 0 {
-		logger.Printf("configured bootstrap peers: %d", len(addnodes))
+	if len(bootstrap) > 0 {
+		logger.Printf("configured bootstrap peers: %d", len(bootstrap))
 	}
 	if auth.Enabled {
 		logger.Printf("rpc auth enabled")

@@ -1,34 +1,20 @@
 # Mining
 
-Legacy Core includes a local CPU miner and exposes pool-facing block template RPCs. Status: local solo mining is `implemented`; external pool integration is an `integration-ready candidate` and still requires real pool testing.
+Purpose: solo mining and mining RPC usage guide.  
+Audience: miners and node operators.  
+Status: active for v1.0.4.  
+Safety warning: back up wallet before mining with real funds.
 
 ## Mainnet Mining Identity
 
-- Algorithm: yespower
+- PoW: yespower
 - Personalization: `LegacyCoinPoW`
-- Block target spacing: 10 minutes
+- Target spacing: 10 minutes
 - Coinbase maturity: 100 blocks
-- Reward schedule: 50 LBTC initial subsidy, halving every 210,000 blocks
-- P2P port: `19555`
-- RPC port: `19556`
+- Initial subsidy: 50 LBTC
+- Halving interval: 210,000 blocks
 
-Do not change yespower parameters, DGW/difficulty rules, genesis, ports, address formats, or reward rules for mining integration work.
-
-## Solo Mining Setup
-
-Windows:
-
-```powershell
-.\legacycoind.exe run
-.\legacycoin-cli.exe setupwallet "strong passphrase"
-.\legacycoin-cli.exe getminingaddress
-.\legacycoin-cli.exe setminerthreads 4
-.\legacycoin-cli.exe startminer
-.\legacycoin-cli.exe getminerstatus
-.\legacycoin-cli.exe stopminer
-```
-
-Linux:
+## Solo Mining Quick Start
 
 ```bash
 ./legacycoind run
@@ -37,45 +23,37 @@ Linux:
 ./legacycoin-cli setminerthreads 4
 ./legacycoin-cli startminer
 ./legacycoin-cli getminerstatus
+```
+
+Stop:
+
+```bash
 ./legacycoin-cli stopminer
 ```
 
 ## Safety Checks
 
-Run:
-
-```powershell
-.\legacycoind.exe params
-.\legacycoin-cli.exe checkstorage
-.\legacycoin-cli.exe getblockchaininfo
-.\legacycoin-cli.exe getsyncstatus
-```
-
-Linux:
-
 ```bash
 ./legacycoind params
 ./legacycoin-cli checkstorage
-./legacycoin-cli getblockchaininfo
 ./legacycoin-cli getsyncstatus
+./legacycoin-cli getpeerinfo
 ```
 
-The production yespower backend should report `cgo-c-reference`. The pure-Go backend is for development/testing unless parity is explicitly validated for a release.
+## Pool-Relevant RPC
 
-## Miner RPC Status
+- `getblocktemplate`: available
+- `submitblock`: available
+- `validateaddress`: available
 
-- `getminingaddress`: `implemented`
-- `startminer`: `implemented`
-- `stopminer`: `implemented`
-- `restartminer`: `implemented`
-- `setminerthreads`: `implemented`
-- `getminerstatus`: `implemented`
-- `getblocktemplate`: `implemented`
-- `submitblock`: `implemented`
-- Stratum server: `not implemented`
+Legacy Core does not ship a built-in stratum server in v1.0.4.
 
-## Limitations
+## Troubleshooting
 
-- Built-in mining is CPU solo mining, not a pool coordinator.
-- External stratum pool configuration must be tested by operators before production use.
-- Fee/min-relay policy is conservative and may be refined in later releases.
+- mining idle: check wallet lock, peers, storage health, sync state
+- rejected blocks: verify template freshness and sync health
+
+## Known Limitations
+
+- Built-in miner is local CPU mining, not full pool orchestration.
+- External pool deployment requires separate stratum/payout infrastructure.

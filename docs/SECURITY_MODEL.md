@@ -1,49 +1,44 @@
 # Security Model
 
-Legacy Core v1.0.3 is early mainnet software. Treat all wallet and RPC surfaces as sensitive.
+Purpose: document operational security expectations for Legacy Core.  
+Audience: all operators, wallets, pools, exchanges, and developers.  
+Status: active for v1.0.4.  
+Safety warning: early mainnet software should be run with strict security controls.
 
-## Network Ports
+## Network Exposure Rules
 
-- P2P `19555`: may be public for node connectivity.
-- RPC `19556`: must stay private/firewalled.
+- P2P `19555`: may be public.
+- RPC `19556`: private only.
 
-Never expose wallet/RPC publicly. If RPC must cross a host boundary, use strict firewall rules, authentication, and a private network.
+Never expose privileged RPC endpoints directly to public internet.
 
 ## Wallet Safety
 
-- Back up wallet data before receiving funds, mining, importing keys, or upgrading.
-- Never share wallet files, private keys, seed material, or RPC cookies.
-- Test restore procedures before holding meaningful balances.
-- Keep exchange hot wallet balances small.
-- Use cold-wallet procedures for reserves.
+- Never share `wallet.dat`, private keys, seed phrases, or RPC credentials.
+- Back up wallet data before upgrades, reindex, migration, or key changes.
+- Keep minimal funds in hot wallets.
 
-## Binary and Source Verification
+## Release Trust
 
-- Verify SHA256 checksums for downloaded assets.
-- Prefer source builds or release assets from the official repository.
-- Windows binaries may show SmartScreen warnings if unsigned.
-- Production mining/pool builds should report yespower backend `cgo-c-reference`.
+- Verify release SHA256 checksums before execution.
+- Prefer official source/release channels.
+- Treat unsigned binaries (for example SmartScreen prompts) with caution.
 
-## RPC Authentication
+## RPC Security
 
-Supported:
+Use one of:
 
-- Cookie auth: `implemented`.
-- `rpcuser`/`rpcpassword`: `implemented`.
-- Public unauthenticated RPC: intentionally refused for non-local binds.
-- TLS configuration: partially implemented; operators should still keep RPC private.
+- cookie auth on localhost
+- strong `rpcuser`/`rpcpassword` on private networks
 
-## P2P Trust Boundaries
-
-P2P peers are untrusted. The node validates message start, chain metadata, block headers, proof of work, block transactions, mempool policy, and peer liveness. Peer diagnostics expose stale metadata, sync errors, and last-seen data for operators.
-
-## Consensus Boundary
-
-v1.0.3 hardening does not change consensus rules. Security work is limited to CI, docs, RPC/P2P diagnostics, storage checks, tests, and release process.
+Combine auth with firewall controls.
 
 ## Operator Warnings
 
-- Seed operators: expose P2P only; keep RPC private.
-- Pool operators: keep pool RPC on localhost/private network.
-- Exchanges: assume hot wallet risk and use confirmation/reorg policy.
-- Wallet users: back up before use and never send secrets to support channels.
+- Exchanges: high hot-wallet risk; enforce strict confirmations and cold-wallet policy.
+- Pools: isolate worker infrastructure from wallet RPC.
+- Seed nodes: expose P2P only; keep RPC private.
+
+## Known Limitations
+
+- v1.0.4 improves infrastructure hardening, but this remains early mainnet operational software and should be deployed conservatively.

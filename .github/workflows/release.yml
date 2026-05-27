@@ -1,0 +1,200 @@
+name: Release Matrix
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (example: v1.0.4)"
+        required: true
+        default: "v1.0.4"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_VERSION: ${{ github.event.inputs.version || github.ref_name }}
+
+jobs:
+  source-clean:
+    name: Source archive + cleanliness
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Scan tracked source
+        shell: pwsh
+        run: ./scripts/scan-source-cleanliness.ps1 -Root . -FailOnWorkingTree
+
+      - name: Build clean source archive
+        shell: pwsh
+        run: ./scripts/release-source-archive.ps1 -Version $env:RELEASE_VERSION -OutputDir dist
+
+      - name: Upload source archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-clean
+          path: |
+            dist/*source-clean.zip
+            dist/SHA256SUMS-source.txt
+
+  windows-amd64:
+    name: Windows amd64 package
+    runs-on: windows-latest
+    needs: source-clean
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: cmd/legacywallet/frontend/package-lock.json
+
+      - name: Install Windows GCC (MSYS2 UCRT64)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-gcc
+
+      - name: Build package
+        shell: pwsh
+        run: ./scripts/package-windows.ps1 -Version $env:RELEASE_VERSION
+
+      - name: Verify mainnet identity
+        shell: pwsh
+        run: ./scripts/verify-mainnet-identity.ps1 -Binary .\dist\LegacyWallet-LBTC-mainnet-windows-amd64-$env:RELEASE_VERSION\legacycoind.exe
+
+      - name: Verify archive
+        shell: pwsh
+        run: ./scripts/verify-release-assets.ps1 .\dist\LegacyWallet-LBTC-mainnet-windows-amd64-$env:RELEASE_VERSION.zip
+
+      - name: Upload windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-amd64
+          path: dist/LegacyWallet-LBTC-mainnet-windows-amd64-${{ env.RELEASE_VERSION }}.zip
+
+  linux-amd64:
+    name: Linux amd64 package
+    runs-on: ubuntu-latest
+    needs: source-clean
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build package
+        run: bash scripts/package-linux.sh "$RELEASE_VERSION" amd64
+
+      - name: Verify mainnet identity
+        run: bash scripts/verify-mainnet-identity.sh ./dist/linux-amd64/legacycoind
+
+      - name: Verify archive
+        run: bash scripts/verify-release-assets.sh "./dist/LegacyCore-LBTC-mainnet-linux-amd64-$RELEASE_VERSION.tar.gz"
+
+      - name: Upload linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-amd64
+          path: dist/LegacyCore-LBTC-mainnet-linux-amd64-${{ env.RELEASE_VERSION }}.tar.gz
+
+  linux-arm64:
+    name: Linux arm64 package (experimental)
+    runs-on: ubuntu-latest
+    needs: source-clean
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install ARM64 cross-compiler
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build package
+        env:
+          LINUX_CC: aarch64-linux-gnu-gcc
+        run: bash scripts/package-linux.sh "$RELEASE_VERSION" arm64
+
+      - name: Verify archive
+        run: bash scripts/verify-release-assets.sh "./dist/LegacyCore-LBTC-mainnet-linux-arm64-$RELEASE_VERSION.tar.gz"
+
+      - name: Upload linux arm64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-arm64
+          path: dist/LegacyCore-LBTC-mainnet-linux-arm64-${{ env.RELEASE_VERSION }}.tar.gz
+
+  macos-matrix:
+    name: macOS package (${{ matrix.arch }}, experimental)
+    runs-on: macos-latest
+    needs: source-clean
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build package
+        run: bash scripts/package-macos.sh "$RELEASE_VERSION" "${{ matrix.arch }}"
+
+      - name: Verify archive
+        run: bash scripts/verify-release-assets.sh "./dist/LegacyCore-LBTC-mainnet-macos-${{ matrix.arch }}-$RELEASE_VERSION.tar.gz"
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ matrix.arch }}
+          path: dist/LegacyCore-LBTC-mainnet-macos-${{ matrix.arch }}-${{ env.RELEASE_VERSION }}.tar.gz
+
+  release-sha256s:
+    name: Top-level SHA256 list
+    runs-on: ubuntu-latest
+    needs: [windows-amd64, linux-amd64]
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Flatten assets
+        run: |
+          mkdir -p release-assets
+          find dist -type f \( -name "*.zip" -o -name "*.tar.gz" \) -exec cp {} release-assets/ \;
+
+      - name: Generate top-level SHA256SUMS
+        run: bash scripts/generate-sha256s.sh release-assets SHA256SUMS.txt
+
+      - name: Upload top-level SHA256
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-sha256s
+          path: release-assets/SHA256SUMS.txt

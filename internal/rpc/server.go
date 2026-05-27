@@ -110,6 +110,9 @@ var rpcHelpEntries = []rpcHelpEntry{
 	{Method: "getrawmempool", Usage: "getrawmempool", Category: "mempool", Description: "Return mempool txid list."},
 	{Method: "getmempoolentry", Usage: "getmempoolentry <txid>", Category: "mempool", Description: "Return a mempool entry for a txid."},
 	{Method: "getrawtransaction", Usage: "getrawtransaction <txid> [verbose]", Category: "tx", Description: "Return raw tx hex or verbose object."},
+	{Method: "getaddresstxids", Usage: "getaddresstxids <address>", Category: "index", Description: "Return confirmed txids for an indexed address (requires addressindex=1)."},
+	{Method: "getaddressutxos", Usage: "getaddressutxos <address>", Category: "index", Description: "Return address UTXOs from address index (requires addressindex=1)."},
+	{Method: "getaddressbalance", Usage: "getaddressbalance <address>", Category: "index", Description: "Return confirmed/total base-unit balance for indexed address (requires addressindex=1)."},
 	{Method: "decoderawtransaction", Usage: "decoderawtransaction <hex>", Category: "tx", Description: "Decode raw transaction hex."},
 	{Method: "sendrawtransaction", Usage: "sendrawtransaction <hex>", Category: "tx", Description: "Submit a raw transaction to mempool."},
 	{Method: "gettxout", Usage: "gettxout <txid> <vout>", Category: "tx", Description: "Return UTXO entry for an outpoint."},
@@ -143,7 +146,8 @@ var rpcHelpEntries = []rpcHelpEntry{
 	{Method: "addnode", Usage: "addnode <addr>", Category: "network", Description: "Connect to a peer."},
 	{Method: "disconnectnode", Usage: "disconnectnode <addr>", Category: "network", Description: "Disconnect a matching peer."},
 	{Method: "doctor", Usage: "doctor", Category: "ops", Description: "Return operator health checks."},
-	{Method: "checkstorage", Usage: "checkstorage", Category: "ops", Description: "Return block/index/UTXO storage health."},
+	{Method: "checkstorage", Usage: "checkstorage [repair]", Category: "ops", Description: "Return block/index/UTXO storage health. Use repair=true to rebuild active-chain indexes."},
+	{Method: "reindex", Usage: "reindex", Category: "ops", Description: "Rebuild active-chain indexes (height/hash + optional txindex/addressindex)."},
 	{Method: "help", Usage: "help [method]", Category: "meta", Description: "List supported RPC methods or show one method summary."},
 	{Method: "stop", Usage: "stop", Category: "meta", Description: "Stop Legacy Core daemon."},
 }
@@ -1151,6 +1155,9 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		}
 		lookup, err := s.lookupTransaction(txid)
 		if err != nil {
+			if !s.chain.TxIndexEnabled() {
+				return nil, &rpcError{Code: -5, Message: "transaction not found (txindex disabled; enable txindex=1 for reliable historical lookup)"}
+			}
 			return nil, &rpcError{Code: -5, Message: "transaction not found"}
 		}
 		rawTx, err := lookup.Tx.Bytes()
@@ -1161,6 +1168,52 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 			return hex.EncodeToString(rawTx), nil
 		}
 		return txVerboseResult(lookup), nil
+	case "getaddresstxids":
+		var args []string
+		if err := json.Unmarshal(params, &args); err != nil || len(args) != 1 {
+			return nil, &rpcError{Code: -32602, Message: "getaddresstxids expects address"}
+		}
+		if !s.chain.AddressIndexEnabled() {
+			return nil, &rpcError{Code: -5, Message: "addressindex disabled (set addressindex=1 and reindex)"}
+		}
+		txids, err := s.chain.AddressTxIDs(args[0])
+		if err != nil {
+			return nil, &rpcError{Code: -5, Message: err.Error()}
+		}
+		return txids, nil
+	case "getaddressutxos":
+		var args []string
+		if err := json.Unmarshal(params, &args); err != nil || len(args) != 1 {
+			return nil, &rpcError{Code: -32602, Message: "getaddressutxos expects address"}
+		}
+		if !s.chain.AddressIndexEnabled() {
+			return nil, &rpcError{Code: -5, Message: "addressindex disabled (set addressindex=1 and reindex)"}
+		}
+		utxos, err := s.chain.AddressUTXOs(args[0])
+		if err != nil {
+			return nil, &rpcError{Code: -5, Message: err.Error()}
+		}
+		return utxos, nil
+	case "getaddressbalance":
+		var args []string
+		if err := json.Unmarshal(params, &args); err != nil || len(args) != 1 {
+			return nil, &rpcError{Code: -32602, Message: "getaddressbalance expects address"}
+		}
+		if !s.chain.AddressIndexEnabled() {
+			return nil, &rpcError{Code: -5, Message: "addressindex disabled (set addressindex=1 and reindex)"}
+		}
+		confirmed, total, err := s.chain.AddressBalance(args[0])
+		if err != nil {
+			return nil, &rpcError{Code: -5, Message: err.Error()}
+		}
+		return map[string]any{
+			"address":                     args[0],
+			"balance":                     amountFloat(confirmed),
+			"balance_base_units":          confirmed,
+			"received_base_units":         total,
+			"received":                    amountFloat(total),
+			"addressindex_confirmed_only": true,
+		}, nil
 	case "gettransaction":
 		var args []json.RawMessage
 		if err := json.Unmarshal(params, &args); err != nil || len(args) < 1 {
@@ -1172,6 +1225,9 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		}
 		lookup, err := s.lookupTransaction(txid)
 		if err != nil {
+			if !s.chain.TxIndexEnabled() {
+				return nil, &rpcError{Code: -5, Message: "transaction not found (txindex disabled; enable txindex=1 for reliable historical lookup)"}
+			}
 			return nil, &rpcError{Code: -5, Message: "transaction not found"}
 		}
 		rawTx, err := lookup.Tx.Bytes()
@@ -1343,7 +1399,35 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		summary := s.walletSummary([]string{cfg.PubKeyHash})
 		return summary["immature_outputs"], nil
 	case "checkstorage":
+		var args []json.RawMessage
+		_ = json.Unmarshal(params, &args)
+		repair := false
+		if len(args) > 0 {
+			if err := json.Unmarshal(args[0], &repair); err != nil {
+				var str string
+				if err2 := json.Unmarshal(args[0], &str); err2 == nil {
+					l := strings.ToLower(strings.TrimSpace(str))
+					repair = l == "1" || l == "true" || l == "yes" || l == "repair"
+				}
+			}
+		}
+		if repair {
+			report, err := s.chain.ReindexActiveChain()
+			if err != nil {
+				return nil, &rpcError{Code: -32603, Message: "checkstorage repair failed: " + err.Error()}
+			}
+			report["repair_requested"] = true
+			report["health"] = s.chain.StorageHealth()
+			return report, nil
+		}
 		return s.chain.StorageHealth(), nil
+	case "reindex":
+		report, err := s.chain.ReindexActiveChain()
+		if err != nil {
+			return nil, &rpcError{Code: -32603, Message: "reindex failed: " + err.Error()}
+		}
+		report["health"] = s.chain.StorageHealth()
+		return report, nil
 	case "getmininginfo":
 		cfg, _ := config.LoadMiningConfig(config.DefaultConfigPath())
 		storage := s.chain.StorageHealth()
@@ -2266,6 +2350,8 @@ func (s *Server) getBlockchainInfo() map[string]any {
 		"blocks":                     height,
 		"headers":                    height,
 		"bestblockhash":              best,
+		"chainwork":                  s.chain.TipChainwork(),
+		"fork_choice":                "most-cumulative-work",
 		"current_bits":               bits,
 		"difficulty_bits":            bits,
 		"difficulty_trend":           timing["difficulty_trend"],
@@ -2278,7 +2364,36 @@ func (s *Server) getBlockchainInfo() map[string]any {
 		"genesis_hash":               p.GenesisHash,
 		"genesis_time":               p.GenesisTime,
 		"storage":                    storage,
-		"warnings":                   []string{},
+		"txindex": map[string]any{
+			"enabled": s.chain.TxIndexEnabled(),
+			"mode": func() string {
+				if s.chain.TxIndexEnabled() {
+					return "on-disk-txindex"
+				}
+				return "legacy-chain-scan"
+			}(),
+			"note": func() string {
+				if s.chain.TxIndexEnabled() {
+					return "getrawtransaction uses txindex for confirmed lookup and mempool fallback"
+				}
+				return "txindex disabled; getrawtransaction scans active chain and mempool"
+			}(),
+		},
+		"addressindex": map[string]any{
+			"enabled": s.chain.AddressIndexEnabled(),
+			"note": func() string {
+				if s.chain.AddressIndexEnabled() {
+					return "address RPCs are enabled (getaddresstxids/getaddressutxos/getaddressbalance)"
+				}
+				return "addressindex disabled; no fake address search is exposed"
+			}(),
+		},
+		"reindex": map[string]any{
+			"supported": true,
+			"rpc":       "reindex",
+			"check":     "checkstorage true",
+		},
+		"warnings": []string{},
 	}
 }
 
@@ -2337,6 +2452,21 @@ func (s *Server) lookupTransaction(txid string) (*txLookupResult, error) {
 				BlockHeight:   -1,
 				Confirmations: 0,
 				InMempool:     true,
+			}, nil
+		}
+	}
+	if s.chain.TxIndexEnabled() {
+		tx, idx, _, err := s.chain.LookupTransactionByIndex(txid)
+		if err == nil && tx != nil && idx != nil {
+			tip := s.chain.Tip()
+			return &txLookupResult{
+				Tx:            tx,
+				TxID:          txid,
+				BlockHash:     idx.Hash,
+				BlockHeight:   idx.Height,
+				BlockTime:     idx.Time,
+				Confirmations: confirmations(tip, idx),
+				InMempool:     false,
 			}, nil
 		}
 	}

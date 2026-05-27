@@ -13,6 +13,7 @@ var (
 )
 
 var PowLimit = new(big.Int).Rsh(new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1)), 1)
+var twoTo256 = new(big.Int).Lsh(big.NewInt(1), 256)
 
 const DGWv3PastBlocks = 24
 
@@ -110,6 +111,17 @@ func HashToBig(hash chainhash.Hash) *big.Int {
 		reversed[i] = hash[chainhash.HashSize-1-i]
 	}
 	return new(big.Int).SetBytes(reversed[:])
+}
+
+// WorkForBits returns the per-block work used by cumulative-chainwork fork
+// choice: floor(2^256 / (target + 1)).
+func WorkForBits(bits uint32) *big.Int {
+	target := CompactToBig(bits)
+	if target.Sign() <= 0 || target.Cmp(PowLimit) > 0 {
+		return big.NewInt(0)
+	}
+	denom := new(big.Int).Add(target, big.NewInt(1))
+	return new(big.Int).Div(new(big.Int).Set(twoTo256), denom)
 }
 
 func CheckProofOfWork(hash chainhash.Hash, bits uint32) error {

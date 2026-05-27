@@ -45,6 +45,8 @@ func main() {
 		runMiningAddress()
 	case "mineblock":
 		runMineBlock()
+	case "reindex":
+		runReindex()
 	case "run", "server", "daemon":
 		runNode()
 	default:
@@ -59,9 +61,10 @@ func printUsage() {
 
 Usage:
   legacycoind help
-  legacycoind run [-addnode ip:port] [-connect ip:port] [-noseednode] [-seed-peers]
+  legacycoind run [-addnode ip:port] [-connect ip:port] [-noseednode] [-seed-peers] [-datadir path] [-p2pport port] [-rpcport port]
   legacycoind params
   legacycoind genesis [threads]
+  legacycoind reindex [-datadir path]
   legacycoind pqc-demo
   legacycoind mining-address
   legacycoind mineblock [threads] [pubkeyhash-hex]
@@ -96,6 +99,7 @@ RPC:
   setminerthreads
   doctor
   checkstorage
+  reindex
   getnetworkinfo
   getpeerinfo
   getconnectioncount
@@ -108,6 +112,9 @@ RPC:
   gettxout
   gettxoutsetinfo
   getrawtransaction
+  getaddresstxids
+  getaddressutxos
+  getaddressbalance
   gettransaction
   decoderawtransaction
   getnewaddress
@@ -286,26 +293,8 @@ func runMineBlock() {
 }
 
 func applyRuntimeNodeFlags(args []string) error {
-	dataDir := ""
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		key, val, hasEq := strings.Cut(arg, "=")
-		if key != "-datadir" && key != "--datadir" {
-			continue
-		}
-		if !hasEq {
-			i++
-			if i >= len(args) {
-				return fmt.Errorf("%s requires value", key)
-			}
-			val = args[i]
-		}
-		dataDir = strings.TrimSpace(val)
-	}
-	if dataDir != "" {
-		if err := os.Setenv("LEGACYCOIN_DATADIR", dataDir); err != nil {
-			return err
-		}
+	if err := applyDataDirOverride(args); err != nil {
+		return err
 	}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -319,7 +308,7 @@ func applyRuntimeNodeFlags(args []string) error {
 				}
 				val = args[i]
 			}
-			dataDir = strings.TrimSpace(val)
+			_ = strings.TrimSpace(val)
 		case "-addnode", "--addnode":
 			if !hasEq {
 				i++
@@ -353,10 +342,57 @@ func applyRuntimeNodeFlags(args []string) error {
 			if err := config.AppendConfigLine(config.DefaultConfigPath(), "seed_peers", "true"); err != nil {
 				return err
 			}
+		case "-p2pport", "--p2pport", "-port", "--port":
+			if !hasEq {
+				i++
+				if i >= len(args) {
+					return fmt.Errorf("%s requires value", key)
+				}
+				val = args[i]
+			}
+			if err := config.AppendConfigLine(config.DefaultConfigPath(), "p2pport", strings.TrimSpace(val)); err != nil {
+				return err
+			}
+		case "-rpcport", "--rpcport":
+			if !hasEq {
+				i++
+				if i >= len(args) {
+					return fmt.Errorf("%s requires value", key)
+				}
+				val = args[i]
+			}
+			if err := config.AppendConfigLine(config.DefaultConfigPath(), "rpcport", strings.TrimSpace(val)); err != nil {
+				return err
+			}
 		case "":
 			continue
 		default:
 			return fmt.Errorf("unknown run flag %q", arg)
+		}
+	}
+	return nil
+}
+
+func applyDataDirOverride(args []string) error {
+	dataDir := ""
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		key, val, hasEq := strings.Cut(arg, "=")
+		if key != "-datadir" && key != "--datadir" {
+			continue
+		}
+		if !hasEq {
+			i++
+			if i >= len(args) {
+				return fmt.Errorf("%s requires value", key)
+			}
+			val = args[i]
+		}
+		dataDir = strings.TrimSpace(val)
+	}
+	if dataDir != "" {
+		if err := os.Setenv("LEGACYCOIN_DATADIR", dataDir); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -383,4 +419,21 @@ func runNode() {
 		fmt.Fprintf(os.Stderr, "run node: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func runReindex() {
+	if err := applyDataDirOverride(os.Args[2:]); err != nil {
+		fmt.Fprintf(os.Stderr, "reindex flags: %v\n", err)
+		os.Exit(2)
+	}
+	store := storage.NewFileStore(config.DefaultDataDir())
+	indexCfg, err := config.LoadIndexConfig(config.DefaultConfigPath())
+	if err == nil {
+		store.SetIndexOptions(indexCfg.TxIndex, indexCfg.AddressIndex)
+	}
+	if err := store.RepairIndexes(); err != nil {
+		fmt.Fprintf(os.Stderr, "reindex failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("reindex complete: active-chain indexes repaired from current tip")
 }

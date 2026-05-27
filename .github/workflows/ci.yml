@@ -6,6 +6,7 @@ on:
       - main
       - v1.0.2-mainnet-candidate
       - v1.0.3-integration-hardening
+      - v1.0.4-core-integration-release-superiority
       - infrastructure-ready-source
       - v1.0.2-pool-rpc-framework-hardening
   pull_request:

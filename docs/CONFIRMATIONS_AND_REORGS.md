@@ -1,6 +1,9 @@
 # Confirmations and Reorgs
 
-Status: active-chain height/hash lookup and reorg-capable storage are `implemented`; fork choice is currently height-based rather than explicit chainwork-based.
+Purpose: explain confirmation logic, reorg risk, and operational policy.  
+Audience: exchanges, pools, explorers, and node operators.  
+Status: active for v1.0.4.  
+Safety warning: confirmation policy is operational risk management, not consensus.
 
 ## Confirmations
 
@@ -10,57 +13,53 @@ For a transaction in block height `H` and current active height `T`:
 confirmations = T - H + 1
 ```
 
-For mempool transactions, confirmations are `0`.
+Mempool transactions have `0` confirmations.
 
-## Recommended Policy
+## Coinbase Maturity
 
-- Wallet UI: show pending at 0 confirmations.
-- Normal user payments: wait at least 6 confirmations.
-- Exchange deposits: 30 confirmations.
-- Large exchange deposits: 100 confirmations or manual review.
-- Coinbase/mining rewards: 100 confirmations because coinbase maturity is 100 blocks.
+Coinbase rewards require **100 confirmations** before they are spendable.
 
-These are operational recommendations, not consensus rules.
+## Reorg Risk
 
-## Detecting Reorgs
+Reorgs can occur on early mainnet and lower-hashrate networks.  
+Systems that credit deposits should keep a per-height block hash record and detect hash changes.
 
-Store active-chain hash for every credited height.
+## Fork Choice in v1.0.4
 
-Windows:
+Legacy Core v1.0.4 tracks and uses cumulative chainwork for active chain selection.  
+Fork choice prefers the valid branch with greatest cumulative chainwork.
 
-```powershell
-.\legacycoin-cli.exe getblockcount
-.\legacycoin-cli.exe getblockhash 100
-```
+This is implementation hardening and does **not** change mainnet consensus identity.
 
-Linux:
+## What Exchanges Should Monitor
+
+Run:
 
 ```bash
 ./legacycoin-cli getblockcount
-./legacycoin-cli getblockhash 100
+./legacycoin-cli getblockhash <height>
+./legacycoin-cli getblockchaininfo
+./legacycoin-cli getsyncstatus
 ```
 
-If a stored hash for a height changes, roll back credits from that height and rescan from the last common hash.
+Watch for:
 
-## Current Fork Choice Audit
+- hash changes at already-credited heights
+- `blocks_behind` or stale peer/sync warnings
+- storage health failures
 
-The current chain implementation stores side branches and activates a side branch when it becomes longer than the active chain. The code does not yet maintain explicit cumulative chainwork. That is acceptable to document for v1.0.3, but a staged chainwork upgrade should be prioritized for v1.0.4.
+## Recommended Confirmation Policy
 
-Do not silently change fork-choice behavior in a minor integration hardening release.
+- Small user payments: 6 confirmations.
+- Exchange deposits: at least 30 confirmations.
+- Large deposits: 100 confirmations or manual review.
+- Coinbase-origin funds: 100 confirmations minimum.
 
-## Reorg Test Coverage
+## Troubleshooting
 
-Current and added tests cover:
+- If node appears behind, inspect `getsyncstatus`.
+- If hash mismatch appears, roll back credits from affected height and rescan.
 
-- short fork loses
-- longer side branch can become active
-- invalid fork rejected/rollback paths
-- height/hash index behavior after reorg
-- UTXO undo restore
-- storage rollback failure reporting
+## Known Limitations
 
-Still planned:
-
-- explicit cumulative chainwork fork choice
-- broader mempool reorg reinsertion policy
-- wallet coinbase maturity reorg scenarios
+- Reorg handling policy still depends on operator implementation quality (credit rollback and replay discipline).

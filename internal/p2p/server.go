@@ -62,6 +62,7 @@ type peer struct {
 	lastPing         time.Time
 	lastRTT          time.Duration
 	minRTT           time.Duration
+	missedPongs      int
 	version          int32
 	subver           string
 	height           int32
@@ -92,6 +93,7 @@ type Server struct {
 	showPeerHeight    bool
 	trustedPeerName   string
 	heartbeatInterval time.Duration
+	pingInterval      time.Duration
 	chainID           string
 	enforceChainID    bool
 	peerSafety        bool
@@ -207,6 +209,13 @@ func (s *Server) SetPrettyLogging(enabled bool, heartbeat bool, compact bool, sh
 	}
 }
 
+func (s *Server) SetPeerPingInterval(seconds int) {
+	if seconds < 10 {
+		return
+	}
+	s.pingInterval = time.Duration(seconds) * time.Second
+}
+
 type PeerInfo struct {
 	Addr                             string  `json:"addr"`
 	Direction                        string  `json:"direction"`
@@ -214,10 +223,17 @@ type PeerInfo struct {
 	ConnectedForSeconds              int64   `json:"connected_for_seconds"`
 	LastSeenAgoSeconds               float64 `json:"last_seen_ago_seconds"`
 	LastPongAgoSeconds               float64 `json:"last_pong_ago_seconds"`
+	LastPingTime                     int64   `json:"last_ping_time,omitempty"`
+	LastPongTime                     int64   `json:"last_pong_time,omitempty"`
 	LastHeightUpdateAgoSeconds       float64 `json:"last_height_update_ago_seconds"`
 	LastPeerMetadataUpdateAgoSeconds float64 `json:"last_peer_metadata_update_ago_seconds"`
 	LastPingMS                       float64 `json:"last_ping_ms"`
+	PingLatencyMS                    float64 `json:"ping_latency_ms"`
 	MinPingMS                        float64 `json:"min_ping_ms"`
+	MissedPongs                      int     `json:"missed_pongs"`
+	Stale                            bool    `json:"stale"`
+	ReportedHeight                   int32   `json:"reported_height"`
+	SyncState                        string  `json:"sync_state"`
 	Version                          int32   `json:"version"`
 	SubVer                           string  `json:"subver"`
 	SyncedBlocks                     int32   `json:"synced_blocks"`
@@ -241,15 +257,21 @@ type PeerInfo struct {
 func (s *Server) PeerInfos() []PeerInfo {
 	now := time.Now()
 	peers := s.snapshotPeers()
+	localHeight := int32(-1)
+	if tip := s.chain.Tip(); tip != nil {
+		localHeight = tip.Height
+	}
 	out := make([]PeerInfo, 0, len(peers))
 	for _, p := range peers {
 		p.lastMu.Lock()
 		connected := p.connected
 		seen := p.lastSeen
 		pong := p.lastPong
+		ping := p.lastPing
 		heightUpdate := p.lastHeightUpdate
 		rtt := p.lastRTT
 		minRTT := p.minRTT
+		missedPongs := p.missedPongs
 		version := p.version
 		subver := p.subver
 		height := p.height
@@ -275,6 +297,13 @@ func (s *Server) PeerInfos() []PeerInfo {
 		if p.outbound {
 			direction = "outbound"
 		}
+		stale := (!heightUpdate.IsZero() && now.Sub(heightUpdate) > peerStaleThreshold) || (!seen.IsZero() && now.Sub(seen) > peerStaleThreshold)
+		syncState := "current"
+		if height > localHeight {
+			syncState = "peer_ahead"
+		} else if stale {
+			syncState = "stale"
+		}
 		out = append(out, PeerInfo{
 			Addr:                             p.remote,
 			Direction:                        direction,
@@ -282,10 +311,17 @@ func (s *Server) PeerInfos() []PeerInfo {
 			ConnectedForSeconds:              int64(now.Sub(connected).Seconds()),
 			LastSeenAgoSeconds:               now.Sub(seen).Seconds(),
 			LastPongAgoSeconds:               now.Sub(pong).Seconds(),
+			LastPingTime:                     unixOrZero(ping),
+			LastPongTime:                     unixOrZero(pong),
 			LastHeightUpdateAgoSeconds:       secondsSince(heightUpdate),
 			LastPeerMetadataUpdateAgoSeconds: secondsSince(heightUpdate),
 			LastPingMS:                       float64(rtt.Microseconds()) / 1000,
+			PingLatencyMS:                    float64(rtt.Microseconds()) / 1000,
 			MinPingMS:                        float64(minRTT.Microseconds()) / 1000,
+			MissedPongs:                      missedPongs,
+			Stale:                            stale,
+			ReportedHeight:                   height,
+			SyncState:                        syncState,
 			Version:                          version,
 			SubVer:                           subver,
 			StartingHeight:                   height,
@@ -974,7 +1010,16 @@ func (s *Server) requestSyncFromPeerIfBehind(p *peer, force bool) error {
 	if !force && !lastReq.IsZero() && time.Since(lastReq) < 25*time.Second {
 		return nil
 	}
-	s.log.Printf("p2p sync behind peer %s: local height %d peer height %d, requesting headers/blocks", p.remote, localHeight, peerHeight)
+	switch {
+	case peerHeight > localHeight:
+		s.log.Printf("p2p sync behind peer %s: local height %d peer height %d, requesting headers/blocks", p.remote, localHeight, peerHeight)
+	case force && peerMetadataStale:
+		s.log.Printf("p2p sync metadata refresh from peer %s: local height %d peer height %d (stale metadata), requesting headers/blocks", p.remote, localHeight, peerHeight)
+	case force:
+		s.log.Printf("p2p sync forced refresh from peer %s: local height %d peer height %d, requesting headers/blocks", p.remote, localHeight, peerHeight)
+	default:
+		return nil
+	}
 	s.noteSyncRequest()
 	if err := s.requestHeaders(p); err != nil {
 		p.setSyncResult(err)
@@ -1361,6 +1406,7 @@ func (p *peer) markPong() time.Duration {
 			p.minRTT = p.lastRTT
 		}
 	}
+	p.missedPongs = 0
 	rtt := p.lastRTT
 	p.lastMu.Unlock()
 	return rtt
@@ -1369,6 +1415,7 @@ func (p *peer) markPong() time.Duration {
 func (p *peer) markPing() {
 	p.lastMu.Lock()
 	p.lastPing = time.Now()
+	p.missedPongs++
 	p.lastMu.Unlock()
 }
 
@@ -1436,7 +1483,9 @@ func (s *Server) peerLabel(p *peer) string {
 
 func (s *Server) pingLoop(ctx context.Context, p *peer, done <-chan struct{}) {
 	interval := peerPingInterval
-	if s.heartbeatInterval > 0 {
+	if s.pingInterval > 0 {
+		interval = s.pingInterval
+	} else if s.heartbeatInterval > 0 {
 		interval = s.heartbeatInterval
 	}
 	ticker := time.NewTicker(interval)

@@ -1,0 +1,22 @@
+[Unit]
+Description=Legacy Core full node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=legacycoin
+Group=legacycoin
+WorkingDirectory=/opt/legacycore
+ExecStart=/opt/legacycore/legacycoind run -seed-peers -datadir=/var/lib/legacycoin
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/legacycoin
+
+[Install]
+WantedBy=multi-user.target

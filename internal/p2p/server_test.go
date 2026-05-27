@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -507,6 +508,135 @@ func TestDisconnectNodeAllowsReplacementPeerMetadata(t *testing.T) {
 	}
 	if status["peer_reported_height"] != int32(4) {
 		t.Fatalf("peer_reported_height=%v want 4", status["peer_reported_height"])
+	}
+}
+
+func TestPeerMarkPingPongTracksMissedPongs(t *testing.T) {
+	p := &peer{}
+	p.markPing()
+	p.markPing()
+
+	p.lastMu.Lock()
+	missed := p.missedPongs
+	p.lastMu.Unlock()
+	if missed != 2 {
+		t.Fatalf("missedPongs=%d want 2", missed)
+	}
+
+	_ = p.markPong()
+	p.lastMu.Lock()
+	missed = p.missedPongs
+	p.lastMu.Unlock()
+	if missed != 0 {
+		t.Fatalf("missedPongs=%d want 0 after pong", missed)
+	}
+}
+
+func TestPeerInfosIncludePingAndSyncFields(t *testing.T) {
+	s, _, cleanup := newP2PTestServerWithGenesis(t)
+	defer cleanup()
+
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	p := &peer{
+		conn:             serverConn,
+		remote:           "127.0.0.1:19555",
+		height:           5,
+		lastSeen:         time.Now(),
+		lastPong:         time.Now(),
+		lastPing:         time.Now(),
+		lastRTT:          25 * time.Millisecond,
+		minRTT:           10 * time.Millisecond,
+		missedPongs:      1,
+		lastHeightUpdate: time.Now().Add(-peerStaleThreshold - time.Second),
+	}
+	s.registerPeer(p)
+
+	infos := s.PeerInfos()
+	if len(infos) != 1 {
+		t.Fatalf("len(infos)=%d want 1", len(infos))
+	}
+	info := infos[0]
+	if info.LastPingTime == 0 || info.LastPongTime == 0 {
+		t.Fatalf("expected non-zero ping/pong unix times: %+v", info)
+	}
+	if info.MissedPongs != 1 {
+		t.Fatalf("missed_pongs=%d want 1", info.MissedPongs)
+	}
+	if info.PingLatencyMS <= 0 {
+		t.Fatalf("ping_latency_ms=%f want > 0", info.PingLatencyMS)
+	}
+	if !info.Stale {
+		t.Fatalf("expected stale=true when height metadata is old")
+	}
+	if info.ReportedHeight != 5 {
+		t.Fatalf("reported_height=%d want 5", info.ReportedHeight)
+	}
+	if info.SyncState == "" {
+		t.Fatalf("sync_state should not be empty")
+	}
+}
+
+func TestRequestSyncForcedEqualHeightLogsRefreshNotBehind(t *testing.T) {
+	params := chaincfg.MainNet
+	genesisBlock, err := genesis.NewBlock(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	genesisHash, err := p2pTestHasher{}.HashHeader(genesisBlock.Header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params.GenesisHash = genesisHash.String()
+
+	chain, err := blockchain.New(params, p2pTestHasher{}, storage.NewFileStore(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.EnsureGenesis(); err != nil {
+		t.Fatal(err)
+	}
+	var logBuf bytes.Buffer
+	s := New(params, chain, nil, log.New(&logBuf, "", 0))
+
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	p := &peer{
+		conn:             serverConn,
+		remote:           "pipe-test",
+		height:           0,
+		lastSeen:         time.Now(),
+		lastPong:         time.Now(),
+		lastHeightUpdate: time.Now().Add(-5 * time.Minute),
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- s.requestSyncFromPeerIfBehind(p, true)
+	}()
+
+	_ = clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := wire.ReadMessage(clientConn, params.MessageStart); err != nil {
+		t.Fatalf("read first sync message: %v", err)
+	}
+	if _, err := wire.ReadMessage(clientConn, params.MessageStart); err != nil {
+		t.Fatalf("read second sync message: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("forced requestSyncFromPeerIfBehind: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("forced requestSyncFromPeerIfBehind did not return")
+	}
+	logText := logBuf.String()
+	if !strings.Contains(logText, "sync metadata refresh") {
+		t.Fatalf("expected refresh log, got: %s", logText)
+	}
+	if strings.Contains(logText, "sync behind peer") {
+		t.Fatalf("unexpected behind log for equal-height forced refresh: %s", logText)
 	}
 }
 

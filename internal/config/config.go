@@ -76,6 +76,16 @@ type P2PBind struct {
 	Host string
 }
 
+type RuntimePortOverride struct {
+	P2P uint16
+	RPC uint16
+}
+
+type IndexConfig struct {
+	TxIndex      bool
+	AddressIndex bool
+}
+
 type LaunchPolicy struct {
 	AllowScriptCoveragePending bool
 }
@@ -269,6 +279,43 @@ func LoadP2PBind(path string) (P2PBind, error) {
 	return bind, nil
 }
 
+func LoadRuntimePortOverride(path string) (RuntimePortOverride, error) {
+	kv, err := loadConfigKV(path)
+	if err != nil {
+		return RuntimePortOverride{}, err
+	}
+	out := RuntimePortOverride{}
+	parsePort := func(values []string) uint16 {
+		if len(values) == 0 {
+			return 0
+		}
+		var n int
+		_, _ = fmt.Sscanf(strings.TrimSpace(values[len(values)-1]), "%d", &n)
+		if n > 0 && n <= 65535 {
+			return uint16(n)
+		}
+		return 0
+	}
+	if p := parsePort(kv["p2pport"]); p != 0 {
+		out.P2P = p
+	} else if p := parsePort(kv["port"]); p != 0 {
+		out.P2P = p
+	}
+	out.RPC = parsePort(kv["rpcport"])
+	return out, nil
+}
+
+func LoadIndexConfig(path string) (IndexConfig, error) {
+	kv, err := loadConfigKV(path)
+	if err != nil {
+		return IndexConfig{}, err
+	}
+	return IndexConfig{
+		TxIndex:      boolFromKV(kv, "txindex", false),
+		AddressIndex: boolFromKV(kv, "addressindex", false),
+	}, nil
+}
+
 func LoadLaunchPolicy(path string) (LaunchPolicy, error) {
 	kv, err := loadConfigKV(path)
 	if err != nil {
@@ -321,6 +368,7 @@ type LogConfig struct {
 	Emoji                    bool
 	P2PHeartbeat             bool
 	P2PHeartbeatSeconds      int
+	PeerPingIntervalSeconds  int
 	P2PShowLatency           bool
 	P2PShowPeerHeight        bool
 	P2PCompactHeartbeat      bool
@@ -356,6 +404,7 @@ func LoadLogConfig(path string) (LogConfig, error) {
 		Color:                    true,
 		Emoji:                    true,
 		P2PHeartbeatSeconds:      60,
+		PeerPingIntervalSeconds:  30,
 		SuppressRepeatedWarnings: true,
 	}
 	if vals := kv["log_mode"]; len(vals) > 0 {
@@ -367,6 +416,16 @@ func LoadLogConfig(path string) (LogConfig, error) {
 	}
 	cfg.Color = boolFromKV(kv, "log_color", cfg.Color)
 	cfg.Emoji = boolFromKV(kv, "log_emoji", cfg.Emoji)
+	if vals := kv["pretty_logs"]; len(vals) > 0 {
+		if boolFromKV(kv, "pretty_logs", cfg.Mode == "pretty") {
+			cfg.Mode = "pretty"
+		} else {
+			cfg.Mode = "plain"
+		}
+	}
+	if vals := kv["log_icons"]; len(vals) > 0 {
+		cfg.Emoji = boolFromKV(kv, "log_icons", cfg.Emoji)
+	}
 	cfg.P2PHeartbeat = boolFromKV(kv, "p2p_heartbeat", cfg.Mode == "pretty")
 	cfg.P2PShowLatency = boolFromKV(kv, "p2p_show_latency", cfg.Mode == "pretty")
 	cfg.P2PShowPeerHeight = boolFromKV(kv, "p2p_show_peer_height", cfg.Mode == "pretty")
@@ -377,6 +436,13 @@ func LoadLogConfig(path string) (LogConfig, error) {
 		_, _ = fmt.Sscanf(strings.TrimSpace(vals[len(vals)-1]), "%d", &n)
 		if n >= 10 {
 			cfg.P2PHeartbeatSeconds = n
+		}
+	}
+	if vals := kv["peer_ping_interval_seconds"]; len(vals) > 0 {
+		var n int
+		_, _ = fmt.Sscanf(strings.TrimSpace(vals[len(vals)-1]), "%d", &n)
+		if n >= 10 {
+			cfg.PeerPingIntervalSeconds = n
 		}
 	}
 	if vals := kv["trusted_peer_name"]; len(vals) > 0 {
