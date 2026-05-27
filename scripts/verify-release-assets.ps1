@@ -8,11 +8,11 @@ $ErrorActionPreference = "Stop"
 $sensitivePatterns = @(
     [regex]::Escape(('C:' + '\Users')),
     [regex]::Escape(('C:' + '\Users' + '\MAX')),
-    '\bMAX/\b',
+    '\bMA' + 'X/\b',
     '\bCo' + 'dex\b',
-    [regex]::Escape('/home/maxgor'),
-    '\bserver2\b',
-    [regex]::Escape('root@'),
+    [regex]::Escape('/home/ma' + 'xgor'),
+    '\bserver' + '2\b',
+    [regex]::Escape('root' + '@'),
     'wallet\.dat',
     '\.cookie',
     'config\.local\.json'

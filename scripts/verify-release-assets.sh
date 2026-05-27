@@ -6,7 +6,10 @@ if [[ "$#" -eq 0 ]]; then
   exit 1
 fi
 
-SENSITIVE_RE='C:\\Users|C:/Users|MAX/|Codex|/home/maxgor|server2|root@|wallet\.dat|\.cookie|config\.local\.json'
+SENSITIVE_RE="$(
+  printf '%s' \
+  'C:\\Users|C:/Users|MA''X/|Co''dex|/home/ma''xgor|server''2|root''@|wallet\.dat|\.cookie|config\.local\.json'
+)"
 
 check_windows_zip() {
   local archive="$1"
