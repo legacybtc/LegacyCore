@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
+	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -49,11 +52,13 @@ const (
 )
 
 type BlockIndex struct {
-	Height int32  `json:"height"`
-	Hash   string `json:"hash"`
-	Time   uint32 `json:"time"`
-	Bits   uint32 `json:"bits"`
-	Nonce  uint32 `json:"nonce"`
+	Height    int32  `json:"height"`
+	Hash      string `json:"hash"`
+	Time      uint32 `json:"time"`
+	Bits      uint32 `json:"bits"`
+	Nonce     uint32 `json:"nonce"`
+	Parent    string `json:"parent,omitempty"`
+	ChainWork string `json:"chainwork,omitempty"`
 }
 
 type Store interface {
@@ -67,6 +72,35 @@ type Store interface {
 	LoadUndo(hash string) (*UndoData, error)
 	ListUTXO() ([]UTXOEntry, error)
 	UTXOStats() (UTXOStats, error)
+}
+
+type TxIndexRecord struct {
+	TxID        string `json:"txid"`
+	BlockHash   string `json:"block_hash"`
+	BlockHeight int32  `json:"block_height"`
+	TxPosition  int    `json:"tx_position"`
+}
+
+type AddressIndexUTXO struct {
+	Address     string `json:"address"`
+	TxID        string `json:"txid"`
+	Vout        uint32 `json:"vout"`
+	Value       int64  `json:"value"`
+	Height      int32  `json:"height"`
+	Coinbase    bool   `json:"coinbase"`
+	PkScriptHex string `json:"script_pub_key"`
+}
+
+type txIndexStore interface {
+	TxIndexEnabled() bool
+	LookupTxIndex(txid string) (*TxIndexRecord, error)
+}
+
+type addressIndexStore interface {
+	AddressIndexEnabled() bool
+	AddressTxIDs(address string) ([]string, error)
+	AddressUTXOs(address string) ([]AddressIndexUTXO, error)
+	AddressBalance(address string) (int64, int64, error)
 }
 
 type UTXOEntry struct {
@@ -102,13 +136,16 @@ type Chain struct {
 	orphanParent map[string]string
 	orphanOrder  []string
 	sideBlocks   map[string]*sideBlockNode
+	workByHash   map[string]*big.Int
+	parentByHash map[string]string
 }
 
 type sideBlockNode struct {
-	hash   string
-	parent string
-	height int32
-	block  *wire.MsgBlock
+	hash      string
+	parent    string
+	height    int32
+	block     *wire.MsgBlock
+	chainwork *big.Int
 }
 
 type BlockProcessStatus string
@@ -171,18 +208,160 @@ func New(params chaincfg.Params, hasher pow.Hasher, store Store) (*Chain, error)
 		orphanParent: make(map[string]string),
 		orphanOrder:  make([]string, 0, MaxOrphanBlocks),
 		sideBlocks:   make(map[string]*sideBlockNode),
+		workByHash:   make(map[string]*big.Int),
+		parentByHash: make(map[string]string),
 	}
 	tip, err := store.LoadTip()
 	if err != nil {
 		return nil, err
 	}
 	c.tip = tip
+	if err := c.rebuildActiveChainworkLocked(); err != nil {
+		return nil, err
+	}
 	return c, nil
 }
 
 func (c *Chain) ProcessBlock(block *wire.MsgBlock) error {
 	_, err := c.ProcessBlockWithResult(block)
 	return err
+}
+
+func cloneBig(n *big.Int) *big.Int {
+	if n == nil {
+		return big.NewInt(0)
+	}
+	return new(big.Int).Set(n)
+}
+
+func parseChainwork(v string) (*big.Int, bool) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return nil, false
+	}
+	out := new(big.Int)
+	base := 10
+	if strings.HasPrefix(v, "0x") || strings.HasPrefix(v, "0X") {
+		base = 0
+	}
+	if _, ok := out.SetString(v, base); !ok {
+		return nil, false
+	}
+	if out.Sign() < 0 {
+		return nil, false
+	}
+	return out, true
+}
+
+func (c *Chain) rebuildActiveChainworkLocked() error {
+	c.workByHash = make(map[string]*big.Int)
+	c.parentByHash = make(map[string]string)
+	if c.tip == nil || c.tip.Hash == "" || c.tip.Height < 0 {
+		return nil
+	}
+	var running = big.NewInt(0)
+	for height := int32(0); height <= c.tip.Height; height++ {
+		idx, err := c.store.LoadIndexByHeight(height)
+		if err != nil {
+			// Older/synthetic stores can have sparse height indexes. Continue and
+			// derive tip chainwork from parent links below.
+			continue
+		}
+		parent := idx.Parent
+		if parent == "" && idx.Height > 0 {
+			block, _, err := c.store.LoadBlock(idx.Hash)
+			if err != nil {
+				return err
+			}
+			parent = block.Header.PrevBlock.String()
+		}
+		var cw *big.Int
+		if parsed, ok := parseChainwork(idx.ChainWork); ok {
+			cw = parsed
+		} else {
+			running = new(big.Int).Add(running, consensus.WorkForBits(idx.Bits))
+			cw = cloneBig(running)
+		}
+		c.workByHash[idx.Hash] = cloneBig(cw)
+		c.parentByHash[idx.Hash] = parent
+		running = cloneBig(cw)
+	}
+	if _, ok := c.workByHash[c.tip.Hash]; !ok {
+		work, err := c.chainworkForHashLocked(c.tip.Hash)
+		if err != nil {
+			return err
+		}
+		c.workByHash[c.tip.Hash] = cloneBig(work)
+	}
+	return nil
+}
+
+func (c *Chain) chainworkForHashLocked(hash string) (*big.Int, error) {
+	if hash == "" {
+		return big.NewInt(0), nil
+	}
+	if work, ok := c.workByHash[hash]; ok {
+		return cloneBig(work), nil
+	}
+	if side, ok := c.sideBlocks[hash]; ok {
+		if side.chainwork != nil {
+			c.workByHash[hash] = cloneBig(side.chainwork)
+			c.parentByHash[hash] = side.parent
+			return cloneBig(side.chainwork), nil
+		}
+		parentWork, err := c.chainworkForHashLocked(side.parent)
+		if err != nil {
+			return nil, err
+		}
+		total := new(big.Int).Add(parentWork, consensus.WorkForBits(side.block.Header.Bits))
+		side.chainwork = cloneBig(total)
+		c.workByHash[hash] = cloneBig(total)
+		c.parentByHash[hash] = side.parent
+		return total, nil
+	}
+	block, idx, err := c.store.LoadBlock(hash)
+	if err != nil {
+		return nil, err
+	}
+	parent := idx.Parent
+	if parent == "" && idx.Height > 0 {
+		parent = block.Header.PrevBlock.String()
+	}
+	parentWork, err := c.chainworkForHashLocked(parent)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			parentWork = big.NewInt(0)
+		} else {
+			return nil, err
+		}
+	}
+	work := consensus.WorkForBits(idx.Bits)
+	total := new(big.Int).Add(parentWork, work)
+	c.workByHash[hash] = cloneBig(total)
+	c.parentByHash[hash] = parent
+	return total, nil
+}
+
+func (c *Chain) computeChildChainworkLocked(parentHash string, bits uint32) (*big.Int, error) {
+	parentWork, err := c.chainworkForHashLocked(parentHash)
+	if err != nil {
+		return nil, err
+	}
+	return new(big.Int).Add(parentWork, consensus.WorkForBits(bits)), nil
+}
+
+func (c *Chain) buildSideNodeLocked(hash string, parent string, height int32, block *wire.MsgBlock) (*sideBlockNode, error) {
+	work, err := c.computeChildChainworkLocked(parent, block.Header.Bits)
+	if err != nil {
+		return nil, err
+	}
+	return &sideBlockNode{
+		hash:      hash,
+		parent:    parent,
+		height:    height,
+		block:     block,
+		chainwork: work,
+	}, nil
 }
 
 func (c *Chain) ProcessBlockWithResult(block *wire.MsgBlock) (BlockProcessResult, error) {
@@ -207,7 +386,7 @@ func (c *Chain) EnsureGenesis() error {
 		return fmt.Errorf("hash genesis: %w", err)
 	}
 	if c.params.GenesisHash == "" {
-		idx := BlockIndex{Height: -1, Hash: "", Time: block.Header.Timestamp, Bits: block.Header.Bits, Nonce: block.Header.Nonce}
+		idx := BlockIndex{Height: -1, Hash: "", Time: block.Header.Timestamp, Bits: block.Header.Bits, Nonce: block.Header.Nonce, Parent: ""}
 		c.tip = &idx
 		return nil
 	}
@@ -217,7 +396,8 @@ func (c *Chain) EnsureGenesis() error {
 	if err := consensus.CheckProofOfWork(hash, block.Header.Bits); err != nil {
 		return fmt.Errorf("validate genesis pow: %w", err)
 	}
-	idx := BlockIndex{Height: 0, Hash: hash.String(), Time: block.Header.Timestamp, Bits: block.Header.Bits, Nonce: block.Header.Nonce}
+	genesisWork := consensus.WorkForBits(block.Header.Bits)
+	idx := BlockIndex{Height: 0, Hash: hash.String(), Time: block.Header.Timestamp, Bits: block.Header.Bits, Nonce: block.Header.Nonce, Parent: "", ChainWork: genesisWork.Text(10)}
 	adds, spendKeys, spentEntries, err := c.validateBlockTransactions(block, idx.Height)
 	if err != nil {
 		return err
@@ -225,6 +405,8 @@ func (c *Chain) EnsureGenesis() error {
 	if err := c.store.SaveBlock(block, idx, adds, spendKeys, spentEntries); err != nil {
 		return err
 	}
+	c.workByHash[idx.Hash] = cloneBig(genesisWork)
+	c.parentByHash[idx.Hash] = ""
 	c.tip = &idx
 	return nil
 }
@@ -284,10 +466,24 @@ func (c *Chain) connectBlockLocked(block *wire.MsgBlock) error {
 		return err
 	}
 	height := int32(0)
+	parentHash := ""
 	if c.tip != nil {
 		height = c.tip.Height + 1
+		parentHash = c.tip.Hash
 	}
-	idx := BlockIndex{Height: height, Hash: hash.String(), Time: block.Header.Timestamp, Bits: block.Header.Bits, Nonce: block.Header.Nonce}
+	chainwork, err := c.computeChildChainworkLocked(parentHash, block.Header.Bits)
+	if err != nil {
+		return err
+	}
+	idx := BlockIndex{
+		Height:    height,
+		Hash:      hash.String(),
+		Time:      block.Header.Timestamp,
+		Bits:      block.Header.Bits,
+		Nonce:     block.Header.Nonce,
+		Parent:    parentHash,
+		ChainWork: chainwork.Text(10),
+	}
 	adds, spendKeys, spentEntries, err := c.validateBlockTransactions(block, idx.Height)
 	if err != nil {
 		return err
@@ -295,6 +491,8 @@ func (c *Chain) connectBlockLocked(block *wire.MsgBlock) error {
 	if err := c.store.SaveBlock(block, idx, adds, spendKeys, spentEntries); err != nil {
 		return err
 	}
+	c.workByHash[idx.Hash] = cloneBig(chainwork)
+	c.parentByHash[idx.Hash] = parentHash
 	c.tip = &idx
 	return nil
 }
@@ -347,12 +545,11 @@ func (c *Chain) processBlockLocked(block *wire.MsgBlock) (BlockProcessResult, er
 				result.ParentActive = true
 				result.SideChain = true
 				result.CalculatedHeight = parentHeight + 1
-				c.sideBlocks[hashStr] = &sideBlockNode{
-					hash:   hashStr,
-					parent: parent,
-					height: parentHeight + 1,
-					block:  block,
+				sideNode, err := c.buildSideNodeLocked(hashStr, parent, parentHeight+1, block)
+				if err != nil {
+					return result, err
 				}
+				c.sideBlocks[hashStr] = sideNode
 				if err := c.tryActivateSideChainLocked(hashStr); err != nil {
 					return result, err
 				}
@@ -371,12 +568,11 @@ func (c *Chain) processBlockLocked(block *wire.MsgBlock) (BlockProcessResult, er
 				result.ParentKnown = true
 				result.SideChain = true
 				result.CalculatedHeight = parentHeight + 1
-				c.sideBlocks[hashStr] = &sideBlockNode{
-					hash:   hashStr,
-					parent: parent,
-					height: parentHeight + 1,
-					block:  block,
+				sideNode, err := c.buildSideNodeLocked(hashStr, parent, parentHeight+1, block)
+				if err != nil {
+					return result, err
 				}
+				c.sideBlocks[hashStr] = sideNode
 				if err := c.tryActivateSideChainLocked(hashStr); err != nil {
 					return result, err
 				}
@@ -395,12 +591,11 @@ func (c *Chain) processBlockLocked(block *wire.MsgBlock) (BlockProcessResult, er
 				result.ParentKnown = true
 				result.SideChain = true
 				result.CalculatedHeight = parentNode.height + 1
-				c.sideBlocks[hashStr] = &sideBlockNode{
-					hash:   hashStr,
-					parent: parent,
-					height: parentNode.height + 1,
-					block:  block,
+				sideNode, err := c.buildSideNodeLocked(hashStr, parent, parentNode.height+1, block)
+				if err != nil {
+					return result, err
 				}
+				c.sideBlocks[hashStr] = sideNode
 				if err := c.tryActivateSideChainLocked(hashStr); err != nil {
 					return result, err
 				}
@@ -540,7 +735,14 @@ func (c *Chain) indexedHeight(hash string) (int32, bool) {
 
 func (c *Chain) tryActivateSideChainLocked(sideTipHash string) error {
 	node, ok := c.sideBlocks[sideTipHash]
-	if !ok || c.tip == nil || node.height <= c.tip.Height {
+	if !ok || c.tip == nil {
+		return nil
+	}
+	activeWork, err := c.chainworkForHashLocked(c.tip.Hash)
+	if err != nil {
+		return err
+	}
+	if node.chainwork == nil || node.chainwork.Cmp(activeWork) <= 0 {
 		return nil
 	}
 
@@ -1141,6 +1343,75 @@ func (c *Chain) Params() chaincfg.Params {
 	return c.params
 }
 
+func (c *Chain) TipChainwork() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.tip == nil || c.tip.Hash == "" {
+		return "0"
+	}
+	if w, ok := c.workByHash[c.tip.Hash]; ok && w != nil {
+		return w.Text(10)
+	}
+	return ""
+}
+
+func (c *Chain) TxIndexEnabled() bool {
+	if idx, ok := c.store.(txIndexStore); ok {
+		return idx.TxIndexEnabled()
+	}
+	return false
+}
+
+func (c *Chain) AddressIndexEnabled() bool {
+	if idx, ok := c.store.(addressIndexStore); ok {
+		return idx.AddressIndexEnabled()
+	}
+	return false
+}
+
+func (c *Chain) LookupTransactionByIndex(txid string) (*wire.MsgTx, *BlockIndex, int, error) {
+	idxStore, ok := c.store.(txIndexStore)
+	if !ok || !idxStore.TxIndexEnabled() {
+		return nil, nil, -1, os.ErrNotExist
+	}
+	rec, err := idxStore.LookupTxIndex(txid)
+	if err != nil {
+		return nil, nil, -1, err
+	}
+	block, idx, err := c.store.LoadBlock(rec.BlockHash)
+	if err != nil {
+		return nil, nil, -1, err
+	}
+	if rec.TxPosition < 0 || rec.TxPosition >= len(block.Transactions) {
+		return nil, nil, -1, os.ErrNotExist
+	}
+	return block.Transactions[rec.TxPosition], idx, rec.TxPosition, nil
+}
+
+func (c *Chain) AddressTxIDs(address string) ([]string, error) {
+	idxStore, ok := c.store.(addressIndexStore)
+	if !ok || !idxStore.AddressIndexEnabled() {
+		return nil, os.ErrNotExist
+	}
+	return idxStore.AddressTxIDs(address)
+}
+
+func (c *Chain) AddressUTXOs(address string) ([]AddressIndexUTXO, error) {
+	idxStore, ok := c.store.(addressIndexStore)
+	if !ok || !idxStore.AddressIndexEnabled() {
+		return nil, os.ErrNotExist
+	}
+	return idxStore.AddressUTXOs(address)
+}
+
+func (c *Chain) AddressBalance(address string) (int64, int64, error) {
+	idxStore, ok := c.store.(addressIndexStore)
+	if !ok || !idxStore.AddressIndexEnabled() {
+		return 0, 0, os.ErrNotExist
+	}
+	return idxStore.AddressBalance(address)
+}
+
 func (c *Chain) OrphanCount() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -1187,12 +1458,18 @@ type StorageHealth struct {
 	BestBlockReadable     bool   `json:"bestblock_readable"`
 	HeightIndexReadable   bool   `json:"height_index_readable"`
 	HeightIndexMatchesTip bool   `json:"height_index_matches_tip"`
+	ChainworkReadable     bool   `json:"chainwork_readable"`
+	ChainworkAtTip        string `json:"chainwork_at_tip,omitempty"`
 	UTXOStatsReadable     bool   `json:"utxo_stats_readable"`
 	Error                 string `json:"error,omitempty"`
 }
 
 type heightIndexRepairer interface {
 	RepairHeightIndex() error
+}
+
+type fullIndexRepairer interface {
+	RepairIndexes() error
 }
 
 func (c *Chain) StorageHealth() StorageHealth {
@@ -1217,6 +1494,25 @@ func (c *Chain) StorageHealth() StorageHealth {
 	if idx, err := c.store.LoadIndexByHeight(tip.Height); err == nil && idx != nil {
 		h.HeightIndexReadable = true
 		h.HeightIndexMatchesTip = idx.Hash == tip.Hash
+		if work, ok := parseChainwork(idx.ChainWork); ok {
+			h.ChainworkReadable = true
+			h.ChainworkAtTip = work.Text(10)
+		} else {
+			total := big.NewInt(0)
+			ok := true
+			for height := int32(0); height <= tip.Height; height++ {
+				hidx, err := c.store.LoadIndexByHeight(height)
+				if err != nil {
+					ok = false
+					break
+				}
+				total = new(big.Int).Add(total, consensus.WorkForBits(hidx.Bits))
+			}
+			if ok {
+				h.ChainworkReadable = true
+				h.ChainworkAtTip = total.Text(10)
+			}
+		}
 		if !h.HeightIndexMatchesTip {
 			h.OK = false
 			if h.Error == "" {
@@ -1237,22 +1533,32 @@ func (c *Chain) StorageHealth() StorageHealth {
 			h.Error = err.Error()
 		}
 	}
-	if !h.BestBlockReadable || !h.HeightIndexReadable || !h.HeightIndexMatchesTip || !h.UTXOStatsReadable {
+	if !h.BestBlockReadable || !h.HeightIndexReadable || !h.HeightIndexMatchesTip || !h.UTXOStatsReadable || !h.ChainworkReadable {
 		h.OK = false
 	}
 	return h
 }
 
 func (c *Chain) ReindexActiveChain() (map[string]any, error) {
-	c.mu.RLock()
+	c.mu.Lock()
 	tip := c.tip
-	c.mu.RUnlock()
 
-	if repairer, ok := c.store.(heightIndexRepairer); ok {
+	if repairer, ok := c.store.(fullIndexRepairer); ok {
+		if err := repairer.RepairIndexes(); err != nil {
+			c.mu.Unlock()
+			return nil, err
+		}
+	} else if repairer, ok := c.store.(heightIndexRepairer); ok {
 		if err := repairer.RepairHeightIndex(); err != nil {
+			c.mu.Unlock()
 			return nil, err
 		}
 	}
+	if err := c.rebuildActiveChainworkLocked(); err != nil {
+		c.mu.Unlock()
+		return nil, err
+	}
+	c.mu.Unlock()
 
 	health := c.StorageHealth()
 	result := map[string]any{
@@ -1260,7 +1566,9 @@ func (c *Chain) ReindexActiveChain() (map[string]any, error) {
 		"tip_height":      health.TipHeight,
 		"tip_hash":        health.TipHash,
 		"height_index_ok": health.HeightIndexReadable && health.HeightIndexMatchesTip,
-		"note":            "active-chain height index rebuilt from stored tip",
+		"chainwork_ok":    health.ChainworkReadable,
+		"chainwork":       health.ChainworkAtTip,
+		"note":            "active-chain indexes rebuilt from stored tip",
 	}
 	if tip != nil {
 		result["active_tip_height_before"] = tip.Height

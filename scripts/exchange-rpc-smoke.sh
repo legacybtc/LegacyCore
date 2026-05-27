@@ -8,10 +8,10 @@ RPCPORT="${3:-19556}"
 run_cli() {
   local args=()
   if [[ -n "$DATADIR" ]]; then
-    args+=("-datadir=$DATADIR")
+    args+=("-datadir" "$DATADIR")
   fi
   if [[ -n "$RPCPORT" ]]; then
-    args+=("-rpcport=$RPCPORT")
+    args+=("-rpcport" "$RPCPORT")
   fi
   args+=("$@")
   echo "[exchange-smoke] $CLI ${args[*]}"

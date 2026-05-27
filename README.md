@@ -179,8 +179,8 @@ Smoke scripts:
 
 Important:
 
-- Address search/index RPCs are planned and are not faked.
-- Dedicated txindex/addressindex foundations are still staged work.
+- Address search/index RPCs are real only when `addressindex=1`; otherwise RPC returns a clear disabled error.
+- `txindex=1` enables on-disk tx lookup; when disabled, `getrawtransaction` falls back to active-chain + mempool scan.
 
 ## Seed Operator / Monitoring
 
@@ -206,9 +206,9 @@ legacycoin-cli doctor
 
 ## Known Limitations
 
-- Active fork-choice remains height-driven; explicit cumulative-chainwork winner selection is staged work.
-- Dedicated txindex and addressindex are not yet fully implemented.
-- Address search APIs are intentionally not exposed until address index support is real.
+- Fork choice now prefers the valid branch with greatest cumulative chainwork.
+- `txindex` and `addressindex` are optional and off by default; enable in config for explorer/exchange style workloads.
+- Address index RPCs require `addressindex=1` and return explicit disabled errors when unavailable.
 - macOS and Linux ARM64 packaging is experimental and environment-dependent.
 - External pool certification is pending third-party production validation.
 

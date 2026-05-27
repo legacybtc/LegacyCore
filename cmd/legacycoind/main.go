@@ -112,6 +112,9 @@ RPC:
   gettxout
   gettxoutsetinfo
   getrawtransaction
+  getaddresstxids
+  getaddressutxos
+  getaddressbalance
   gettransaction
   decoderawtransaction
   getnewaddress
@@ -424,9 +427,13 @@ func runReindex() {
 		os.Exit(2)
 	}
 	store := storage.NewFileStore(config.DefaultDataDir())
-	if err := store.RepairHeightIndex(); err != nil {
+	indexCfg, err := config.LoadIndexConfig(config.DefaultConfigPath())
+	if err == nil {
+		store.SetIndexOptions(indexCfg.TxIndex, indexCfg.AddressIndex)
+	}
+	if err := store.RepairIndexes(); err != nil {
 		fmt.Fprintf(os.Stderr, "reindex failed: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("reindex complete: active-chain height index repaired from current tip")
+	fmt.Println("reindex complete: active-chain indexes repaired from current tip")
 }

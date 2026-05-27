@@ -76,7 +76,7 @@ Never expose RPC port `19556` publicly.
 - JSON-RPC: `{"jsonrpc":"2.0","id":"rawtx","method":"getrawtransaction","params":["<txid>",true]}`
 - Example response: verbose object with `txid`, `hex`, `vin`, `vout`, optional `blockhash`, `confirmations`, and mempool status.
 - Error cases: invalid txid, transaction not found, storage read failure.
-- Integration notes: there is no full txindex yet; lookup is best for wallet/mempool/recent chain paths and explorer use remains limited until txindex lands.
+- Integration notes: with `txindex=1`, confirmed lookup uses on-disk txindex; otherwise lookup falls back to active-chain + mempool scan.
 
 ### sendrawtransaction
 
@@ -324,7 +324,7 @@ Never expose RPC port `19556` publicly.
 
 - Status: implemented.
 - Purpose: report storage health for best block, height index, and UTXO stats.
-- Parameters: optional boolean `repair` (`true` triggers active-chain height-index rebuild).
+- Parameters: optional boolean `repair` (`true` triggers active-chain index repair/rebuild).
 - CLI: `.\legacycoin-cli.exe checkstorage` or `.\legacycoin-cli.exe checkstorage true`
 - JSON-RPC: `{"jsonrpc":"2.0","id":"storage","method":"checkstorage","params":[true]}`
 - Example response: `{"ok":true,"tip_height":123,"tip_hash":"...","height_index_matches_tip":true}`
@@ -333,14 +333,14 @@ Never expose RPC port `19556` publicly.
 ### reindex
 
 - Status: implemented.
-- Purpose: rebuild active-chain height index from current tip linkage and return post-repair health.
+- Purpose: rebuild active-chain indexes from current tip linkage and return post-repair health.
 - Parameters: none.
 - CLI: `.\legacycoin-cli.exe reindex`
 - JSON-RPC: `{"jsonrpc":"2.0","id":"reindex","method":"reindex","params":[]}`
-- Integration notes: this is a safe active-chain index repair path; full txindex/addressindex rebuild flows remain planned.
+- Integration notes: this rebuild path includes active height/hash index repair and optional txindex/addressindex rebuild when enabled in config.
 
 ## Compatibility Notes
 
-- Address search by address is not implemented because no address index exists yet.
-- Full historical txindex remains staged; explorer integrations should scan blocks by height and maintain their own index for now.
-- Fork choice remains height-based for side-chain activation; explicit cumulative-chainwork fork choice is staged consensus-safe infrastructure work.
+- Address index RPCs (`getaddresstxids`, `getaddressutxos`, `getaddressbalance`) require `addressindex=1`.
+- With `txindex=1`, `getrawtransaction` uses on-disk txindex for confirmed transactions.
+- Fork choice prefers the valid chain with greatest cumulative chainwork.

@@ -81,6 +81,11 @@ type RuntimePortOverride struct {
 	RPC uint16
 }
 
+type IndexConfig struct {
+	TxIndex      bool
+	AddressIndex bool
+}
+
 type LaunchPolicy struct {
 	AllowScriptCoveragePending bool
 }
@@ -298,6 +303,17 @@ func LoadRuntimePortOverride(path string) (RuntimePortOverride, error) {
 	}
 	out.RPC = parsePort(kv["rpcport"])
 	return out, nil
+}
+
+func LoadIndexConfig(path string) (IndexConfig, error) {
+	kv, err := loadConfigKV(path)
+	if err != nil {
+		return IndexConfig{}, err
+	}
+	return IndexConfig{
+		TxIndex:      boolFromKV(kv, "txindex", false),
+		AddressIndex: boolFromKV(kv, "addressindex", false),
+	}, nil
 }
 
 func LoadLaunchPolicy(path string) (LaunchPolicy, error) {

@@ -101,4 +101,4 @@ Use `bits` and `target` from `getblocktemplate`. DGW/difficulty rules are consen
 
 - External stratum pool testing is still required.
 - No built-in stratum server.
-- Full txindex/address index is planned, not implemented.
+- `txindex` / `addressindex` are optional (`txindex=1`, `addressindex=1`) and rebuildable via `reindex`.

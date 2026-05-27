@@ -21,7 +21,7 @@ $p2pB = 29657
 $rpcB = 29658
 
 function Invoke-CLI([string]$dataDir, [int]$rpcPort, [string[]]$CommandArgs) {
-    $output = & $CLI "-datadir=$dataDir" "-rpcport=$rpcPort" @CommandArgs
+    $output = & $CLI "-datadir" "$dataDir" "-rpcport" "$rpcPort" @CommandArgs
     $text = ($output | Out-String).Trim()
     if ($LASTEXITCODE -ne 0) {
         throw "CLI command failed (rpc=$rpcPort datadir=$dataDir): $($CommandArgs -join ' ')"
@@ -55,12 +55,12 @@ function Wait-Rpc([string]$dataDir, [int]$rpcPort, [int]$timeoutSec = 45) {
     throw "RPC port $rpcPort did not become ready"
 }
 
-$procA = Start-Process -FilePath $Daemon -ArgumentList @("run", "-datadir=$nodeA", "-p2pport=$p2pA", "-rpcport=$rpcA", "-seed-peers") -PassThru -WindowStyle Hidden
+$procA = Start-Process -FilePath $Daemon -ArgumentList @("run", "-datadir", $nodeA, "-p2pport", "$p2pA", "-rpcport", "$rpcA", "-seed-peers") -PassThru -WindowStyle Hidden
 try {
     Wait-Rpc -dataDir $nodeA -rpcPort $rpcA
     Write-Host "[multinode-smoke] nodeA ready (rpc=$rpcA, p2p=$p2pA)"
 
-    $procB = Start-Process -FilePath $Daemon -ArgumentList @("run", "-datadir=$nodeB", "-p2pport=$p2pB", "-rpcport=$rpcB", "-connect=127.0.0.1:$p2pA") -PassThru -WindowStyle Hidden
+    $procB = Start-Process -FilePath $Daemon -ArgumentList @("run", "-datadir", $nodeB, "-p2pport", "$p2pB", "-rpcport", "$rpcB", "-connect", "127.0.0.1:$p2pA") -PassThru -WindowStyle Hidden
     try {
         Wait-Rpc -dataDir $nodeB -rpcPort $rpcB
         Write-Host "[multinode-smoke] nodeB ready (rpc=$rpcB, p2p=$p2pB)"
@@ -97,7 +97,7 @@ try {
         Start-Sleep -Seconds 2
         if (-not $procB.HasExited) { Stop-Process -Id $procB.Id -Force }
 
-        $procB = Start-Process -FilePath $Daemon -ArgumentList @("run", "-datadir=$nodeB", "-p2pport=$p2pB", "-rpcport=$rpcB", "-connect=127.0.0.1:$p2pA") -PassThru -WindowStyle Hidden
+        $procB = Start-Process -FilePath $Daemon -ArgumentList @("run", "-datadir", $nodeB, "-p2pport", "$p2pB", "-rpcport", "$rpcB", "-connect", "127.0.0.1:$p2pA") -PassThru -WindowStyle Hidden
         Wait-Rpc -dataDir $nodeB -rpcPort $rpcB
 
         $reconnDeadline = (Get-Date).AddSeconds(30)

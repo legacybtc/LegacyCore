@@ -20,7 +20,7 @@ run_cli() {
   local port="$2"
   shift
   shift
-  "$CLI" "-datadir=$datadir" "-rpcport=$port" "$@"
+  "$CLI" "-datadir" "$datadir" "-rpcport" "$port" "$@"
 }
 
 wait_rpc() {
@@ -36,7 +36,7 @@ wait_rpc() {
   return 1
 }
 
-"$DAEMON" run "-datadir=$NODE_A" "-p2pport=$P2P_A" "-rpcport=$RPC_A" -seed-peers >/tmp/legacy-nodeA.log 2>&1 &
+"$DAEMON" run "-datadir" "$NODE_A" "-p2pport" "$P2P_A" "-rpcport" "$RPC_A" -seed-peers >/tmp/legacy-nodeA.log 2>&1 &
 PID_A=$!
 cleanup() {
   run_cli "$NODE_B" "$RPC_B" stop >/dev/null 2>&1 || true
@@ -50,7 +50,7 @@ trap cleanup EXIT
 wait_rpc "$NODE_A" "$RPC_A"
 echo "[multinode-smoke] nodeA ready (rpc=$RPC_A, p2p=$P2P_A)"
 
-"$DAEMON" run "-datadir=$NODE_B" "-p2pport=$P2P_B" "-rpcport=$RPC_B" "-connect=127.0.0.1:$P2P_A" >/tmp/legacy-nodeB.log 2>&1 &
+"$DAEMON" run "-datadir" "$NODE_B" "-p2pport" "$P2P_B" "-rpcport" "$RPC_B" "-connect" "127.0.0.1:$P2P_A" >/tmp/legacy-nodeB.log 2>&1 &
 PID_B=$!
 wait_rpc "$NODE_B" "$RPC_B"
 echo "[multinode-smoke] nodeB ready (rpc=$RPC_B, p2p=$P2P_B)"
@@ -88,7 +88,7 @@ echo "[multinode-smoke] initial sync aligned: height=$HEIGHT_A hash=$HASH_A"
 run_cli "$NODE_B" "$RPC_B" stop >/dev/null
 sleep 2
 kill "$PID_B" >/dev/null 2>&1 || true
-"$DAEMON" run "-datadir=$NODE_B" "-p2pport=$P2P_B" "-rpcport=$RPC_B" "-connect=127.0.0.1:$P2P_A" >/tmp/legacy-nodeB.log 2>&1 &
+"$DAEMON" run "-datadir" "$NODE_B" "-p2pport" "$P2P_B" "-rpcport" "$RPC_B" "-connect" "127.0.0.1:$P2P_A" >/tmp/legacy-nodeB.log 2>&1 &
 PID_B=$!
 wait_rpc "$NODE_B" "$RPC_B"
 

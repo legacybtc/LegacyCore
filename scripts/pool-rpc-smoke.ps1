@@ -9,10 +9,12 @@ $ErrorActionPreference = "Stop"
 function Invoke-LegacyCli([string[]]$CommandArgs) {
     $cmd = @()
     if ($DataDir -ne "") {
-        $cmd += "-datadir=$DataDir"
+        $cmd += "-datadir"
+        $cmd += $DataDir
     }
     if ($RpcPort -gt 0) {
-        $cmd += "-rpcport=$RpcPort"
+        $cmd += "-rpcport"
+        $cmd += "$RpcPort"
     }
     $cmd += $CommandArgs
     Write-Host "[pool-smoke] $CLI $($cmd -join ' ')"

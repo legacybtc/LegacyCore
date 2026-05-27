@@ -1,6 +1,6 @@
 # Explorer Integration
 
-Status: block and transaction primitives are `partially implemented`; full explorer indexing is `planned`.
+Status: block and transaction primitives are implemented; optional native `txindex` and `addressindex` can be enabled for richer explorer lookup.
 
 ## Supported Queries
 
@@ -65,12 +65,11 @@ Explorers should compute issued supply from height and subsidy schedule, then cl
 
 ## Local Explorer Limitations
 
-- Address search: `planned`, not implemented.
-- Address balance by address: `planned`, requires address index.
-- Full txindex: `planned`.
-- Rich token explorer views: `partial`, depends on token RPC coverage and index design.
+- Address RPCs require `addressindex=1`; disabled nodes return explicit unavailable errors.
+- `getrawtransaction` historical coverage is strongest with `txindex=1`.
+- Rich token explorer views remain `partial`, depending on token RPC coverage and index design.
 
-Do not fake address search by scanning only the wallet or mempool. A public explorer must build its own index from blocks until native address index exists.
+Do not fake address search by scanning only the wallet or mempool. Use `addressindex=1` or maintain an explorer-side index.
 
 ## Recommended Explorer Architecture
 
@@ -81,9 +80,8 @@ Do not fake address search by scanning only the wallet or mempool. A public expl
 5. On reorg, roll back to the last common height and rescan.
 6. Poll `getrawmempool` for pending transactions.
 
-## Planned Native Indexes
+## Native Indexes
 
-- `txindex`: planned command/config name.
-- `addressindex`: planned command/config name.
-- Wallet activity history expansion: planned.
-- Reindex command: planned as `reindex` or `repairindexes`.
+- `txindex=1`: enables txid-to-block lookup.
+- `addressindex=1`: enables `getaddresstxids`, `getaddressutxos`, and `getaddressbalance`.
+- `reindex`: rebuilds active-chain indexes, including optional tx/address indexes when enabled.

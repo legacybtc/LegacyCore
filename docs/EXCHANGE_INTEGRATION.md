@@ -74,11 +74,11 @@ Use active-chain height scanning:
 ./legacycoin-cli getblock <hash>
 ```
 
-Address index is `not implemented`, so exchanges should maintain their own deposit index by scanning blocks and mempool transactions.
+Address index is optional (`addressindex=1`). If disabled, exchanges should maintain their own deposit index by scanning blocks and mempool transactions.
 
 ## Transaction Lookup
 
-- `getrawtransaction`: `partial`; best for wallet/mempool/recent lookup, full txindex planned.
+- `getrawtransaction`: `implemented`; with `txindex=1` it supports on-disk historical lookup, otherwise it falls back to active-chain + mempool scan.
 - `gettransaction`: `implemented` for wallet-related transactions.
 - `gettxout`: `implemented` for UTXO checks.
 

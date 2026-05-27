@@ -36,7 +36,8 @@ legacycoind reindex
 
 Current reindex scope:
 
-- rebuilds active-chain height index from stored tip and block linkage
+- rebuilds active-chain height and hash indexes from stored tip and block linkage
+- rebuilds optional txindex/addressindex when enabled
 - verifies post-repair storage health
 
 ## Safety Notes

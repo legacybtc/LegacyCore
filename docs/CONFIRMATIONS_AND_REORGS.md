@@ -61,6 +61,5 @@ Current and added tests cover:
 
 Still planned:
 
-- explicit cumulative chainwork fork choice
 - broader mempool reorg reinsertion policy
 - wallet coinbase maturity reorg scenarios

@@ -9,10 +9,12 @@ $ErrorActionPreference = "Stop"
 function Invoke-LegacyCli([string[]]$CommandArgs) {
     $cmd = @()
     if ($DataDir -ne "") {
-        $cmd += "-datadir=$DataDir"
+        $cmd += "-datadir"
+        $cmd += $DataDir
     }
     if ($RpcPort -gt 0) {
-        $cmd += "-rpcport=$RpcPort"
+        $cmd += "-rpcport"
+        $cmd += "$RpcPort"
     }
     $cmd += $CommandArgs
     Write-Host "[explorer-smoke] $CLI $($cmd -join ' ')"
@@ -23,8 +25,8 @@ function Invoke-LegacyCli([string[]]$CommandArgs) {
 }
 
 $baseFlags = @()
-if ($DataDir -ne "") { $baseFlags += "-datadir=$DataDir" }
-if ($RpcPort -gt 0) { $baseFlags += "-rpcport=$RpcPort" }
+if ($DataDir -ne "") { $baseFlags += "-datadir"; $baseFlags += $DataDir }
+if ($RpcPort -gt 0) { $baseFlags += "-rpcport"; $baseFlags += "$RpcPort" }
 
 $bestHashRaw = & $CLI @baseFlags @("getbestblockhash")
 if ($LASTEXITCODE -ne 0) {
