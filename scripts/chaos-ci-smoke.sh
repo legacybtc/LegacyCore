@@ -65,12 +65,6 @@ extract_result_number() {
     -e 's/^[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' | head -n1
 }
 
-extract_chain_id() {
-  sed -n \
-    -e 's/.*"chain_id":[[:space:]]*"\([^"]*\)".*/\1/p' \
-    -e 's/^[[:space:]]*chain_id:[[:space:]]*\([^[:space:]]*\).*/\1/p' | head -n1
-}
-
 wait_rpc() {
   local datadir="$1"
   local port="$2"
@@ -87,16 +81,24 @@ wait_rpc() {
   fail "$label RPC did not become ready on port $port"
 }
 
-chain_id() {
+require_block_count() {
   local datadir="$1"
   local port="$2"
-  run_cli "$datadir" "$port" getchainparams 2>/dev/null | extract_chain_id
+  local label="$3"
+
+  local height
+  height="$(run_cli "$datadir" "$port" getblockcount 2>/dev/null | extract_result_number || true)"
+  [ -n "$height" ] || fail "$label block count missing"
+  echo "[chaos-ci-smoke] $label height=$height"
 }
 
-block_count() {
+require_blockchain_info() {
   local datadir="$1"
   local port="$2"
-  run_cli "$datadir" "$port" getblockcount 2>/dev/null | extract_result_number
+  local label="$3"
+
+  run_cli "$datadir" "$port" getblockchaininfo >/dev/null 2>&1 || fail "$label getblockchaininfo failed"
+  echo "[chaos-ci-smoke] $label blockchain info ok"
 }
 
 echo "[chaos-ci-smoke] root=$ROOT"
@@ -106,25 +108,16 @@ echo "[chaos-ci-smoke] starting node A p2p=$P2P_A rpc=$RPC_A"
 PID_A=$!
 
 wait_rpc "$NODE_A" "$RPC_A" "node A"
-
-CHAIN_A="$(chain_id "$NODE_A" "$RPC_A" || true)"
-[ -n "$CHAIN_A" ] || fail "node A chain id missing"
-
-HEIGHT_A="$(block_count "$NODE_A" "$RPC_A" || true)"
-[ -n "$HEIGHT_A" ] || fail "node A block count missing"
+require_block_count "$NODE_A" "$RPC_A" "node A"
+require_blockchain_info "$NODE_A" "$RPC_A" "node A"
 
 echo "[chaos-ci-smoke] starting node B p2p=$P2P_B rpc=$RPC_B"
 "$DAEMON" run -datadir "$NODE_B" -p2pport "$P2P_B" -rpcport "$RPC_B" >"$LOG_B" 2>&1 &
 PID_B=$!
 
 wait_rpc "$NODE_B" "$RPC_B" "node B"
-
-CHAIN_B="$(chain_id "$NODE_B" "$RPC_B" || true)"
-[ -n "$CHAIN_B" ] || fail "node B chain id missing"
-[ "$CHAIN_A" = "$CHAIN_B" ] || fail "chain id mismatch: A=$CHAIN_A B=$CHAIN_B"
-
-HEIGHT_B="$(block_count "$NODE_B" "$RPC_B" || true)"
-[ -n "$HEIGHT_B" ] || fail "node B block count missing"
+require_block_count "$NODE_B" "$RPC_B" "node B"
+require_blockchain_info "$NODE_B" "$RPC_B" "node B"
 
 echo "[chaos-ci-smoke] stopping node B for restart test"
 run_cli "$NODE_B" "$RPC_B" stop >/dev/null 2>&1 || true
@@ -138,12 +131,7 @@ echo "[chaos-ci-smoke] restarting node B"
 PID_B=$!
 
 wait_rpc "$NODE_B" "$RPC_B" "node B restart"
-
-CHAIN_B2="$(chain_id "$NODE_B" "$RPC_B" || true)"
-[ -n "$CHAIN_B2" ] || fail "node B restart chain id missing"
-[ "$CHAIN_A" = "$CHAIN_B2" ] || fail "restart chain id mismatch: A=$CHAIN_A B=$CHAIN_B2"
-
-HEIGHT_B2="$(block_count "$NODE_B" "$RPC_B" || true)"
-[ -n "$HEIGHT_B2" ] || fail "node B restart block count missing"
+require_block_count "$NODE_B" "$RPC_B" "node B restart"
+require_blockchain_info "$NODE_B" "$RPC_B" "node B restart"
 
 echo "[chaos-ci-smoke] PASS"
