@@ -536,16 +536,23 @@ func AppendConfigLine(path, key, value string) error {
 }
 
 type PeerPolicy struct {
-	ChainID             string
-	EnforceChainID      bool
-	PeerSafety          bool
-	MaxInboundPeers     int
-	BanThreshold        int
-	TemporaryBanSeconds int
-	ReconnectBackoff    bool
-	NoSeedNode          bool
-	SeedPeers           bool
-	ConnectOnly         []string
+	ChainID                 string
+	EnforceChainID          bool
+	PeerSafety              bool
+	MaxInboundPeers         int
+	MaxPerIP                int
+	MaxPerSubnet            int
+	BanThreshold            int
+	TemporaryBanSeconds     int
+	ReconnectBackoff        bool
+	ReconnectBackoffSeconds int
+	PeerRateLimit           int
+	GlobalRateLimit         int
+	MisbehaviorDecaySeconds int
+	StaleTimeoutSeconds     int
+	NoSeedNode              bool
+	SeedPeers               bool
+	ConnectOnly             []string
 }
 
 func LoadPeerPolicy(path string) (PeerPolicy, error) {
@@ -554,12 +561,19 @@ func LoadPeerPolicy(path string) (PeerPolicy, error) {
 		return PeerPolicy{}, err
 	}
 	p := PeerPolicy{
-		PeerSafety:          true,
-		MaxInboundPeers:     64,
-		BanThreshold:        100,
-		TemporaryBanSeconds: 3600,
-		ReconnectBackoff:    true,
-		SeedPeers:           true,
+		PeerSafety:              true,
+		MaxInboundPeers:         64,
+		MaxPerIP:                8,
+		MaxPerSubnet:            32,
+		BanThreshold:            100,
+		TemporaryBanSeconds:     3600,
+		ReconnectBackoff:        true,
+		ReconnectBackoffSeconds: 15,
+		PeerRateLimit:           250,
+		GlobalRateLimit:         3000,
+		MisbehaviorDecaySeconds: 300,
+		StaleTimeoutSeconds:     900,
+		SeedPeers:               true,
 	}
 	if vals := kv["chain_id"]; len(vals) > 0 {
 		p.ChainID = strings.TrimSpace(vals[len(vals)-1])
@@ -579,7 +593,35 @@ func LoadPeerPolicy(path string) (PeerPolicy, error) {
 			p.MaxInboundPeers = n
 		}
 	}
+	if vals := kv["peer_max_inbound"]; len(vals) > 0 {
+		var n int
+		_, _ = fmt.Sscanf(strings.TrimSpace(vals[len(vals)-1]), "%d", &n)
+		if n > 0 {
+			p.MaxInboundPeers = n
+		}
+	}
+	if vals := kv["peer_max_per_ip"]; len(vals) > 0 {
+		var n int
+		_, _ = fmt.Sscanf(strings.TrimSpace(vals[len(vals)-1]), "%d", &n)
+		if n > 0 {
+			p.MaxPerIP = n
+		}
+	}
+	if vals := kv["peer_max_per_subnet"]; len(vals) > 0 {
+		var n int
+		_, _ = fmt.Sscanf(strings.TrimSpace(vals[len(vals)-1]), "%d", &n)
+		if n > 0 {
+			p.MaxPerSubnet = n
+		}
+	}
 	if vals := kv["peer_ban_threshold"]; len(vals) > 0 {
+		var n int
+		_, _ = fmt.Sscanf(strings.TrimSpace(vals[len(vals)-1]), "%d", &n)
+		if n > 0 {
+			p.BanThreshold = n
+		}
+	}
+	if vals := kv["peer_ban_score_threshold"]; len(vals) > 0 {
 		var n int
 		_, _ = fmt.Sscanf(strings.TrimSpace(vals[len(vals)-1]), "%d", &n)
 		if n > 0 {
@@ -591,6 +633,48 @@ func LoadPeerPolicy(path string) (PeerPolicy, error) {
 		_, _ = fmt.Sscanf(strings.TrimSpace(vals[len(vals)-1]), "%d", &n)
 		if n > 0 {
 			p.TemporaryBanSeconds = n
+		}
+	}
+	if vals := kv["peer_ban_minutes"]; len(vals) > 0 {
+		var n int
+		_, _ = fmt.Sscanf(strings.TrimSpace(vals[len(vals)-1]), "%d", &n)
+		if n > 0 {
+			p.TemporaryBanSeconds = n * 60
+		}
+	}
+	if vals := kv["peer_rate_limit"]; len(vals) > 0 {
+		var n int
+		_, _ = fmt.Sscanf(strings.TrimSpace(vals[len(vals)-1]), "%d", &n)
+		if n > 0 {
+			p.PeerRateLimit = n
+		}
+	}
+	if vals := kv["peer_global_rate_limit"]; len(vals) > 0 {
+		var n int
+		_, _ = fmt.Sscanf(strings.TrimSpace(vals[len(vals)-1]), "%d", &n)
+		if n > 0 {
+			p.GlobalRateLimit = n
+		}
+	}
+	if vals := kv["peer_reconnect_backoff_seconds"]; len(vals) > 0 {
+		var n int
+		_, _ = fmt.Sscanf(strings.TrimSpace(vals[len(vals)-1]), "%d", &n)
+		if n >= 0 {
+			p.ReconnectBackoffSeconds = n
+		}
+	}
+	if vals := kv["peer_misbehavior_decay_seconds"]; len(vals) > 0 {
+		var n int
+		_, _ = fmt.Sscanf(strings.TrimSpace(vals[len(vals)-1]), "%d", &n)
+		if n > 0 {
+			p.MisbehaviorDecaySeconds = n
+		}
+	}
+	if vals := kv["peer_stale_timeout_seconds"]; len(vals) > 0 {
+		var n int
+		_, _ = fmt.Sscanf(strings.TrimSpace(vals[len(vals)-1]), "%d", &n)
+		if n > 0 {
+			p.StaleTimeoutSeconds = n
 		}
 	}
 	for _, addr := range kv["connect"] {

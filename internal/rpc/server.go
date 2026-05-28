@@ -113,6 +113,7 @@ var rpcHelpEntries = []rpcHelpEntry{
 	{Method: "getaddresstxids", Usage: "getaddresstxids <address>", Category: "index", Description: "Return confirmed txids for an indexed address (requires addressindex=1)."},
 	{Method: "getaddressutxos", Usage: "getaddressutxos <address>", Category: "index", Description: "Return address UTXOs from address index (requires addressindex=1)."},
 	{Method: "getaddressbalance", Usage: "getaddressbalance <address>", Category: "index", Description: "Return confirmed/total base-unit balance for indexed address (requires addressindex=1)."},
+	{Method: "getaddresshistory", Usage: "getaddresshistory <address>", Category: "index", Description: "Return receive/spend history foundation for indexed address outputs (requires addressindex=1)."},
 	{Method: "decoderawtransaction", Usage: "decoderawtransaction <hex>", Category: "tx", Description: "Decode raw transaction hex."},
 	{Method: "sendrawtransaction", Usage: "sendrawtransaction <hex>", Category: "tx", Description: "Submit a raw transaction to mempool."},
 	{Method: "gettxout", Usage: "gettxout <txid> <vout>", Category: "tx", Description: "Return UTXO entry for an outpoint."},
@@ -142,6 +143,7 @@ var rpcHelpEntries = []rpcHelpEntry{
 	{Method: "getaddressinfo", Usage: "getaddressinfo <address>", Category: "wallet", Description: "Return detailed address metadata."},
 	{Method: "backupwallet", Usage: "backupwallet <path>", Category: "wallet", Description: "Export wallet backup file."},
 	{Method: "walletpassphrase", Usage: "walletpassphrase <passphrase> <timeout>", Category: "wallet", Description: "Unlock encrypted wallet for signing."},
+	{Method: "walletpassphrasechange", Usage: "walletpassphrasechange <oldpassphrase> <newpassphrase>", Category: "wallet", Description: "Change encrypted wallet passphrase."},
 	{Method: "walletlock", Usage: "walletlock", Category: "wallet", Description: "Lock encrypted wallet."},
 	{Method: "addnode", Usage: "addnode <addr>", Category: "network", Description: "Connect to a peer."},
 	{Method: "disconnectnode", Usage: "disconnectnode <addr>", Category: "network", Description: "Disconnect a matching peer."},
@@ -1214,6 +1216,95 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 			"received":                    amountFloat(total),
 			"addressindex_confirmed_only": true,
 		}, nil
+	case "getaddresshistory":
+		var args []string
+		if err := json.Unmarshal(params, &args); err != nil || len(args) != 1 {
+			return nil, &rpcError{Code: -32602, Message: "getaddresshistory expects address"}
+		}
+		if !s.chain.AddressIndexEnabled() {
+			return nil, &rpcError{Code: -5, Message: "addressindex disabled (set addressindex=1 and reindex)"}
+		}
+		history, err := s.chain.AddressHistory(args[0])
+		if err != nil {
+			return nil, &rpcError{Code: -5, Message: err.Error()}
+		}
+		txids, err := s.chain.AddressTxIDs(args[0])
+		if err != nil {
+			return nil, &rpcError{Code: -5, Message: err.Error()}
+		}
+		tipHeight := int32(-1)
+		if tip := s.chain.Tip(); tip != nil {
+			tipHeight = tip.Height
+		}
+		type historyEntry struct {
+			TxID          string `json:"txid"`
+			Height        int32  `json:"height"`
+			Confirmations int32  `json:"confirmations"`
+			Type          string `json:"type"`
+			Amount        string `json:"amount"`
+			AmountBase    int64  `json:"amount_base_units"`
+			Vout          uint32 `json:"vout,omitempty"`
+			Spent         bool   `json:"spent,omitempty"`
+			SpendTxID     string `json:"spend_txid,omitempty"`
+			SpendHeight   int32  `json:"spend_height,omitempty"`
+			Coinbase      bool   `json:"coinbase"`
+			Mature        bool   `json:"mature"`
+			RelatedTxID   string `json:"related_txid,omitempty"`
+		}
+		entries := make([]historyEntry, 0, len(history)*2)
+		for _, rec := range history {
+			confs := int32(0)
+			if tipHeight >= rec.Height && rec.Height >= 0 {
+				confs = tipHeight - rec.Height + 1
+			}
+			mature := !rec.Coinbase || confs >= int32(chaincfg.CoinbaseMaturity)
+			entries = append(entries, historyEntry{
+				TxID:          rec.TxID,
+				Height:        rec.Height,
+				Confirmations: confs,
+				Type:          "receive",
+				Amount:        amount.FormatWithTicker(rec.Value),
+				AmountBase:    rec.Value,
+				Vout:          rec.Vout,
+				Spent:         rec.Spent,
+				SpendTxID:     rec.SpendTxID,
+				SpendHeight:   rec.SpendHeight,
+				Coinbase:      rec.Coinbase,
+				Mature:        mature,
+			})
+			if rec.Spent && rec.SpendTxID != "" {
+				spendConfs := int32(0)
+				if tipHeight >= rec.SpendHeight && rec.SpendHeight > 0 {
+					spendConfs = tipHeight - rec.SpendHeight + 1
+				}
+				entries = append(entries, historyEntry{
+					TxID:          rec.SpendTxID,
+					Height:        rec.SpendHeight,
+					Confirmations: spendConfs,
+					Type:          "spend",
+					Amount:        amount.FormatWithTicker(-rec.Value),
+					AmountBase:    -rec.Value,
+					Coinbase:      rec.Coinbase,
+					Mature:        mature,
+					RelatedTxID:   rec.TxID,
+				})
+			}
+		}
+		sort.Slice(entries, func(i, j int) bool {
+			if entries[i].Height == entries[j].Height {
+				if entries[i].TxID == entries[j].TxID {
+					return entries[i].Type < entries[j].Type
+				}
+				return entries[i].TxID < entries[j].TxID
+			}
+			return entries[i].Height < entries[j].Height
+		})
+		return map[string]any{
+			"address":           args[0],
+			"txids":             txids,
+			"entries":           entries,
+			"addressindex_mode": "utxo-plus-history-foundation",
+		}, nil
 	case "gettransaction":
 		var args []json.RawMessage
 		if err := json.Unmarshal(params, &args); err != nil || len(args) < 1 {
@@ -1801,6 +1892,28 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 			return nil, &rpcError{Code: -14, Message: err.Error()}
 		}
 		return "wallet unlocked", nil
+	case "walletpassphrasechange":
+		var args []json.RawMessage
+		if err := json.Unmarshal(params, &args); err != nil || len(args) != 2 {
+			return nil, &rpcError{Code: -32602, Message: "walletpassphrasechange expects oldpassphrase and newpassphrase"}
+		}
+		oldPass, err := parsePassphraseArg(args[0])
+		if err != nil {
+			return nil, &rpcError{Code: -32602, Message: "bad old passphrase"}
+		}
+		newPass, err := parsePassphraseArg(args[1])
+		if err != nil {
+			return nil, &rpcError{Code: -32602, Message: "bad new passphrase"}
+		}
+		if err := s.wallet.ChangePassphrase(oldPass, newPass); err != nil {
+			switch {
+			case strings.Contains(err.Error(), "not encrypted"):
+				return nil, &rpcError{Code: -15, Message: err.Error()}
+			default:
+				return nil, &rpcError{Code: -14, Message: err.Error()}
+			}
+		}
+		return "wallet passphrase updated", nil
 	case "walletlock":
 		if err := s.wallet.Lock(); err != nil {
 			return nil, &rpcError{Code: -13, Message: err.Error()}
@@ -2381,9 +2494,15 @@ func (s *Server) getBlockchainInfo() map[string]any {
 		},
 		"addressindex": map[string]any{
 			"enabled": s.chain.AddressIndexEnabled(),
+			"mode": func() string {
+				if s.chain.AddressIndexEnabled() {
+					return "utxo-plus-history-foundation"
+				}
+				return "disabled"
+			}(),
 			"note": func() string {
 				if s.chain.AddressIndexEnabled() {
-					return "address RPCs are enabled (getaddresstxids/getaddressutxos/getaddressbalance)"
+					return "address RPCs are enabled (getaddresstxids/getaddressutxos/getaddressbalance/getaddresshistory)"
 				}
 				return "addressindex disabled; no fake address search is exposed"
 			}(),

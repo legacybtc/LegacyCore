@@ -53,6 +53,19 @@ type addressUTXORecord struct {
 	PkScriptHex string `json:"script_pub_key"`
 }
 
+type addressHistoryRecord struct {
+	Address     string `json:"address"`
+	TxID        string `json:"txid"`
+	Vout        uint32 `json:"vout"`
+	Value       int64  `json:"value"`
+	Height      int32  `json:"height"`
+	Coinbase    bool   `json:"coinbase"`
+	PkScriptHex string `json:"script_pub_key"`
+	Spent       bool   `json:"spent"`
+	SpendTxID   string `json:"spend_txid,omitempty"`
+	SpendHeight int32  `json:"spend_height,omitempty"`
+}
+
 func NewFileStore(dir string) *FileStore {
 	return &FileStore{dir: dir}
 }
@@ -146,6 +159,15 @@ func (s *FileStore) addressUTXODir(address string) string {
 func (s *FileStore) addressUTXOPath(address string, key string) string {
 	key = strings.ReplaceAll(strings.ToLower(strings.TrimSpace(key)), ":", "_")
 	return filepath.Join(s.addressUTXODir(address), key+".json")
+}
+
+func (s *FileStore) addressHistoryDir(address string) string {
+	return filepath.Join(s.addressDir(address), "history")
+}
+
+func (s *FileStore) addressHistoryPath(address string, key string) string {
+	key = strings.ReplaceAll(strings.ToLower(strings.TrimSpace(key)), ":", "_")
+	return filepath.Join(s.addressHistoryDir(address), key+".json")
 }
 
 func (s *FileStore) LoadTip() (*blockchain.BlockIndex, error) {
@@ -705,7 +727,60 @@ func (s *FileStore) removeAddressUTXO(address string, txid string, vout uint32) 
 	return nil
 }
 
+func (s *FileStore) readAddressHistory(address string, txid string, vout uint32) (addressHistoryRecord, error) {
+	var rec addressHistoryRecord
+	b, err := os.ReadFile(s.addressHistoryPath(address, blockchain.OutPointKey(txid, vout)))
+	if err != nil {
+		return rec, err
+	}
+	if err := json.Unmarshal(b, &rec); err != nil {
+		return rec, err
+	}
+	return rec, nil
+}
+
+func (s *FileStore) writeAddressHistory(rec addressHistoryRecord) error {
+	if err := os.MkdirAll(s.addressHistoryDir(rec.Address), 0700); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(rec, "", "  ")
+	if err != nil {
+		return err
+	}
+	return fsutil.WriteFileAtomic(s.addressHistoryPath(rec.Address, blockchain.OutPointKey(rec.TxID, rec.Vout)), b, 0600)
+}
+
+func (s *FileStore) markAddressOutputSpent(address string, txid string, vout uint32, spendTxID string, spendHeight int32) error {
+	rec, err := s.readAddressHistory(address, txid, vout)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	rec.Spent = true
+	rec.SpendTxID = strings.ToLower(strings.TrimSpace(spendTxID))
+	rec.SpendHeight = spendHeight
+	return s.writeAddressHistory(rec)
+}
+
 func (s *FileStore) indexAddressConnect(block *wire.MsgBlock, idx blockchain.BlockIndex, adds []blockchain.UTXOEntry, spent []blockchain.UTXOEntry) error {
+	spentByOutpoint := make(map[string]string)
+	for _, tx := range block.Transactions {
+		txHash, err := tx.TxHash()
+		if err != nil {
+			continue
+		}
+		isCoinbase := len(tx.TxIn) > 0 && tx.TxIn[0].PreviousOutPoint.Hash == (chainhash.Hash{}) && tx.TxIn[0].PreviousOutPoint.Index == ^uint32(0)
+		if isCoinbase {
+			continue
+		}
+		for _, in := range tx.TxIn {
+			key := blockchain.OutPointKey(in.PreviousOutPoint.Hash.String(), in.PreviousOutPoint.Index)
+			spentByOutpoint[key] = txHash.String()
+		}
+	}
+
 	for _, sp := range spent {
 		raw, err := hex.DecodeString(sp.PkScript)
 		if err != nil {
@@ -716,6 +791,16 @@ func (s *FileStore) indexAddressConnect(block *wire.MsgBlock, idx blockchain.Blo
 			continue
 		}
 		if err := s.removeAddressUTXO(addr, sp.TxID, sp.Vout); err != nil {
+			return err
+		}
+		outpoint := blockchain.OutPointKey(sp.TxID, sp.Vout)
+		spendTxID := spentByOutpoint[outpoint]
+		if spendTxID != "" {
+			if err := s.addAddressTxID(addr, spendTxID); err != nil {
+				return err
+			}
+		}
+		if err := s.markAddressOutputSpent(addr, sp.TxID, sp.Vout, spendTxID, idx.Height); err != nil {
 			return err
 		}
 	}
@@ -741,6 +826,21 @@ func (s *FileStore) indexAddressConnect(block *wire.MsgBlock, idx blockchain.Blo
 			PkScriptHex: add.PkScript,
 		}
 		if err := s.writeAddressUTXO(rec); err != nil {
+			return err
+		}
+		h := addressHistoryRecord{
+			Address:     addr,
+			TxID:        add.TxID,
+			Vout:        add.Vout,
+			Value:       add.Value,
+			Height:      add.Height,
+			Coinbase:    add.Coinbase,
+			PkScriptHex: add.PkScript,
+			Spent:       false,
+			SpendTxID:   "",
+			SpendHeight: 0,
+		}
+		if err := s.writeAddressHistory(h); err != nil {
 			return err
 		}
 	}
@@ -917,6 +1017,55 @@ func (s *FileStore) AddressBalance(address string) (int64, int64, error) {
 		confirmed += u.Value
 	}
 	return confirmed, total, nil
+}
+
+func (s *FileStore) AddressHistory(address string) ([]blockchain.AddressHistoryEntry, error) {
+	if !s.addressIndexEnabled {
+		return nil, os.ErrNotExist
+	}
+	entries, err := os.ReadDir(s.addressHistoryDir(address))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []blockchain.AddressHistoryEntry{}, nil
+		}
+		return nil, err
+	}
+	out := make([]blockchain.AddressHistoryEntry, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(s.addressHistoryDir(address), entry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		var rec addressHistoryRecord
+		if err := json.Unmarshal(b, &rec); err != nil {
+			return nil, err
+		}
+		out = append(out, blockchain.AddressHistoryEntry{
+			Address:     rec.Address,
+			TxID:        rec.TxID,
+			Vout:        rec.Vout,
+			Value:       rec.Value,
+			Height:      rec.Height,
+			Coinbase:    rec.Coinbase,
+			PkScriptHex: rec.PkScriptHex,
+			Spent:       rec.Spent,
+			SpendTxID:   rec.SpendTxID,
+			SpendHeight: rec.SpendHeight,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Height == out[j].Height {
+			if out[i].TxID == out[j].TxID {
+				return out[i].Vout < out[j].Vout
+			}
+			return out[i].TxID < out[j].TxID
+		}
+		return out[i].Height < out[j].Height
+	})
+	return out, nil
 }
 
 func (s *FileStore) loadIndex(path string) (*blockchain.BlockIndex, error) {

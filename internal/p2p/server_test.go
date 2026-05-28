@@ -668,3 +668,70 @@ func newP2PTestServerWithGenesis(t *testing.T) (*Server, chaincfg.Params, func()
 		}
 	}
 }
+
+func TestAllowPeerMessageRateLimit(t *testing.T) {
+	s := New(chaincfg.MainNet, nil, nil, log.New(io.Discard, "", 0))
+	s.SetRuntimePolicy(64, 60, true, 15, 2, 8, 32, 100, 60, 900)
+	p := &peer{remote: "127.0.0.1:19555"}
+	if !s.allowPeerMessage(p, wire.CommandPing) {
+		t.Fatalf("first message should pass rate limiter")
+	}
+	if !s.allowPeerMessage(p, wire.CommandPing) {
+		t.Fatalf("second message should pass rate limiter")
+	}
+	if s.allowPeerMessage(p, wire.CommandPing) {
+		t.Fatalf("third message should be rate-limited")
+	}
+}
+
+func TestPeerBanExpiresAfterConfiguredDuration(t *testing.T) {
+	s := New(chaincfg.MainNet, nil, nil, log.New(io.Discard, "", 0))
+	s.SetPeerPolicy(chaincfg.MainNet.ChainID, false, true, 5, true, nil)
+	s.SetRuntimePolicy(64, 1, true, 15, 1000, 8, 32, 10_000, 60, 900)
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	p := &peer{conn: serverConn, remote: "127.0.0.1:20555"}
+	s.scorePeer(p, 5, "test ban")
+	if !s.isBanned("127.0.0.1:9999") {
+		t.Fatalf("expected peer host to be temporarily banned")
+	}
+	time.Sleep(1200 * time.Millisecond)
+	if s.isBanned("127.0.0.1:9999") {
+		t.Fatalf("expected temporary ban to expire")
+	}
+}
+
+func TestDuplicateInboundHostDetected(t *testing.T) {
+	s := New(chaincfg.MainNet, nil, nil, log.New(io.Discard, "", 0))
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+	p := &peer{conn: serverConn, remote: "127.0.0.1:20001", lastSeen: time.Now(), lastPong: time.Now()}
+	s.registerPeer(p)
+	if !s.duplicateInboundHost("127.0.0.1") {
+		t.Fatalf("expected duplicate inbound host detection")
+	}
+	if s.duplicateInboundHost("198.51.100.9") {
+		t.Fatalf("unexpected duplicate detection for different host")
+	}
+}
+
+func TestMisbehaviorScoreDecay(t *testing.T) {
+	s := New(chaincfg.MainNet, nil, nil, log.New(io.Discard, "", 0))
+	s.SetPeerPolicy(chaincfg.MainNet.ChainID, false, true, 100, true, nil)
+	s.SetRuntimePolicy(64, 60, true, 15, 1000, 8, 32, 10_000, 1, 900)
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+	defer clientConn.Close()
+	p := &peer{conn: serverConn, remote: "127.0.0.1:20002"}
+	s.scorePeer(p, 5, "initial")
+	time.Sleep(1100 * time.Millisecond)
+	s.scorePeer(p, 1, "second")
+	p.lastMu.Lock()
+	score := p.banScore
+	p.lastMu.Unlock()
+	if score >= 6 {
+		t.Fatalf("expected score decay before second penalty, got %d", score)
+	}
+}

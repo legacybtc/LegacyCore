@@ -14,6 +14,7 @@ on:
       - main
       - v1.0.2-mainnet-candidate
       - v1.0.3-integration-hardening
+  workflow_dispatch:
 
 jobs:
   source-cleanliness:
@@ -93,6 +94,14 @@ jobs:
           ./legacycoind params | tee params.txt
           grep -q "yespower backend: cgo-c-reference" params.txt
           pwsh ./scripts/verify-mainnet-identity.ps1 -Binary ./legacycoind
+
+      - name: Chaos CI smoke (Linux)
+        if: runner.os == 'Linux'
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          chmod +x ./scripts/chaos-ci-smoke.sh
+          ./scripts/chaos-ci-smoke.sh ./legacycoind ./legacycoin-cli ./.tmp-chaos-ci
 
       - name: Test and vet (Windows)
         if: runner.os == 'Windows'
