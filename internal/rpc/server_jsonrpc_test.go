@@ -128,3 +128,51 @@ func TestRPCHelpEntriesIncludeAddressHistoryAndPassphraseChange(t *testing.T) {
 		t.Fatalf("rpc help table missing walletpassphrasechange")
 	}
 }
+
+func TestJSONRPCGetAddressHistoryParamValidation(t *testing.T) {
+	s := &Server{}
+
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "missing address",
+			body: `{"jsonrpc":"1.0","id":"hist","method":"getaddresshistory","params":[]}`,
+		},
+		{
+			name: "bad limit",
+			body: `{"jsonrpc":"1.0","id":"hist","method":"getaddresshistory","params":["Lbad",-1,0,"all","all"]}`,
+		},
+		{
+			name: "bad offset",
+			body: `{"jsonrpc":"1.0","id":"hist","method":"getaddresshistory","params":["Lbad",10,-1,"all","all"]}`,
+		},
+		{
+			name: "bad type filter",
+			body: `{"jsonrpc":"1.0","id":"hist","method":"getaddresshistory","params":["Lbad",10,0,"badtype","all"]}`,
+		},
+		{
+			name: "bad confirmations filter",
+			body: `{"jsonrpc":"1.0","id":"hist","method":"getaddresshistory","params":["Lbad",10,0,"all","badconf"]}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(tc.body))
+			s.handle(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			var resp response
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if resp.Error == nil || resp.Error.Code != -32602 {
+				t.Fatalf("expected invalid params, got %+v", resp.Error)
+			}
+		})
+	}
+}
