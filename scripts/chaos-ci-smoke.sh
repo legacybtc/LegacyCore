@@ -1,19 +1,25 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 DAEMON="${1:-./legacycoind}"
 CLI="${2:-./legacycoin-cli}"
-ROOT="${3:-/tmp/legacy-chaos-ci-smoke}"
+ROOT="${3:-${TMPDIR:-/tmp}/legacy-chaos-ci-smoke-$$}"
 
 NODE_A="$ROOT/nodeA"
 NODE_B="$ROOT/nodeB"
-rm -rf "$ROOT"
-mkdir -p "$NODE_A" "$NODE_B"
 
-P2P_A=29755
-RPC_A=29756
-P2P_B=29757
-RPC_B=29758
+P2P_A="${P2P_A:-29755}"
+RPC_A="${RPC_A:-29756}"
+P2P_B="${P2P_B:-29757}"
+RPC_B="${RPC_B:-29758}"
+
+LOG_A="$ROOT/legacy-chaosA.log"
+LOG_B="$ROOT/legacy-chaosB.log"
+
+PID_A=""
+PID_B=""
+
+mkdir -p "$NODE_A" "$NODE_B"
 
 run_cli() {
   local datadir="$1"
@@ -22,75 +28,140 @@ run_cli() {
   "$CLI" -datadir "$datadir" -rpcport "$port" "$@"
 }
 
+dump_logs() {
+  echo "===== node A log =====" >&2
+  [ -f "$LOG_A" ] && tail -n 200 "$LOG_A" >&2 || true
+  echo "===== node B log =====" >&2
+  [ -f "$LOG_B" ] && tail -n 200 "$LOG_B" >&2 || true
+}
+
+cleanup() {
+  set +e
+  if [ -n "${PID_B:-}" ]; then
+    run_cli "$NODE_B" "$RPC_B" stop >/dev/null 2>&1 || true
+    sleep 1
+    kill "$PID_B" >/dev/null 2>&1 || true
+    wait "$PID_B" >/dev/null 2>&1 || true
+  fi
+  if [ -n "${PID_A:-}" ]; then
+    run_cli "$NODE_A" "$RPC_A" stop >/dev/null 2>&1 || true
+    sleep 1
+    kill "$PID_A" >/dev/null 2>&1 || true
+    wait "$PID_A" >/dev/null 2>&1 || true
+  fi
+  rm -rf "$ROOT" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+fail() {
+  echo "[chaos-ci-smoke] FAIL: $*" >&2
+  dump_logs
+  exit 1
+}
+
+extract_result_number() {
+  sed -n \
+    -e 's/.*"result":[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+    -e 's/^[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' | head -n1
+}
+
+extract_chain_id() {
+  sed -n \
+    -e 's/.*"chain_id":[[:space:]]*"\([^"]*\)".*/\1/p' \
+    -e 's/^[[:space:]]*chain_id:[[:space:]]*\([^[:space:]]*\).*/\1/p' | head -n1
+}
+
 wait_rpc() {
   local datadir="$1"
   local port="$2"
-  for _ in $(seq 1 60); do
+  local label="$3"
+
+  for _ in $(seq 1 90); do
     if run_cli "$datadir" "$port" getblockcount >/dev/null 2>&1; then
+      echo "[chaos-ci-smoke] $label RPC ready"
       return 0
     fi
     sleep 1
   done
-  return 1
+
+  fail "$label RPC did not become ready on port $port"
 }
 
-extract_result_number() {
-  sed -n 's/.*"result":[[:space:]]*\([0-9][0-9]*\).*/\1/p' | head -n1
+connection_count() {
+  local datadir="$1"
+  local port="$2"
+  run_cli "$datadir" "$port" getconnectioncount 2>/dev/null | extract_result_number
 }
 
-extract_chain_id() {
-  sed -n 's/.*"chain_id":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1
+chain_id() {
+  local datadir="$1"
+  local port="$2"
+  run_cli "$datadir" "$port" getchainparams 2>/dev/null | extract_chain_id
 }
 
-"$DAEMON" run -datadir "$NODE_A" -p2pport "$P2P_A" -rpcport "$RPC_A" -seed-peers >/tmp/legacy-chaosA.log 2>&1 &
+echo "[chaos-ci-smoke] root=$ROOT"
+echo "[chaos-ci-smoke] starting node A p2p=$P2P_A rpc=$RPC_A"
+
+# Keep CI smoke deterministic: no external seed peers.
+"$DAEMON" run -datadir "$NODE_A" -p2pport "$P2P_A" -rpcport "$RPC_A" >"$LOG_A" 2>&1 &
 PID_A=$!
-cleanup() {
-  run_cli "$NODE_B" "$RPC_B" stop >/dev/null 2>&1 || true
-  run_cli "$NODE_A" "$RPC_A" stop >/dev/null 2>&1 || true
-  sleep 2
-  kill "$PID_B" >/dev/null 2>&1 || true
-  kill "$PID_A" >/dev/null 2>&1 || true
-}
-trap cleanup EXIT
 
-wait_rpc "$NODE_A" "$RPC_A"
+wait_rpc "$NODE_A" "$RPC_A" "node A"
 
-"$DAEMON" run -datadir "$NODE_B" -p2pport "$P2P_B" -rpcport "$RPC_B" -connect "127.0.0.1:$P2P_A" >/tmp/legacy-chaosB.log 2>&1 &
+echo "[chaos-ci-smoke] starting node B p2p=$P2P_B rpc=$RPC_B"
+"$DAEMON" run -datadir "$NODE_B" -p2pport "$P2P_B" -rpcport "$RPC_B" -connect "127.0.0.1:$P2P_A" >"$LOG_B" 2>&1 &
 PID_B=$!
-wait_rpc "$NODE_B" "$RPC_B"
+
+wait_rpc "$NODE_B" "$RPC_B" "node B"
 
 connected=0
-for _ in $(seq 1 30); do
-  CONN_A="$(run_cli "$NODE_A" "$RPC_A" getconnectioncount | extract_result_number)"
-  CONN_B="$(run_cli "$NODE_B" "$RPC_B" getconnectioncount | extract_result_number)"
-  if [ "${CONN_A:-0}" -gt 0 ] && [ "${CONN_B:-0}" -gt 0 ]; then
+for _ in $(seq 1 60); do
+  CONN_A="$(connection_count "$NODE_A" "$RPC_A" || true)"
+  CONN_B="$(connection_count "$NODE_B" "$RPC_B" || true)"
+  CONN_A="${CONN_A:-0}"
+  CONN_B="${CONN_B:-0}"
+
+  if [ "$CONN_A" -gt 0 ] && [ "$CONN_B" -gt 0 ]; then
     connected=1
     break
   fi
   sleep 1
 done
-[ "$connected" -eq 1 ] || { echo "[chaos-ci-smoke] connect failed" >&2; exit 1; }
 
-CHAIN_A="$(run_cli "$NODE_A" "$RPC_A" getchainparams | extract_chain_id)"
-CHAIN_B="$(run_cli "$NODE_B" "$RPC_B" getchainparams | extract_chain_id)"
-[ -n "$CHAIN_A" ] && [ "$CHAIN_A" = "$CHAIN_B" ] || { echo "[chaos-ci-smoke] chain id mismatch" >&2; exit 1; }
+[ "$connected" -eq 1 ] || fail "connect failed"
 
+CHAIN_A="$(chain_id "$NODE_A" "$RPC_A" || true)"
+CHAIN_B="$(chain_id "$NODE_B" "$RPC_B" || true)"
+
+[ -n "$CHAIN_A" ] || fail "node A chain id missing"
+[ -n "$CHAIN_B" ] || fail "node B chain id missing"
+[ "$CHAIN_A" = "$CHAIN_B" ] || fail "chain id mismatch: A=$CHAIN_A B=$CHAIN_B"
+
+echo "[chaos-ci-smoke] stopping node B for restart test"
 run_cli "$NODE_B" "$RPC_B" stop >/dev/null 2>&1 || true
 sleep 2
 kill "$PID_B" >/dev/null 2>&1 || true
-"$DAEMON" run -datadir "$NODE_B" -p2pport "$P2P_B" -rpcport "$RPC_B" -connect "127.0.0.1:$P2P_A" >/tmp/legacy-chaosB.log 2>&1 &
+wait "$PID_B" >/dev/null 2>&1 || true
+PID_B=""
+
+echo "[chaos-ci-smoke] restarting node B"
+"$DAEMON" run -datadir "$NODE_B" -p2pport "$P2P_B" -rpcport "$RPC_B" -connect "127.0.0.1:$P2P_A" >"$LOG_B" 2>&1 &
 PID_B=$!
-wait_rpc "$NODE_B" "$RPC_B"
+
+wait_rpc "$NODE_B" "$RPC_B" "node B restart"
 
 reconnected=0
-for _ in $(seq 1 30); do
-  CONN_B="$(run_cli "$NODE_B" "$RPC_B" getconnectioncount | extract_result_number)"
-  if [ "${CONN_B:-0}" -gt 0 ]; then
+for _ in $(seq 1 60); do
+  CONN_B="$(connection_count "$NODE_B" "$RPC_B" || true)"
+  CONN_B="${CONN_B:-0}"
+
+  if [ "$CONN_B" -gt 0 ]; then
     reconnected=1
     break
   fi
   sleep 1
 done
-[ "$reconnected" -eq 1 ] || { echo "[chaos-ci-smoke] reconnect failed" >&2; exit 1; }
+
+[ "$reconnected" -eq 1 ] || fail "reconnect failed"
 
 echo "[chaos-ci-smoke] PASS"
