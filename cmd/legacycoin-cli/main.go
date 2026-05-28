@@ -230,6 +230,11 @@ func buildParams(method string, args []string) ([]any, string, error) {
 			return nil, method, fmt.Errorf("walletpassphrase timeout must be a positive integer")
 		}
 		return []any{args[0], timeout}, method, nil
+	case "walletpassphrasechange":
+		if len(args) != 2 {
+			return nil, method, fmt.Errorf("walletpassphrasechange expects <oldpassphrase> <newpassphrase>")
+		}
+		return []any{args[0], args[1]}, method, nil
 	case "sendtoaddress":
 		return buildSendToAddress(method, args)
 	case "sendfromaddress":

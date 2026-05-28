@@ -179,3 +179,19 @@ func TestBuildParamsSendManyWithoutAccountArg(t *testing.T) {
 		t.Fatalf("account=%v", params[0])
 	}
 }
+
+func TestBuildParamsWalletPassphraseChange(t *testing.T) {
+	params, method, err := buildParams("walletpassphrasechange", []string{"old-pass", "new-pass"})
+	if err != nil {
+		t.Fatalf("buildParams walletpassphrasechange: %v", err)
+	}
+	if method != "walletpassphrasechange" {
+		t.Fatalf("method=%s", method)
+	}
+	if len(params) != 2 {
+		t.Fatalf("params len=%d", len(params))
+	}
+	if params[0] != "old-pass" || params[1] != "new-pass" {
+		t.Fatalf("params=%v", params)
+	}
+}

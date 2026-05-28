@@ -177,3 +177,57 @@ interop_rpc_port=19556
 		t.Fatalf("interop ports unexpected: %+v", ref)
 	}
 }
+
+func TestLoadPeerPolicyAliases(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "legacycoin.conf")
+	content := `
+peer_ban_score_threshold=140
+peer_ban_minutes=17
+peer_max_inbound=71
+peer_rate_limit=333
+peer_reconnect_backoff_seconds=21
+peer_max_per_ip=4
+peer_max_per_subnet=12
+peer_global_rate_limit=900
+peer_misbehavior_decay_seconds=44
+peer_stale_timeout_seconds=500
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	pol, err := LoadPeerPolicy(path)
+	if err != nil {
+		t.Fatalf("LoadPeerPolicy: %v", err)
+	}
+	if pol.BanThreshold != 140 {
+		t.Fatalf("BanThreshold=%d want 140", pol.BanThreshold)
+	}
+	if pol.TemporaryBanSeconds != 17*60 {
+		t.Fatalf("TemporaryBanSeconds=%d want %d", pol.TemporaryBanSeconds, 17*60)
+	}
+	if pol.MaxInboundPeers != 71 {
+		t.Fatalf("MaxInboundPeers=%d want 71", pol.MaxInboundPeers)
+	}
+	if pol.PeerRateLimit != 333 {
+		t.Fatalf("PeerRateLimit=%d want 333", pol.PeerRateLimit)
+	}
+	if pol.ReconnectBackoffSeconds != 21 {
+		t.Fatalf("ReconnectBackoffSeconds=%d want 21", pol.ReconnectBackoffSeconds)
+	}
+	if pol.MaxPerIP != 4 {
+		t.Fatalf("MaxPerIP=%d want 4", pol.MaxPerIP)
+	}
+	if pol.MaxPerSubnet != 12 {
+		t.Fatalf("MaxPerSubnet=%d want 12", pol.MaxPerSubnet)
+	}
+	if pol.GlobalRateLimit != 900 {
+		t.Fatalf("GlobalRateLimit=%d want 900", pol.GlobalRateLimit)
+	}
+	if pol.MisbehaviorDecaySeconds != 44 {
+		t.Fatalf("MisbehaviorDecaySeconds=%d want 44", pol.MisbehaviorDecaySeconds)
+	}
+	if pol.StaleTimeoutSeconds != 500 {
+		t.Fatalf("StaleTimeoutSeconds=%d want 500", pol.StaleTimeoutSeconds)
+	}
+}

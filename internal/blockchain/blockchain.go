@@ -91,6 +91,19 @@ type AddressIndexUTXO struct {
 	PkScriptHex string `json:"script_pub_key"`
 }
 
+type AddressHistoryEntry struct {
+	Address     string `json:"address"`
+	TxID        string `json:"txid"`
+	Vout        uint32 `json:"vout"`
+	Value       int64  `json:"value"`
+	Height      int32  `json:"height"`
+	Coinbase    bool   `json:"coinbase"`
+	PkScriptHex string `json:"script_pub_key"`
+	Spent       bool   `json:"spent"`
+	SpendTxID   string `json:"spend_txid,omitempty"`
+	SpendHeight int32  `json:"spend_height,omitempty"`
+}
+
 type txIndexStore interface {
 	TxIndexEnabled() bool
 	LookupTxIndex(txid string) (*TxIndexRecord, error)
@@ -101,6 +114,7 @@ type addressIndexStore interface {
 	AddressTxIDs(address string) ([]string, error)
 	AddressUTXOs(address string) ([]AddressIndexUTXO, error)
 	AddressBalance(address string) (int64, int64, error)
+	AddressHistory(address string) ([]AddressHistoryEntry, error)
 }
 
 type UTXOEntry struct {
@@ -1410,6 +1424,14 @@ func (c *Chain) AddressBalance(address string) (int64, int64, error) {
 		return 0, 0, os.ErrNotExist
 	}
 	return idxStore.AddressBalance(address)
+}
+
+func (c *Chain) AddressHistory(address string) ([]AddressHistoryEntry, error) {
+	idxStore, ok := c.store.(addressIndexStore)
+	if !ok || !idxStore.AddressIndexEnabled() {
+		return nil, os.ErrNotExist
+	}
+	return idxStore.AddressHistory(address)
 }
 
 func (c *Chain) OrphanCount() int {

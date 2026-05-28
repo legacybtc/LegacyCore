@@ -115,6 +115,7 @@ RPC:
   getaddresstxids
   getaddressutxos
   getaddressbalance
+  getaddresshistory
   gettransaction
   decoderawtransaction
   getnewaddress
@@ -142,6 +143,7 @@ RPC:
   frombaseunits
   encryptwallet
   walletpassphrase
+  walletpassphrasechange
   walletlock
   getwalletinfo
   sethdseed

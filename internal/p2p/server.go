@@ -50,35 +50,41 @@ const (
 )
 
 type peer struct {
-	conn             net.Conn
-	outbound         bool
-	remote           string
-	writeMu          sync.Mutex
-	lastMu           sync.Mutex
-	connected        time.Time
-	lastSeen         time.Time
-	lastPong         time.Time
-	lastHeightUpdate time.Time
-	lastPing         time.Time
-	lastRTT          time.Duration
-	minRTT           time.Duration
-	missedPongs      int
-	version          int32
-	subver           string
-	height           int32
-	chainID          string
-	banScore         int
-	bytesSent        uint64
-	bytesRecv        uint64
-	lastSyncRequest  time.Time
-	lastSyncError    string
-	lastBlockReject  string
-	lastLocatorTip   string
-	lastBlockHash    string
-	lastBlockPrev    string
-	lastBlockHeight  int32
-	lastBestUpdate   string
-	lastBlockReason  string
+	conn              net.Conn
+	outbound          bool
+	remote            string
+	writeMu           sync.Mutex
+	lastMu            sync.Mutex
+	connected         time.Time
+	lastSeen          time.Time
+	lastPong          time.Time
+	lastHeightUpdate  time.Time
+	lastPing          time.Time
+	lastRTT           time.Duration
+	minRTT            time.Duration
+	missedPongs       int
+	version           int32
+	subver            string
+	height            int32
+	chainID           string
+	banScore          int
+	bytesSent         uint64
+	bytesRecv         uint64
+	lastSyncRequest   time.Time
+	lastSyncError     string
+	lastBlockReject   string
+	lastLocatorTip    string
+	lastBlockHash     string
+	lastBlockPrev     string
+	lastBlockHeight   int32
+	lastBestUpdate    string
+	lastBlockReason   string
+	lastPenaltyAt     time.Time
+	lastPenaltyReason string
+	rateLimited       bool
+	bannedUntil       time.Time
+	rateWindowStart   time.Time
+	rateWindowCount   int
 }
 
 type Server struct {
@@ -98,44 +104,59 @@ type Server struct {
 	enforceChainID    bool
 	peerSafety        bool
 	banThreshold      int
+	banDuration       time.Duration
+	maxInboundPeers   int
+	maxPerIP          int
+	maxPerSubnet      int
+	peerRateLimit     int
+	globalRateLimit   int
+	reconnectBackoff  bool
+	reconnectEvery    time.Duration
+	misbehaviorDecay  time.Duration
+	peerRateWindow    time.Duration
+	globalRateWindow  time.Duration
 	connectOnly       map[string]struct{}
 	seedPeers         bool
 
-	listener      net.Listener
-	peers         atomic.Int32
-	outbound      atomic.Int32
-	knownMu       sync.Mutex
-	knownOutbound map[string]struct{}
-	bootstrap     []string
-	listenHost    string
-	activeMu      sync.Mutex
-	activePeers   map[*peer]struct{}
-	bannedMu      sync.Mutex
-	bannedUntil   map[string]time.Time
-	seedMu        sync.Mutex
-	seedFailures  map[string]int
-	seedLastLog   map[string]time.Time
-	rejectMu      sync.Mutex
-	rejectCounts  map[string]int
-	rejectLastLog map[string]time.Time
-	healthMu      sync.Mutex
-	startedAt     time.Time
-	p2pRunning    bool
-	syncRunning   bool
-	watchdogRun   bool
-	lastSyncBeat  time.Time
-	lastSyncReq   time.Time
-	lastPeerMsg   time.Time
-	lastHeaderMsg time.Time
-	lastBlockMsg  time.Time
-	lastGetHeader time.Time
-	lastGetBlock  time.Time
-	lastWatchdog  time.Time
-	lastWdAction  string
-	wdReconnects  int64
-	lastBlockConn time.Time
-	lastHeightChg time.Time
-	wg            sync.WaitGroup
+	listener            net.Listener
+	peers               atomic.Int32
+	outbound            atomic.Int32
+	knownMu             sync.Mutex
+	knownOutbound       map[string]struct{}
+	bootstrap           []string
+	listenHost          string
+	activeMu            sync.Mutex
+	activePeers         map[*peer]struct{}
+	bannedMu            sync.Mutex
+	bannedUntil         map[string]time.Time
+	seedMu              sync.Mutex
+	seedFailures        map[string]int
+	seedLastLog         map[string]time.Time
+	rejectMu            sync.Mutex
+	rejectCounts        map[string]int
+	rejectLastLog       map[string]time.Time
+	outboundLastAttempt map[string]time.Time
+	rateMu              sync.Mutex
+	globalWindowStart   time.Time
+	globalWindowCount   int
+	healthMu            sync.Mutex
+	startedAt           time.Time
+	p2pRunning          bool
+	syncRunning         bool
+	watchdogRun         bool
+	lastSyncBeat        time.Time
+	lastSyncReq         time.Time
+	lastPeerMsg         time.Time
+	lastHeaderMsg       time.Time
+	lastBlockMsg        time.Time
+	lastGetHeader       time.Time
+	lastGetBlock        time.Time
+	lastWatchdog        time.Time
+	lastWdAction        string
+	wdReconnects        int64
+	lastBlockConn       time.Time
+	lastHeightChg       time.Time
+	wg                  sync.WaitGroup
 }
 
 func New(params chaincfg.Params, chain *blockchain.Chain, pool *mempool.Pool, logger *log.Logger) *Server {
@@ -143,21 +164,33 @@ func New(params chaincfg.Params, chain *blockchain.Chain, pool *mempool.Pool, lo
 		logger = log.Default()
 	}
 	return &Server{
-		params:        params,
-		chain:         chain,
-		pool:          pool,
-		log:           logger,
-		knownOutbound: make(map[string]struct{}),
-		activePeers:   make(map[*peer]struct{}),
-		bannedUntil:   make(map[string]time.Time),
-		seedFailures:  make(map[string]int),
-		seedLastLog:   make(map[string]time.Time),
-		rejectCounts:  make(map[string]int),
-		rejectLastLog: make(map[string]time.Time),
-		chainID:       params.ChainID,
-		peerSafety:    true,
-		banThreshold:  100,
-		seedPeers:     true,
+		params:              params,
+		chain:               chain,
+		pool:                pool,
+		log:                 logger,
+		knownOutbound:       make(map[string]struct{}),
+		activePeers:         make(map[*peer]struct{}),
+		bannedUntil:         make(map[string]time.Time),
+		seedFailures:        make(map[string]int),
+		seedLastLog:         make(map[string]time.Time),
+		rejectCounts:        make(map[string]int),
+		rejectLastLog:       make(map[string]time.Time),
+		outboundLastAttempt: make(map[string]time.Time),
+		chainID:             params.ChainID,
+		peerSafety:          true,
+		banThreshold:        100,
+		banDuration:         time.Hour,
+		maxInboundPeers:     64,
+		maxPerIP:            8,
+		maxPerSubnet:        32,
+		peerRateLimit:       250,
+		globalRateLimit:     3000,
+		reconnectBackoff:    true,
+		reconnectEvery:      peerReconnectEvery,
+		misbehaviorDecay:    5 * time.Minute,
+		peerRateWindow:      10 * time.Second,
+		globalRateWindow:    10 * time.Second,
+		seedPeers:           true,
 	}
 }
 
@@ -197,6 +230,37 @@ func (s *Server) SetPeerPolicy(chainID string, enforce bool, peerSafety bool, ba
 	}
 }
 
+func (s *Server) SetRuntimePolicy(maxInboundPeers int, temporaryBanSeconds int, reconnectBackoff bool, reconnectBackoffSeconds int, peerRateLimit int, maxPerIP int, maxPerSubnet int, globalRateLimit int, misbehaviorDecaySeconds int, staleTimeoutSeconds int) {
+	if maxInboundPeers > 0 {
+		s.maxInboundPeers = maxInboundPeers
+	}
+	if temporaryBanSeconds > 0 {
+		s.banDuration = time.Duration(temporaryBanSeconds) * time.Second
+	}
+	s.reconnectBackoff = reconnectBackoff
+	if reconnectBackoffSeconds > 0 {
+		s.reconnectEvery = time.Duration(reconnectBackoffSeconds) * time.Second
+	}
+	if peerRateLimit > 0 {
+		s.peerRateLimit = peerRateLimit
+	}
+	if maxPerIP > 0 {
+		s.maxPerIP = maxPerIP
+	}
+	if maxPerSubnet > 0 {
+		s.maxPerSubnet = maxPerSubnet
+	}
+	if globalRateLimit > 0 {
+		s.globalRateLimit = globalRateLimit
+	}
+	if misbehaviorDecaySeconds > 0 {
+		s.misbehaviorDecay = time.Duration(misbehaviorDecaySeconds) * time.Second
+	}
+	if staleTimeoutSeconds >= 10 {
+		peerStaleThreshold = time.Duration(staleTimeoutSeconds) * time.Second
+	}
+}
+
 func (s *Server) SetPrettyLogging(enabled bool, heartbeat bool, compact bool, showLatency bool, showPeerHeight bool, trustedPeerName string, heartbeatSeconds int) {
 	s.pretty = enabled
 	s.heartbeat = heartbeat
@@ -214,6 +278,141 @@ func (s *Server) SetPeerPingInterval(seconds int) {
 		return
 	}
 	s.pingInterval = time.Duration(seconds) * time.Second
+}
+
+func splitHost(addr string) string {
+	host, _, err := net.SplitHostPort(addr)
+	if err == nil && host != "" {
+		return host
+	}
+	return addr
+}
+
+func subnetKey(host string) string {
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return ""
+	}
+	if v4 := ip.To4(); v4 != nil {
+		return fmt.Sprintf("%d.%d.%d.0/24", v4[0], v4[1], v4[2])
+	}
+	return ""
+}
+
+func (s *Server) inboundPeerCount() int {
+	count := 0
+	for _, p := range s.snapshotPeers() {
+		if p.outbound {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
+func (s *Server) duplicateInboundHost(host string) bool {
+	for _, p := range s.snapshotPeers() {
+		if p.outbound {
+			continue
+		}
+		if splitHost(p.remote) == host {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) inboundHostCount(host string) int {
+	n := 0
+	for _, p := range s.snapshotPeers() {
+		if p.outbound {
+			continue
+		}
+		if splitHost(p.remote) == host {
+			n++
+		}
+	}
+	return n
+}
+
+func (s *Server) inboundSubnetCount(subnet string) int {
+	if subnet == "" {
+		return 0
+	}
+	n := 0
+	for _, p := range s.snapshotPeers() {
+		if p.outbound {
+			continue
+		}
+		if subnetKey(splitHost(p.remote)) == subnet {
+			n++
+		}
+	}
+	return n
+}
+
+func (s *Server) allowPeerMessage(p *peer, command string) bool {
+	now := time.Now()
+	window := s.peerRateWindow
+	if window <= 0 {
+		window = 10 * time.Second
+	}
+	allowed := true
+	globalAllowed := true
+	gWindow := s.globalRateWindow
+	if s.globalRateLimit > 0 {
+		if gWindow <= 0 {
+			gWindow = 10 * time.Second
+		}
+		s.rateMu.Lock()
+		if s.globalWindowStart.IsZero() || now.Sub(s.globalWindowStart) >= gWindow {
+			s.globalWindowStart = now
+			s.globalWindowCount = 0
+		}
+		s.globalWindowCount++
+		gCount := s.globalWindowCount
+		s.rateMu.Unlock()
+		if gCount > s.globalRateLimit {
+			globalAllowed = false
+		}
+	}
+	p.lastMu.Lock()
+	if p.rateWindowStart.IsZero() || now.Sub(p.rateWindowStart) >= window {
+		p.rateWindowStart = now
+		p.rateWindowCount = 0
+	}
+	p.rateWindowCount++
+	count := p.rateWindowCount
+	limit := s.peerRateLimit
+	if limit > 0 && count > limit {
+		p.rateLimited = true
+		p.lastPenaltyReason = fmt.Sprintf("peer message rate limit exceeded (%d/%d per %s) cmd=%s", count, limit, window.String(), command)
+		p.lastPenaltyAt = now
+		allowed = false
+	}
+	if !globalAllowed {
+		p.rateLimited = true
+		p.lastPenaltyReason = fmt.Sprintf("global message rate limit exceeded (>%d per %s)", s.globalRateLimit, gWindow.String())
+		p.lastPenaltyAt = now
+		allowed = false
+	}
+	p.lastMu.Unlock()
+	return allowed
+}
+
+func (s *Server) shouldThrottleOutboundDial(addr string) bool {
+	if !s.reconnectBackoff || s.reconnectEvery <= 0 {
+		return false
+	}
+	s.knownMu.Lock()
+	defer s.knownMu.Unlock()
+	now := time.Now()
+	last, ok := s.outboundLastAttempt[addr]
+	if ok && now.Sub(last) < s.reconnectEvery {
+		return true
+	}
+	s.outboundLastAttempt[addr] = now
+	return false
 }
 
 type PeerInfo struct {
@@ -240,6 +439,11 @@ type PeerInfo struct {
 	StartingHeight                   int32   `json:"starting_height"`
 	ChainID                          string  `json:"chain_id"`
 	BanScore                         int     `json:"ban_score"`
+	MisbehaviorScore                 int     `json:"misbehavior_score"`
+	BannedUntil                      int64   `json:"banned_until,omitempty"`
+	RateLimited                      bool    `json:"rate_limited"`
+	LastPenaltyReason                string  `json:"last_penalty_reason,omitempty"`
+	PeerQuality                      string  `json:"peer_quality"`
 	BytesSent                        uint64  `json:"bytes_sent"`
 	BytesRecv                        uint64  `json:"bytes_recv"`
 	ConnectionType                   string  `json:"connection_type"`
@@ -277,6 +481,9 @@ func (s *Server) PeerInfos() []PeerInfo {
 		height := p.height
 		chainID := p.chainID
 		banScore := p.banScore
+		rateLimited := p.rateLimited
+		lastPenaltyReason := p.lastPenaltyReason
+		bannedUntil := p.bannedUntil
 		bytesSent := p.bytesSent
 		bytesRecv := p.bytesRecv
 		lastSyncRequest := p.lastSyncRequest
@@ -304,6 +511,15 @@ func (s *Server) PeerInfos() []PeerInfo {
 		} else if stale {
 			syncState = "stale"
 		}
+		quality := "healthy"
+		switch {
+		case stale || missedPongs >= 3:
+			quality = "poor"
+		case banScore > 0 || rateLimited:
+			quality = "watch"
+		case rtt > time.Second:
+			quality = "degraded"
+		}
 		out = append(out, PeerInfo{
 			Addr:                             p.remote,
 			Direction:                        direction,
@@ -328,6 +544,11 @@ func (s *Server) PeerInfos() []PeerInfo {
 			SyncedBlocks:                     height,
 			ChainID:                          chainID,
 			BanScore:                         banScore,
+			MisbehaviorScore:                 banScore,
+			BannedUntil:                      unixOrZero(bannedUntil),
+			RateLimited:                      rateLimited,
+			LastPenaltyReason:                lastPenaltyReason,
+			PeerQuality:                      quality,
 			BytesSent:                        bytesSent,
 			BytesRecv:                        bytesRecv,
 			ConnectionType:                   direction + "-full-relay",
@@ -731,6 +952,9 @@ func (s *Server) AddNode(ctx context.Context, addr string) error {
 		}
 	}
 	s.addBootstrapPeer(addr)
+	if s.shouldThrottleOutboundDial(addr) {
+		return nil
+	}
 	if s.outbound.Load() >= maxOutboundPeers || s.peers.Load() >= maxPeers {
 		s.log.Printf("p2p addnode %s queued but peer capacity is full", addr)
 		return nil
@@ -867,7 +1091,11 @@ func (s *Server) acceptLoop(ctx context.Context, ln net.Listener) {
 }
 
 func (s *Server) seedLoop(ctx context.Context) {
-	ticker := time.NewTicker(peerReconnectEvery)
+	interval := s.reconnectEvery
+	if interval <= 0 {
+		interval = peerReconnectEvery
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	s.connectSeeds(ctx)
 	for {
@@ -1148,6 +1376,26 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 		s.log.Printf("p2p rejected banned peer %s", conn.RemoteAddr())
 		return
 	}
+	host := splitHost(conn.RemoteAddr().String())
+	if !outbound {
+		if s.maxInboundPeers > 0 && s.inboundPeerCount() >= s.maxInboundPeers {
+			s.log.Printf("p2p rejected inbound peer %s (max inbound reached: %d)", conn.RemoteAddr(), s.maxInboundPeers)
+			return
+		}
+		if s.duplicateInboundHost(host) {
+			s.log.Printf("p2p rejected duplicate inbound peer host %s", host)
+			return
+		}
+		if s.maxPerIP > 0 && s.inboundHostCount(host) >= s.maxPerIP {
+			s.log.Printf("p2p rejected inbound peer %s (per-ip cap %d)", conn.RemoteAddr(), s.maxPerIP)
+			return
+		}
+		subnet := subnetKey(host)
+		if s.maxPerSubnet > 0 && subnet != "" && s.inboundSubnetCount(subnet) >= s.maxPerSubnet {
+			s.log.Printf("p2p rejected inbound peer %s (subnet cap %d for %s)", conn.RemoteAddr(), s.maxPerSubnet, subnet)
+			return
+		}
+	}
 	if len(s.connectOnly) > 0 && !outbound {
 		if _, ok := s.connectOnly[conn.RemoteAddr().String()]; !ok {
 			s.logConnectOnlyReject(conn.RemoteAddr().String())
@@ -1192,6 +1440,11 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 		p.addBytesRecv(uint64(len(msg.Payload) + 24))
 		p.markSeen()
 		s.notePeerMessage()
+		if !s.allowPeerMessage(p, msg.Command) {
+			s.scorePeer(p, 20, "peer message rate limit exceeded")
+			s.log.Printf("p2p disconnect %s due to peer rate limit", conn.RemoteAddr())
+			return
+		}
 		if gotVersion && gotVerAck {
 			_ = conn.SetReadDeadline(time.Now().Add(peerIdleTimeout))
 		}
@@ -1694,12 +1947,33 @@ func (s *Server) scorePeer(p *peer, score int, reason string) {
 	if !s.peerSafety || p == nil || score <= 0 {
 		return
 	}
+	now := time.Now()
 	p.lastMu.Lock()
+	if s.misbehaviorDecay > 0 && !p.lastPenaltyAt.IsZero() && p.banScore > 0 {
+		elapsed := now.Sub(p.lastPenaltyAt)
+		steps := int(elapsed / s.misbehaviorDecay)
+		if steps > 0 {
+			p.banScore -= steps
+			if p.banScore < 0 {
+				p.banScore = 0
+			}
+			p.lastPenaltyAt = p.lastPenaltyAt.Add(time.Duration(steps) * s.misbehaviorDecay)
+		}
+	}
 	p.banScore += score
 	total := p.banScore
+	p.lastPenaltyAt = now
+	p.lastPenaltyReason = reason
 	p.lastMu.Unlock()
 	if s.banThreshold > 0 && total >= s.banThreshold {
-		s.banPeer(p.remote, time.Hour, reason)
+		d := s.banDuration
+		if d <= 0 {
+			d = time.Hour
+		}
+		s.banPeer(p.remote, d, reason)
+		p.lastMu.Lock()
+		p.bannedUntil = now.Add(d)
+		p.lastMu.Unlock()
 		_ = p.conn.Close()
 	}
 }

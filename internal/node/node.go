@@ -275,6 +275,7 @@ func NewWithOptions(opts Options) (*Node, error) {
 		chainID = chaincfg.MainNet.ChainID
 	}
 	p2pServer.SetPeerPolicy(chainID, peerPol.EnforceChainID, peerPol.PeerSafety, peerPol.BanThreshold, peerPol.SeedPeers, peerPol.ConnectOnly)
+	p2pServer.SetRuntimePolicy(peerPol.MaxInboundPeers, peerPol.TemporaryBanSeconds, peerPol.ReconnectBackoff, peerPol.ReconnectBackoffSeconds, peerPol.PeerRateLimit, peerPol.MaxPerIP, peerPol.MaxPerSubnet, peerPol.GlobalRateLimit, peerPol.MisbehaviorDecaySeconds, peerPol.StaleTimeoutSeconds)
 	p2pServer.SetPrettyLogging(logCfg.Mode == "pretty", logCfg.P2PHeartbeat, logCfg.P2PCompactHeartbeat, logCfg.P2PShowLatency, logCfg.P2PShowPeerHeight, logCfg.TrustedPeerName, logCfg.P2PHeartbeatSeconds)
 	p2pServer.SetPeerPingInterval(logCfg.PeerPingIntervalSeconds)
 	bootstrap := append([]string{}, addnodes...)

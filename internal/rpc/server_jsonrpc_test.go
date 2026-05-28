@@ -109,3 +109,22 @@ func TestJSONRPCHelpMethod(t *testing.T) {
 		t.Fatalf("help methods missing or empty: %#v", out["methods"])
 	}
 }
+
+func TestRPCHelpEntriesIncludeAddressHistoryAndPassphraseChange(t *testing.T) {
+	hasHistory := false
+	hasPassphraseChange := false
+	for _, entry := range rpcHelpEntries {
+		if entry.Method == "getaddresshistory" {
+			hasHistory = true
+		}
+		if entry.Method == "walletpassphrasechange" {
+			hasPassphraseChange = true
+		}
+	}
+	if !hasHistory {
+		t.Fatalf("rpc help table missing getaddresshistory")
+	}
+	if !hasPassphraseChange {
+		t.Fatalf("rpc help table missing walletpassphrasechange")
+	}
+}
