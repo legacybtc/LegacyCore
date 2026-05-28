@@ -97,7 +97,6 @@ jobs:
 
       - name: Chaos CI smoke (Linux diagnostic)
         if: runner.os == 'Linux'
-        continue-on-error: true
         env:
           CGO_ENABLED: "1"
         run: |

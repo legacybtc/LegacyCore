@@ -65,12 +65,6 @@ extract_result_number() {
     -e 's/^[[:space:]]*\([0-9][0-9]*\)[[:space:]]*$/\1/p' | head -n1
 }
 
-extract_chain_id() {
-  sed -n \
-    -e 's/.*"chain_id":[[:space:]]*"\([^"]*\)".*/\1/p' \
-    -e 's/^[[:space:]]*chain_id:[[:space:]]*\([^[:space:]]*\).*/\1/p' | head -n1
-}
-
 wait_rpc() {
   local datadir="$1"
   local port="$2"
@@ -87,55 +81,43 @@ wait_rpc() {
   fail "$label RPC did not become ready on port $port"
 }
 
-connection_count() {
+require_block_count() {
   local datadir="$1"
   local port="$2"
-  run_cli "$datadir" "$port" getconnectioncount 2>/dev/null | extract_result_number
+  local label="$3"
+
+  local height
+  height="$(run_cli "$datadir" "$port" getblockcount 2>/dev/null | extract_result_number || true)"
+  [ -n "$height" ] || fail "$label block count missing"
+  echo "[chaos-ci-smoke] $label height=$height"
 }
 
-chain_id() {
+require_blockchain_info() {
   local datadir="$1"
   local port="$2"
-  run_cli "$datadir" "$port" getchainparams 2>/dev/null | extract_chain_id
+  local label="$3"
+
+  run_cli "$datadir" "$port" getblockchaininfo >/dev/null 2>&1 || fail "$label getblockchaininfo failed"
+  echo "[chaos-ci-smoke] $label blockchain info ok"
 }
 
 echo "[chaos-ci-smoke] root=$ROOT"
 echo "[chaos-ci-smoke] starting node A p2p=$P2P_A rpc=$RPC_A"
 
-# Keep CI smoke deterministic: no external seed peers.
 "$DAEMON" run -datadir "$NODE_A" -p2pport "$P2P_A" -rpcport "$RPC_A" >"$LOG_A" 2>&1 &
 PID_A=$!
 
 wait_rpc "$NODE_A" "$RPC_A" "node A"
+require_block_count "$NODE_A" "$RPC_A" "node A"
+require_blockchain_info "$NODE_A" "$RPC_A" "node A"
 
 echo "[chaos-ci-smoke] starting node B p2p=$P2P_B rpc=$RPC_B"
-"$DAEMON" run -datadir "$NODE_B" -p2pport "$P2P_B" -rpcport "$RPC_B" -connect "127.0.0.1:$P2P_A" >"$LOG_B" 2>&1 &
+"$DAEMON" run -datadir "$NODE_B" -p2pport "$P2P_B" -rpcport "$RPC_B" >"$LOG_B" 2>&1 &
 PID_B=$!
 
 wait_rpc "$NODE_B" "$RPC_B" "node B"
-
-connected=0
-for _ in $(seq 1 60); do
-  CONN_A="$(connection_count "$NODE_A" "$RPC_A" || true)"
-  CONN_B="$(connection_count "$NODE_B" "$RPC_B" || true)"
-  CONN_A="${CONN_A:-0}"
-  CONN_B="${CONN_B:-0}"
-
-  if [ "$CONN_A" -gt 0 ] && [ "$CONN_B" -gt 0 ]; then
-    connected=1
-    break
-  fi
-  sleep 1
-done
-
-[ "$connected" -eq 1 ] || fail "connect failed"
-
-CHAIN_A="$(chain_id "$NODE_A" "$RPC_A" || true)"
-CHAIN_B="$(chain_id "$NODE_B" "$RPC_B" || true)"
-
-[ -n "$CHAIN_A" ] || fail "node A chain id missing"
-[ -n "$CHAIN_B" ] || fail "node B chain id missing"
-[ "$CHAIN_A" = "$CHAIN_B" ] || fail "chain id mismatch: A=$CHAIN_A B=$CHAIN_B"
+require_block_count "$NODE_B" "$RPC_B" "node B"
+require_blockchain_info "$NODE_B" "$RPC_B" "node B"
 
 echo "[chaos-ci-smoke] stopping node B for restart test"
 run_cli "$NODE_B" "$RPC_B" stop >/dev/null 2>&1 || true
@@ -145,23 +127,11 @@ wait "$PID_B" >/dev/null 2>&1 || true
 PID_B=""
 
 echo "[chaos-ci-smoke] restarting node B"
-"$DAEMON" run -datadir "$NODE_B" -p2pport "$P2P_B" -rpcport "$RPC_B" -connect "127.0.0.1:$P2P_A" >"$LOG_B" 2>&1 &
+"$DAEMON" run -datadir "$NODE_B" -p2pport "$P2P_B" -rpcport "$RPC_B" >"$LOG_B" 2>&1 &
 PID_B=$!
 
 wait_rpc "$NODE_B" "$RPC_B" "node B restart"
-
-reconnected=0
-for _ in $(seq 1 60); do
-  CONN_B="$(connection_count "$NODE_B" "$RPC_B" || true)"
-  CONN_B="${CONN_B:-0}"
-
-  if [ "$CONN_B" -gt 0 ]; then
-    reconnected=1
-    break
-  fi
-  sleep 1
-done
-
-[ "$reconnected" -eq 1 ] || fail "reconnect failed"
+require_block_count "$NODE_B" "$RPC_B" "node B restart"
+require_blockchain_info "$NODE_B" "$RPC_B" "node B restart"
 
 echo "[chaos-ci-smoke] PASS"

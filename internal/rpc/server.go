@@ -1217,25 +1217,80 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 			"addressindex_confirmed_only": true,
 		}, nil
 	case "getaddresshistory":
-		var args []string
-		if err := json.Unmarshal(params, &args); err != nil || len(args) != 1 {
+		var args []json.RawMessage
+		if err := json.Unmarshal(params, &args); err != nil || len(args) < 1 || len(args) > 5 {
+			return nil, &rpcError{Code: -32602, Message: "getaddresshistory expects <address> [limit] [offset] [type_filter] [confirmations_filter]"}
+		}
+		var addr string
+		if err := json.Unmarshal(args[0], &addr); err != nil || strings.TrimSpace(addr) == "" {
 			return nil, &rpcError{Code: -32602, Message: "getaddresshistory expects address"}
 		}
+
+		limit := 0
+		offset := 0
+		typeFilter := "all"
+		confFilter := "all"
+
+		if len(args) >= 2 {
+			if err := json.Unmarshal(args[1], &limit); err != nil || limit < 0 {
+				return nil, &rpcError{Code: -32602, Message: "invalid limit"}
+			}
+		}
+		if len(args) >= 3 {
+			if err := json.Unmarshal(args[2], &offset); err != nil || offset < 0 {
+				return nil, &rpcError{Code: -32602, Message: "invalid offset"}
+			}
+		}
+		if len(args) >= 4 {
+			if err := json.Unmarshal(args[3], &typeFilter); err != nil {
+				return nil, &rpcError{Code: -32602, Message: "invalid type_filter"}
+			}
+			typeFilter = strings.ToLower(strings.TrimSpace(typeFilter))
+			switch typeFilter {
+			case "", "all":
+				typeFilter = "all"
+			case "receive", "received":
+				typeFilter = "receive"
+			case "spend", "spent":
+				typeFilter = "spend"
+			default:
+				return nil, &rpcError{Code: -32602, Message: "type_filter must be all, receive, received, spend, or spent"}
+			}
+		}
+		if len(args) >= 5 {
+			if err := json.Unmarshal(args[4], &confFilter); err != nil {
+				return nil, &rpcError{Code: -32602, Message: "invalid confirmations_filter"}
+			}
+			confFilter = strings.ToLower(strings.TrimSpace(confFilter))
+			switch confFilter {
+			case "", "all":
+				confFilter = "all"
+			case "confirmed", "confirm":
+				confFilter = "confirmed"
+			case "unconfirmed", "mempool":
+				confFilter = "unconfirmed"
+			default:
+				return nil, &rpcError{Code: -32602, Message: "confirmations_filter must be all, confirmed, or unconfirmed"}
+			}
+		}
+
 		if !s.chain.AddressIndexEnabled() {
 			return nil, &rpcError{Code: -5, Message: "addressindex disabled (set addressindex=1 and reindex)"}
 		}
-		history, err := s.chain.AddressHistory(args[0])
+		history, err := s.chain.AddressHistory(addr)
 		if err != nil {
 			return nil, &rpcError{Code: -5, Message: err.Error()}
 		}
-		txids, err := s.chain.AddressTxIDs(args[0])
+		txids, err := s.chain.AddressTxIDs(addr)
 		if err != nil {
 			return nil, &rpcError{Code: -5, Message: err.Error()}
 		}
+
 		tipHeight := int32(-1)
 		if tip := s.chain.Tip(); tip != nil {
 			tipHeight = tip.Height
 		}
+
 		type historyEntry struct {
 			TxID          string `json:"txid"`
 			Height        int32  `json:"height"`
@@ -1251,6 +1306,7 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 			Mature        bool   `json:"mature"`
 			RelatedTxID   string `json:"related_txid,omitempty"`
 		}
+
 		entries := make([]historyEntry, 0, len(history)*2)
 		for _, rec := range history {
 			confs := int32(0)
@@ -1258,6 +1314,7 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 				confs = tipHeight - rec.Height + 1
 			}
 			mature := !rec.Coinbase || confs >= int32(chaincfg.CoinbaseMaturity)
+
 			entries = append(entries, historyEntry{
 				TxID:          rec.TxID,
 				Height:        rec.Height,
@@ -1272,6 +1329,7 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 				Coinbase:      rec.Coinbase,
 				Mature:        mature,
 			})
+
 			if rec.Spent && rec.SpendTxID != "" {
 				spendConfs := int32(0)
 				if tipHeight >= rec.SpendHeight && rec.SpendHeight > 0 {
@@ -1290,6 +1348,7 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 				})
 			}
 		}
+
 		sort.Slice(entries, func(i, j int) bool {
 			if entries[i].Height == entries[j].Height {
 				if entries[i].TxID == entries[j].TxID {
@@ -1299,11 +1358,41 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 			}
 			return entries[i].Height < entries[j].Height
 		})
+
+		filtered := make([]historyEntry, 0, len(entries))
+		for _, entry := range entries {
+			if typeFilter != "all" && entry.Type != typeFilter {
+				continue
+			}
+			if confFilter == "confirmed" && entry.Confirmations <= 0 {
+				continue
+			}
+			if confFilter == "unconfirmed" && entry.Confirmations > 0 {
+				continue
+			}
+			filtered = append(filtered, entry)
+		}
+
+		total := len(filtered)
+		if offset > total {
+			filtered = filtered[:0]
+		} else {
+			filtered = filtered[offset:]
+		}
+		if limit > 0 && limit < len(filtered) {
+			filtered = filtered[:limit]
+		}
+
 		return map[string]any{
-			"address":           args[0],
-			"txids":             txids,
-			"entries":           entries,
-			"addressindex_mode": "utxo-plus-history-foundation",
+			"address":              addr,
+			"txids":                txids,
+			"entries":              filtered,
+			"total":                total,
+			"limit":                limit,
+			"offset":               offset,
+			"type_filter":          typeFilter,
+			"confirmations_filter": confFilter,
+			"addressindex_mode":    "utxo-plus-history-foundation",
 		}, nil
 	case "gettransaction":
 		var args []json.RawMessage
