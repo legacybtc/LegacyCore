@@ -18,19 +18,18 @@ func main() {
 	app := NewApp()
 	if err := wails.Run(&options.App{
 		Title:     "Legacy Wallet",
-		Width:     1240,
-		Height:    820,
-		MinWidth:  980,
-		MinHeight: 640,
-		Frameless: true,
+		Width:     1180,
+		Height:    780,
+		MinWidth:  960,
+		MinHeight: 620,
+		Frameless: false,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
 		Windows: &windows.Options{
-			DisableFramelessWindowDecorations: true,
-			Theme:                             windows.Dark,
+			Theme: windows.Light,
 		},
-		BackgroundColour: &options.RGBA{R: 17, G: 24, B: 39, A: 1},
+		BackgroundColour: &options.RGBA{R: 212, G: 208, B: 200, A: 1},
 		OnStartup:        app.Startup,
 		OnBeforeClose:    app.BeforeClose,
 		OnShutdown:       app.Shutdown,

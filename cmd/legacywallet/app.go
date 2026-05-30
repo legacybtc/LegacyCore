@@ -58,7 +58,14 @@ type NodeTestResult struct {
 	Message string `json:"message"`
 }
 
-const lifecycleBuildMarker = "integration-hardening-v1.0.3-build-20260526"
+const lifecycleBuildMarker = "winxp-full-node-wallet-v1.0.4-build-20260530"
+
+var rpcConsoleBlocked = map[string]struct{}{
+	"dumpprivkey":  {},
+	"dumpwallet":   {},
+	"importprivkey": {},
+	"importwallet": {},
+}
 
 func NewApp() *App {
 	s := defaultSettings()
@@ -495,6 +502,102 @@ func (a *App) GetMempool() (map[string]any, error) { return a.service.GetMempool
 
 func (a *App) SearchExplorer(query string) (map[string]any, error) {
 	return a.service.SearchExplorer(query)
+}
+
+func (a *App) GetSettings() Settings {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.settings.withDefaults()
+}
+
+func (a *App) GetOverview() map[string]any {
+	return a.Snapshot()
+}
+
+func (a *App) ValidateAddress(addr string) (map[string]any, error) {
+	return a.service.ValidateAddress(addr)
+}
+
+func (a *App) GetNetworkInfo() (map[string]any, error) {
+	return a.service.GetNetworkInfo()
+}
+
+func (a *App) BenchmarkMiner() (map[string]any, error) {
+	return a.service.BenchmarkMiner()
+}
+
+func (a *App) AddNode(addr string) (map[string]any, error) {
+	addr, err := normalizeUIAddress(addr)
+	if err != nil {
+		return nil, err
+	}
+	if err := a.service.AddNode(addr); err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "node": addr}, nil
+}
+
+func (a *App) RunRPCCommand(command string) (map[string]any, error) {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return nil, errors.New("enter an RPC command")
+	}
+	if strings.EqualFold(command, "help") {
+		return map[string]any{
+			"help": []string{
+				"help",
+				"getblockchaininfo",
+				"getpeerinfo",
+				"getnetworkinfo",
+				"getwalletinfo",
+				"getbalance",
+				"getnewaddress",
+				"getaddresshistory",
+				"getaddressbalance",
+				"checkstorage",
+				"getminerstatus",
+				"getblocktemplate",
+				"validateaddress",
+				"benchmarkminer",
+			},
+			"warning": "Advanced RPC can affect your wallet and node. Never paste private keys or passphrases.",
+		}, nil
+	}
+	method, params, err := parseRPCConsoleCommand(command)
+	if err != nil {
+		return nil, err
+	}
+	if _, blocked := rpcConsoleBlocked[method]; blocked {
+		return nil, errors.New("this command is blocked in the RPC console; use the Wallet Security tab")
+	}
+	result, err := a.service.CallRPC(method, params)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"method": method, "result": result}, nil
+}
+
+func parseRPCConsoleCommand(command string) (string, []any, error) {
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return "", nil, errors.New("empty command")
+	}
+	method := strings.ToLower(fields[0])
+	if len(fields) == 1 {
+		return method, []any{}, nil
+	}
+	var params []any
+	raw := strings.TrimSpace(command[len(fields[0]):])
+	if strings.HasPrefix(raw, "[") {
+		if err := json.Unmarshal([]byte(raw), &params); err != nil {
+			return "", nil, fmt.Errorf("invalid JSON params: %w", err)
+		}
+		return method, params, nil
+	}
+	for _, part := range fields[1:] {
+		params = append(params, part)
+	}
+	return method, params, nil
 }
 
 func (a *App) Snapshot() map[string]any {

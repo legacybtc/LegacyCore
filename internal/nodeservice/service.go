@@ -2705,3 +2705,52 @@ func secondsSince(t time.Time) float64 {
 	}
 	return time.Since(t).Seconds()
 }
+
+// CallRPC invokes a JSON-RPC method against the local node using wallet-managed auth.
+func (s *Service) CallRPC(method string, params []any) (any, error) {
+	method = strings.ToLower(strings.TrimSpace(method))
+	if method == "" {
+		return nil, errors.New("rpc method is required")
+	}
+	timeout := 30 * time.Second
+	switch method {
+	case "benchmarkminer", "reindex":
+		timeout = 120 * time.Second
+	}
+	return callLocalRPC(s.dataDir, method, params, timeout)
+}
+
+// ValidateAddress checks an address through the local node RPC interface.
+func (s *Service) ValidateAddress(addr string) (map[string]any, error) {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return nil, errors.New("address is required")
+	}
+	raw, err := callLocalRPC(s.dataDir, "validateaddress", []any{addr}, 5*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	out, ok := raw.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("unexpected validateaddress response")
+	}
+	return out, nil
+}
+
+// GetNetworkInfo returns getnetworkinfo from the local node.
+func (s *Service) GetNetworkInfo() (map[string]any, error) {
+	return probeLocalRPCNetworkInfo(s.dataDir)
+}
+
+// BenchmarkMiner runs the built-in miner benchmark RPC.
+func (s *Service) BenchmarkMiner() (map[string]any, error) {
+	raw, err := callLocalRPC(s.dataDir, "benchmarkminer", []any{}, 120*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	out, ok := raw.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("unexpected benchmarkminer response")
+	}
+	return out, nil
+}

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import QRCode from "qrcode";
 import {
   Activity,
   AlertTriangle,
@@ -105,6 +106,14 @@ type Backend = {
   GetMempool(): Promise<Dict>;
   SearchExplorer(query: string): Promise<Dict>;
   SaveSettings(settings: SettingsShape): Promise<SettingsShape>;
+  GetSettings(): Promise<SettingsShape>;
+  GetOverview(): Promise<Dict>;
+  ValidateAddress(addr: string): Promise<Dict>;
+  GetNetworkInfo(): Promise<Dict>;
+  BenchmarkMiner(): Promise<Dict>;
+  RunRPCCommand(command: string): Promise<Dict>;
+  AddNode(node: string): Promise<Dict>;
+  GetBalance(): Promise<Dict>;
 };
 
 declare global {
@@ -119,28 +128,49 @@ const api = () => {
   return app;
 };
 
+const WALLET_VERSION = "1.0.4";
+
 const tabs = [
-  ["overview", Activity, "Overview"],
-  ["wallet", Wallet, "Wallet"],
-  ["receive", Coins, "Receive"],
-  ["send", Send, "Send"],
-  ["activity", History, "Activity"],
-  ["explorer", Globe2, "Explorer"],
-  ["backup", Archive, "Backup"],
-  ["mining", Pickaxe, "Mining"],
-  ["network", Network, "Network"],
-  ["diagnostics", Bug, "Diagnostics"],
-  ["settings", Settings, "Settings"],
+  ["overview", "Overview"],
+  ["send", "Send"],
+  ["receive", "Receive"],
+  ["transactions", "Transactions"],
+  ["mining", "Mining"],
+  ["network", "Network / Peers"],
+  ["blockchain", "Blockchain / Node"],
+  ["security", "Wallet Security"],
+  ["addressbook", "Address Book"],
+  ["console", "RPC Console"],
+  ["settings", "Settings"],
+  ["about", "About"],
 ] as const;
+
+type TabId = (typeof tabs)[number][0];
+
+const menuActions: Record<string, () => void> = {};
+
+function loadAddressBook(): { label: string; address: string }[] {
+  try {
+    const raw = localStorage.getItem("legacy-address-book");
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveAddressBook(entries: { label: string; address: string }[]) {
+  localStorage.setItem("legacy-address-book", JSON.stringify(entries));
+}
 
 function App() {
   const [snap, setSnap] = useState<Dict | null>(null);
-  const [tab, setTab] = useState("overview");
+  const [tab, setTab] = useState<TabId>("overview");
   const [toast, setToast] = useState("");
   const [busy, setBusy] = useState(false);
   const refreshInFlight = useRef(false);
-  const [displayMode, setDisplayMode] = useState<"comfortable" | "compact">(() => (localStorage.getItem("legacy-display-mode") as any) || "compact");
-  const [advancedMode, setAdvancedMode] = useState(() => localStorage.getItem("legacy-advanced-mode") === "1");
+  const [refreshMs, setRefreshMs] = useState(() => Number(localStorage.getItem("legacy-refresh-ms") || "3000") || 3000);
 
   async function refresh() {
     if (refreshInFlight.current) return;
@@ -188,104 +218,83 @@ function App() {
 
   useEffect(() => {
     refresh();
-    const id = setInterval(refresh, 3000);
+    const ms = Math.max(2000, refreshMs);
+    const id = setInterval(refresh, ms);
     return () => clearInterval(id);
-  }, []);
+  }, [refreshMs]);
 
   const page = useMemo(() => {
     if (!snap) return <Loading />;
     if (!snap.wallet_exists) return <FirstRun run={run} />;
     const p = { snap, run, refresh };
-    if (tab === "wallet") return <WalletPage {...p} />;
-    if (tab === "receive") return <ReceivePage {...p} />;
     if (tab === "send") return <SendPage {...p} />;
-    if (tab === "activity") return <ActivityPage {...p} />;
-    if (tab === "explorer") return <ExplorerPage {...p} />;
-    if (tab === "backup") return <BackupPage {...p} />;
+    if (tab === "receive") return <ReceivePage {...p} />;
+    if (tab === "transactions") return <TransactionsPage {...p} />;
     if (tab === "mining") return <MiningPage {...p} />;
     if (tab === "network") return <NetworkPage {...p} />;
-    if (tab === "diagnostics") return <DiagnosticsPage {...p} />;
-    if (tab === "settings") return <SettingsPage {...p} />;
+    if (tab === "blockchain") return <BlockchainNodePage {...p} />;
+    if (tab === "security") return <SecurityPage {...p} />;
+    if (tab === "addressbook") return <AddressBookPage {...p} />;
+    if (tab === "console") return <RpcConsolePage {...p} />;
+    if (tab === "settings") return <SettingsPage {...p} refreshMs={refreshMs} onRefreshMs={setRefreshMs} />;
+    if (tab === "about") return <AboutPage snap={snap} />;
     return <Overview {...p} />;
-  }, [snap, tab]);
+  }, [snap, tab, refreshMs]);
 
   const running = Boolean(snap?.node?.running);
-  const walletLocked = Boolean(snap?.wallet?.wallet?.locked);
   const portConflict = portConflictMessage(snap?.node);
-  function toggleDisplayMode() {
-    const next = displayMode === "compact" ? "comfortable" : "compact";
-    setDisplayMode(next);
-    localStorage.setItem("legacy-display-mode", next);
-  }
-  function toggleAdvancedMode() {
-    const next = !advancedMode;
-    setAdvancedMode(next);
-    localStorage.setItem("legacy-advanced-mode", next ? "1" : "0");
-  }
+  const tabLabel = tabs.find(([id]) => id === tab)?.[1] || "Overview";
+
+  menuActions.fileQuit = () => void api().Quit();
+  menuActions.walletLock = () => void run("Lock wallet", () => api().LockWallet());
+  menuActions.nodeStart = () => void run("Start node", () => api().StartNode());
+  menuActions.nodeStop = () => void run("Stop node", () => api().StopNode());
+  menuActions.helpAbout = () => setTab("about");
 
   return (
-    <main className={`appWindow ${displayMode === "compact" ? "compactMode" : "comfortableMode"} ${advancedMode ? "advancedMode" : ""}`}>
-      <TitleBar />
-      <div className="shell">
-        <aside className="sidebar">
-          <div className="brand">
-            <img src={legacyLogo} alt="" aria-hidden="true" />
-            <div>
-              <h1>Legacy Wallet</h1>
-              <p>Full-node desktop wallet</p>
-            </div>
-          </div>
-          <nav>
-            {tabs.map(([id, Icon, label]) => (
-              <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>
-                <Icon size={17} />
-                <span>{label}</span>
-              </button>
-            ))}
-          </nav>
-          <div className="sidebarCard">
-            <StatusDot ok={running} />
-            <div>
-              <strong>{running ? "Internal node running" : "Node offline"}</strong>
-              <small>{walletLocked ? "Wallet locked" : "Wallet ready"}</small>
-            </div>
-          </div>
-        </aside>
-
-        <section className="workspace">
-          <header>
-            <div>
-              <p className="eyebrow">Legacy Wallet 1.0.3</p>
-              <h2>{tabs.find(([id]) => id === tab)?.[2] || "Overview"}</h2>
-            </div>
-            <div className="toolbar">
-              <button onClick={toggleDisplayMode}>{displayMode === "compact" ? "Compact" : "Comfortable"}</button>
-              <button className={advancedMode ? "active" : ""} onClick={toggleAdvancedMode}>Advanced</button>
-              <button className="iconText" onClick={forceRefresh} disabled={busy}><RefreshCw size={16} /> Refresh</button>
-              <button className="primary" onClick={() => run("Start node", () => api().StartNode())} disabled={busy || running}>
-                <Play size={16} /> Start Node
-              </button>
-              <button onClick={() => run("Stop node", () => api().StopNode())} disabled={busy || !running}>
-                <Square size={16} /> Stop
-              </button>
-            </div>
-          </header>
-          {snap?.node?.error && <Notice tone="danger" text={snap.node.error} />}
-          {!running && portConflict && (
-            <section className="panel compactPanel">
-              <h3>RPC port status</h3>
-              <p className="muted">{portConflict}</p>
-              <div className="row">
-                <button onClick={() => run("Stop internal node", () => api().StopNode())}>Stop internal node</button>
-                <button className="primary" onClick={() => run("Retry start node", () => api().StartNode())}>Retry start node</button>
-              </div>
-            </section>
-          )}
-          {snap?.sync?.sync_stalled && <Notice tone="warn" text="Sync appears stalled. Retrying peer sync..." />}
-          {page}
-          {toast && <div className="toast" onClick={() => setToast("")}>{toast}</div>}
-        </section>
+    <main className="appWindow">
+      <nav className="menuBar" aria-label="Main menu">
+        <button type="button" onClick={() => setTab("settings")}>File</button>
+        <button type="button" onClick={() => setTab("security")}>Wallet</button>
+        <button type="button" onClick={() => { if (running) menuActions.nodeStop(); else menuActions.nodeStart(); }}>Node</button>
+        <button type="button" onClick={() => setTab("mining")}>Mining</button>
+        <button type="button" onClick={() => setTab("console")}>Tools</button>
+        <button type="button" onClick={() => setTab("about")}>Help</button>
+      </nav>
+      <div className="tabToolbar" role="tablist">
+        {tabs.map(([id, label]) => (
+          <button key={id} type="button" role="tab" className={`tabBtn ${tab === id ? "active" : ""}`} onClick={() => setTab(id)}>
+            {label}
+          </button>
+        ))}
       </div>
+      <section className="workspace">
+        <header className="toolbarRow">
+          <div>
+            <p className="eyebrow">Legacy Coin / LBTC — Legacy Wallet {WALLET_VERSION}</p>
+            <h2>{tabLabel}</h2>
+          </div>
+          <div className="toolbar">
+            <button type="button" onClick={forceRefresh} disabled={busy}>Refresh</button>
+            <button type="button" className="primary" onClick={() => run("Start node", () => api().StartNode())} disabled={busy || running}>Start Node</button>
+            <button type="button" onClick={() => run("Stop node", () => api().StopNode())} disabled={busy || !running}>Stop Node</button>
+          </div>
+        </header>
+        {snap?.node?.error && <Notice tone="danger" text={snap.node.error} />}
+        {!running && portConflict && (
+          <section className="panel">
+            <h3>RPC port status</h3>
+            <p className="muted">{portConflict}</p>
+            <div className="row">
+              <button type="button" onClick={() => run("Stop internal node", () => api().StopNode())}>Stop internal node</button>
+              <button type="button" className="primary" onClick={() => run("Retry start node", () => api().StartNode())}>Retry start node</button>
+            </div>
+          </section>
+        )}
+        {snap?.sync?.sync_stalled && <Notice tone="warn" text="Sync appears stalled. Use Network or refresh to retry peer sync." />}
+        {page}
+        {toast && <div className="toast" onClick={() => setToast("")}>{toast}</div>}
+      </section>
       <StatusBar snap={snap} />
     </main>
   );
@@ -340,25 +349,32 @@ function Overview({ snap }: PageProps) {
   const wallet = snap.wallet || {};
   const mining = snap.mining || {};
   const sync = snap.sync || {};
+  const security = wallet.wallet || {};
+  const healthy = snap.node?.running && !sync.sync_stalled && snap.wallet_exists;
+  const statusMsg = healthy ? "Legacy Core is ready" : snap.node?.running ? "Legacy Core is running — check sync/peers" : "Start the internal node from the toolbar";
   return (
     <div className="page">
       <div className="heroPanel compactHero">
-        <img src={legacyLogo} alt="" aria-hidden="true" />
+        <img src={legacyLogo} alt="Legacy Coin" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
         <div>
-          <p className="eyebrow">Legacy Wallet</p>
-          <h3>Full-node desktop wallet for Legacy Coin</h3>
-          <p>Mainnet wallet. The wallet owns the local node lifecycle inside this app.</p>
+          <p className="eyebrow">Legacy Coin / LBTC</p>
+          <h3>Pure fair-launch Proof-of-Work</h3>
+          <p>CPU-friendly yespower mining. Inspired by early Bitcoin Core and One CPU, One Vote.</p>
+          <p><strong>{statusMsg}</strong></p>
         </div>
       </div>
       <div className="metricGrid">
-        <Metric label="Wallet" value={snap.wallet_exists ? "Ready" : "Setup required"} icon={<Wallet />} />
-        <Metric label="Node" value={snap.node?.running ? "Online" : "Offline"} icon={<Radio />} />
+        <Metric label="Total balance" value={wallet.total_lbtc ? lbtc(wallet.total_lbtc) : fmtAmount(wallet.total)} />
+        <Metric label="Spendable" value={wallet.spendable_lbtc ? lbtc(wallet.spendable_lbtc) : fmtAmount(wallet.spendable)} />
+        <Metric label="Immature" value={wallet.immature_lbtc ? lbtc(wallet.immature_lbtc) : fmtAmount(wallet.immature)} />
+        <Metric label="Pending incoming" value={wallet.pending_external_incoming_lbtc ? lbtc(wallet.pending_external_incoming_lbtc) : fmtAmount(wallet.pending_external_incoming)} />
+        <Metric label="Node" value={snap.node?.running ? "Online" : "Offline"} />
         <Metric label="Height" value={chain.height ?? "Starting"} />
         <Metric label="Peers" value={chain.peer_count ?? (snap.peers || []).length ?? 0} />
         <Metric label="Sync" value={syncLabel(chain, snap.peers || [])} />
         <Metric label="Best block" value={chain.bestblockhash || "-"} mono copyable />
-        <Metric label="Chain ID" value={snap.coin?.chain_id} mono copyable />
-        <Metric label="Version" value={snap.coin?.version} />
+        <Metric label="Wallet" value={security.encrypted ? (security.locked ? "Encrypted (locked)" : "Encrypted (unlocked)") : "Unencrypted"} />
+        <Metric label="Mining" value={mining.active_mining ? "Active" : mining.mining_enabled ? "Paused" : "Inactive"} />
       </div>
       <section className="panel lifecyclePanel">
         <div className="lifecycleIcon"><Database size={38} /></div>
@@ -492,25 +508,34 @@ function WalletPage({ snap, run, refresh }: PageProps) {
 function ReceivePage({ snap, run, refresh }: PageProps) {
   const [address, setAddress] = useState("");
   const [label, setLabel] = useState("");
+  const [qrData, setQrData] = useState("");
+  const [validMsg, setValidMsg] = useState("");
   const addresses = snap.wallet?.receive_addresses || [];
   const current = address || addresses[addresses.length - 1] || "";
   const defaultMining = snap.wallet?.default_mining_address || snap.settings?.defaultMiningAddress || "";
+
+  useEffect(() => {
+    if (!current) {
+      setQrData("");
+      return;
+    }
+    void QRCode.toDataURL(`legacycoin:${current}`, { width: 160, margin: 1 }).then(setQrData).catch(() => setQrData(""));
+    void api().ValidateAddress(current).then((r) => {
+      setValidMsg(r?.isvalid ? "Address validated by node" : String(r?.error || "Invalid address"));
+    }).catch(() => setValidMsg("validateaddress not available in this Core build"));
+  }, [current]);
 
   return (
     <div className="page twoCol">
       <section className="panel receivePanel">
         <h3>Receive LBTC</h3>
-        <Field label="Optional label">
+        <Notice tone="warn" text="Verify this address on your screen before sharing. Legacy Wallet never uploads your keys." />
+        <Field label="Optional label (local note only)">
           <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Example: Main receive" />
         </Field>
-        <div className="receiveAddressCard">
-          <Coins size={34} />
-          <div>
-            <strong>{current ? "Current receive address" : "No receive address yet"}</strong>
-            <p>{current ? "Use copy or generate a fresh local wallet address." : "Generate an address before requesting LBTC."}</p>
-          </div>
-        </div>
         <div className="addressBox">{current ? <CopyableValue value={current} /> : "No receive address selected"}</div>
+        {validMsg && <p className="muted">{validMsg}</p>}
+        {qrData ? <div className="qrBox"><img src={qrData} alt="Address QR code" /></div> : current ? <p className="muted">QR preview unavailable</p> : null}
         <div className="row">
           <button className="primary" onClick={async () => { setAddress(await run("Generate address", () => api().GetNewAddress())); await refresh(); }}>
             Generate new address
@@ -554,8 +579,10 @@ function SendPage({ snap, run, refresh }: PageProps) {
   function review() {
     if (!to.trim()) return setLocalError("Enter a destination address.");
     if (safeNum(amount) <= 0) return setLocalError("Enter an amount greater than 0 LBTC.");
+    if (safeNum(amount) < 0) return setLocalError("Amount cannot be negative.");
     if (safeNum(fee) <= 0) return setLocalError("Fee must be greater than 0 LBTC.");
     if (spendable > 0 && total > spendable) return setLocalError("Not enough spendable LBTC for this amount plus fee.");
+    if (snap.wallet?.wallet?.locked) return setLocalError("Wallet is locked. Unlock it on the Wallet Security tab before sending.");
     setLocalError("");
     setConfirming(true);
   }
@@ -733,7 +760,7 @@ function TokenCards({ tokens, empty }: { tokens: Dict[]; empty: string }) {
   return <div className="tokenDeskGrid">{tokens.length ? tokens.map((t) => <div className="tokenDeskCard" key={t.token_id}><strong>{t.name || "Unnamed"} <span>{t.ticker || ""}</span></strong><p>{t.description || "Legacy Token v0.1"}</p><small>ID {shortenMiddle(String(t.token_id || ""))} | Supply {t.total_supply || "-"} | Holders {t.holders ?? "-"}</small><small>Creator {shortenMiddle(String(t.creator || ""))}</small></div>) : <Notice tone="info" text={empty} />}</div>;
 }
 
-function ActivityPage({ snap, run, refresh }: PageProps) {
+function ActivityPage({ snap, run, refresh, tableMode }: PageProps & { tableMode?: boolean }) {
   const [txs, setTxs] = useState<Dict[]>([]);
   const [txLoadError, setTxLoadError] = useState("");
   const loadTransactions = useCallback(async () => {
@@ -755,6 +782,7 @@ function ActivityPage({ snap, run, refresh }: PageProps) {
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [sortOrder, setSortOrder] = useState<"newest" | "oldest">("newest");
+  const [detailTx, setDetailTx] = useState<Dict | null>(null);
   const pending = txs.filter((t: Dict) => ["pending", "local_only", "pending_broadcast"].includes(String(t.status)));
   const sent = txs.filter((t: Dict) => t.direction === "sent");
   const received = txs.filter((t: Dict) => t.direction === "received");
@@ -781,8 +809,35 @@ function ActivityPage({ snap, run, refresh }: PageProps) {
   return (
     <div className="page activityPage">
       <section className="panel activityGroups">
-        <h3>Recent wallet activity</h3>
+        <h3>Transactions</h3>
+        <div className="row">
+          <button type="button" onClick={() => void loadTransactions()}>Refresh</button>
+        </div>
         {txLoadError && <Notice tone="warn" text={`Activity refresh warning: ${txLoadError}`} />}
+        {tableMode && (
+          <div className="table txTable tableScroll">
+            <div className="tr head"><span>Date / Time</span><span>Type</span><span>Address</span><span>Amount</span><span>Confirmations</span><span>Status</span><span>TxID</span></div>
+            {filtered.length === 0 && <p className="muted">No transactions yet.</p>}
+            {filtered.map((t: Dict) => (
+              <div className="tr clickable" key={t.txid || t.outpoint} role="button" tabIndex={0} onClick={async () => { if (t.txid) setDetailTx(await api().GetWalletTransaction(t.txid).catch(() => t)); }}>
+                <span>{dateTime(t.timestamp)}</span>
+                <span>{directionLabel(t.direction)}</span>
+                <span className="mono">{t.address ? shortenMiddle(String(t.address)) : "-"}</span>
+                <span>{t.amount_lbtc ? lbtc(t.amount_lbtc) : fmtAmount(t.amount)}</span>
+                <span>{t.confirmations ?? 0}</span>
+                <span>{t.status_label || t.status}</span>
+                <span className="mono"><CopyableValue value={t.txid || "-"} /></span>
+              </div>
+            ))}
+          </div>
+        )}
+        {detailTx && tableMode && (
+          <section className="panel">
+            <h3>Transaction details</h3>
+            <TransactionDetails tx={detailTx} />
+            <button type="button" onClick={() => detailTx.txid && copy(detailTx.txid)}>Copy txid</button>
+          </section>
+        )}
         <div className="activityGroupSummary">
           <span>Pending <strong>{pending.length}</strong></span>
           <span>Sent <strong>{sent.length}</strong></span>
@@ -1091,8 +1146,9 @@ function MiningPage({ snap, run }: PageProps) {
         <div className="row">
           <label className="inline">Threads<input type="number" min={1} value={threads} onChange={(e) => { setThreads(Number(e.target.value)); setSelectedProfile("custom"); }} /></label>
           <span className="pill">Configured profile: {title(selectedProfile)}</span>
-          <button onClick={() => run("Set threads", () => api().SetMinerThreads(threads))}>Set threads</button>
-          <button className="primary" onClick={() => void startMining()} disabled={activeMining || !canStartMining}>Start mining</button>
+          <button type="button" onClick={() => run("Set threads", () => api().SetMinerThreads(threads))}>Set threads</button>
+          <button type="button" onClick={() => run("Benchmark miner", () => api().BenchmarkMiner())}>Benchmark miner</button>
+          <button type="button" className="primary" onClick={() => void startMining()} disabled={activeMining || !canStartMining}>Start mining</button>
           <button onClick={() => void stopMining()} disabled={!emergencyStopEnabled}>Stop mining</button>
           <button className="warn" onClick={() => void forceStopMining()} disabled={!emergencyStopEnabled}>Force stop miner</button>
         </div>
@@ -1421,14 +1477,235 @@ function DiagnosticsPage({ snap, run }: PageProps) {
   );
 }
 
-function SettingsPage({ snap, run }: PageProps) {
+function BlockchainNodePage({ snap, run }: PageProps) {
+  const chain = snap.blockchain || {};
+  const coin = snap.coin || {};
+  const [storage, setStorage] = useState<Dict | null>(null);
+  const configPath = snap.node?.data_dir ? `${snap.node.data_dir}\\legacycoin.conf` : "";
+  return (
+    <div className="page">
+      <div className="row">
+        <button type="button" onClick={() => run("Refresh blockchain", () => api().GetBlockchainInfo())}>Refresh</button>
+        <button type="button" onClick={async () => setStorage(await run("Check storage", () => api().CheckStorage()))}>Check storage</button>
+      </div>
+      <InfoPanel title="Chain" rows={[
+        ["Height", chain.height],
+        ["Best block hash", chain.bestblockhash],
+        ["Chainwork", chain.chainwork || chain.chain_work || "-"],
+        ["Difficulty / bits", `${chain.difficulty ?? "-"} / ${chain.current_bits ?? "-"}`],
+        ["Txindex", yesNo(chain.txindex ?? chain.tx_index)],
+        ["Address index", yesNo(chain.addressindex ?? chain.address_index)],
+        ["Storage", storage?.ok ?? storage?.OK ?? "-"],
+      ]} />
+      <InfoPanel title="Mainnet identity (read-only)" rows={[
+        ["Genesis hash", coin.genesis_hash || "5b4c78e4556afcd51acf7b9eb2e387fbea2d1414e6042d80d38e6256987154f5"],
+        ["Message start", "a4 ac c6 4d"],
+        ["PoW", "yespower"],
+        ["PoW personalization", "LegacyCoinPoW"],
+        ["DNS seeds", (chain.dns_seeds || coin.dns_seeds || ["legacycoinseed.space", "legacycoinseed2.space"]).join(", ")],
+        ["Data directory", snap.settings?.dataDir || snap.node?.data_dir],
+        ["Config path", configPath || "legacycoin.conf in data directory"],
+      ]} />
+      <section className="panel">
+        <h3>Recent blocks</h3>
+        <p className="muted">Use the RPC Console (getblock, getblockchaininfo) for full block data when the node is online.</p>
+      </section>
+    </div>
+  );
+}
+
+function AddressBookPage({ snap }: PageProps) {
+  const [entries, setEntries] = useState(loadAddressBook);
+  const [label, setLabel] = useState("");
+  const [addr, setAddr] = useState("");
+  const [msg, setMsg] = useState("");
+  function persist(next: typeof entries) {
+    setEntries(next);
+    saveAddressBook(next);
+  }
+  async function validateAndAdd() {
+    if (!addr.trim()) return setMsg("Enter an address");
+    try {
+      const v = await api().ValidateAddress(addr.trim());
+      if (!v?.isvalid) return setMsg("Invalid address");
+      persist([...entries.filter((e) => e.address !== addr.trim()), { label: label.trim() || "Contact", address: addr.trim() }]);
+      setAddr("");
+      setLabel("");
+      setMsg("");
+    } catch {
+      persist([...entries, { label: label.trim() || "Contact", address: addr.trim() }]);
+      setMsg("Saved locally (validateaddress unavailable in this Core build)");
+    }
+  }
+  const walletAddrs = snap.wallet?.receive_addresses || [];
+  return (
+    <div className="page twoCol">
+      <section className="panel">
+        <h3>Local address book</h3>
+        <p className="muted">Contacts are stored only on this computer (not in the chain).</p>
+        <Field label="Label"><input value={label} onChange={(e) => setLabel(e.target.value)} /></Field>
+        <Field label="Address"><input value={addr} onChange={(e) => setAddr(e.target.value)} /></Field>
+        {msg && <Notice tone="info" text={msg} />}
+        <button type="button" className="primary" onClick={() => void validateAndAdd()}>Add contact</button>
+      </section>
+      <section className="panel">
+        <h3>Saved contacts</h3>
+        {entries.length === 0 && <p className="muted">No contacts saved yet.</p>}
+        {entries.map((e) => (
+          <div className="row" key={e.address}>
+            <strong>{e.label}</strong>
+            <span className="mono"><CopyableValue value={e.address} /></span>
+            <button type="button" onClick={() => copy(e.address)}>Copy</button>
+            <button type="button" onClick={() => persist(entries.filter((x) => x.address !== e.address))}>Delete</button>
+          </div>
+        ))}
+        <h3>Wallet receive addresses</h3>
+        <AddressList addresses={walletAddrs} />
+      </section>
+    </div>
+  );
+}
+
+const RPC_DANGEROUS = new Set(["stop", "reindex", "encryptwallet", "walletpassphrasechange"]);
+
+function RpcConsolePage({ snap, run }: PageProps) {
+  const [history, setHistory] = useState<string[]>([]);
+  const [histIdx, setHistIdx] = useState(-1);
+  const [input, setInput] = useState("");
+  const [lines, setLines] = useState<string[]>([
+    "Legacy Wallet RPC console — type help for allowed commands.",
+    "Warning: advanced use only. Never paste secrets.",
+  ]);
+  const [pendingDanger, setPendingDanger] = useState("");
+  function append(line: string) {
+    setLines((prev) => [...prev.slice(-500), line]);
+  }
+  async function exec(cmd: string) {
+    const c = cmd.trim();
+    if (!c) return;
+    setHistory((h) => [...h.filter((x) => x !== c), c]);
+    setHistIdx(-1);
+    append(`> ${c}`);
+    const method = c.split(/\s+/)[0].toLowerCase();
+    if (RPC_DANGEROUS.has(method) && pendingDanger !== c) {
+      setPendingDanger(c);
+      append("Dangerous command — run the same command again to confirm.");
+      return;
+    }
+    setPendingDanger("");
+    try {
+      const res = await run("RPC", () => api().RunRPCCommand(c));
+      append(JSON.stringify(res, null, 2));
+    } catch (e) {
+      append(cleanError(e));
+    }
+  }
+  return (
+    <div className="page">
+      <Notice tone="warn" text="Debug console for advanced users. dumpprivkey, dumpwallet, and importprivkey are blocked." />
+      <div className="consoleOutput">{lines.join("\n")}</div>
+      <div className="consoleInput">
+        <input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") { void exec(input); setInput(""); }
+            if (e.key === "ArrowUp") {
+              const next = history.length - 1 - Math.max(0, histIdx + 1);
+              if (history[next]) { setInput(history[next]); setHistIdx(histIdx + 1); }
+            }
+          }}
+          placeholder="getblockchaininfo"
+        />
+        <button type="button" onClick={() => { void exec(input); setInput(""); }}>Execute</button>
+        <button type="button" onClick={() => setLines([])}>Clear</button>
+        <button type="button" onClick={() => copy(lines.join("\n"))}>Copy output</button>
+      </div>
+      {!snap.node?.running && <p className="unavailable">Node offline — RPC commands need a running internal node (or compatible local RPC).</p>}
+    </div>
+  );
+}
+
+function AboutPage({ snap }: { snap: Dict }) {
+  const coin = snap.coin || {};
+  return (
+    <div className="page aboutBlock">
+      <div className="heroPanel">
+        <img src={legacyLogo} alt="" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+        <div>
+          <h3>Legacy Coin / LBTC</h3>
+          <p>Legacy Core v{WALLET_VERSION}</p>
+          <p>Pure fair-launch Proof-of-Work · CPU-friendly yespower mining</p>
+          <p>Inspired by early Bitcoin Core 0.3.19 and One CPU, One Vote</p>
+          <p><a href="https://github.com/legacybtc/LegacyCore" target="_blank" rel="noreferrer">https://github.com/legacybtc/LegacyCore</a></p>
+        </div>
+      </div>
+      <InfoPanel title="Mainnet identity" rows={[
+        ["P2P port", coin.p2p_port ?? 19555],
+        ["RPC port", coin.rpc_port ?? 19556],
+        ["Message start", "a4 ac c6 4d"],
+        ["Address version", 48],
+        ["WIF version", 176],
+        ["PoW", "yespower"],
+        ["PoW personalization", "LegacyCoinPoW"],
+        ["Genesis time", 1779235200],
+        ["Genesis bits", "207fffff"],
+        ["Post-genesis launch bits", "1f0fffff"],
+        ["Genesis nonce", 3],
+        ["Genesis hash", coin.genesis_hash || "5b4c78e4556afcd51acf7b9eb2e387fbea2d1414e6042d80d38e6256987154f5"],
+        ["DNS seeds", "legacycoinseed.space, legacycoinseed2.space"],
+      ]} />
+    </div>
+  );
+}
+
+function TransactionsPage(props: PageProps) {
+  return <ActivityPage {...props} tableMode />;
+}
+
+function SecurityPage({ snap, run, refresh }: PageProps) {
+  const w = snap.wallet || {};
+  const security = w.wallet || {};
+  const [passphrase, setPassphrase] = useState("");
+  const [newPassphrase, setNewPassphrase] = useState("");
+  const [unlockSeconds, setUnlockSeconds] = useState(900);
+  const encryptionState = security.encrypted ? (security.locked ? "Encrypted (locked)" : "Encrypted (unlocked)") : "Unencrypted";
+  const dataDir = snap.settings?.dataDir || snap.node?.data_dir || "";
+  return (
+    <div className="page">
+      <Notice tone="danger" text="Never share seed phrases, private keys, WIF, or wallet passphrases. Legacy Wallet does not log secrets." />
+      <section className="panel">
+        <h3>Wallet Security</h3>
+        <div className="kv">
+          <div><span>Encrypted</span><strong>{yesNo(security.encrypted)}</strong></div>
+          <div><span>Locked</span><strong>{yesNo(security.locked)}</strong></div>
+          <div><span>Status</span><strong>{encryptionState}</strong></div>
+          <div><span>Wallet data</span><strong className="mono">{dataDir}</strong></div>
+        </div>
+        <Field label="Passphrase"><input type="password" value={passphrase} onChange={(e) => setPassphrase(e.target.value)} autoComplete="off" /></Field>
+        {security.encrypted && <Field label="New passphrase"><input type="password" value={newPassphrase} onChange={(e) => setNewPassphrase(e.target.value)} autoComplete="off" /></Field>}
+        {security.encrypted && <Field label="Unlock seconds"><input type="number" min={60} value={unlockSeconds} onChange={(e) => setUnlockSeconds(Number(e.target.value))} /></Field>}
+        <div className="row">
+          {!security.encrypted && <button type="button" className="primary" disabled={!passphrase} onClick={async () => { await run("Encrypt wallet", () => api().EncryptWallet(passphrase)); setPassphrase(""); await refresh(); }}>Encrypt wallet</button>}
+          {security.encrypted && security.locked && <button type="button" className="primary" disabled={!passphrase} onClick={async () => { await run("Unlock wallet", () => api().UnlockWallet(passphrase, unlockSeconds)); setPassphrase(""); await refresh(); }}>Unlock wallet</button>}
+          {security.encrypted && !security.locked && <button type="button" onClick={async () => { await run("Lock wallet", () => api().LockWallet()); await refresh(); }}>Lock wallet</button>}
+          {security.encrypted && <button type="button" disabled={!passphrase || !newPassphrase} onClick={async () => { await run("Change passphrase", () => api().ChangeWalletPassphrase(passphrase, newPassphrase)); setPassphrase(""); setNewPassphrase(""); await refresh(); }}>Change passphrase</button>}
+        </div>
+        <p className="muted">Backup: use File → backup path in Settings, or legacycoin-cli backupwallet. dumpprivkey / importprivkey are not exposed in this UI.</p>
+      </section>
+      <BackupPage snap={snap} run={run} refresh={refresh} />
+    </div>
+  );
+}
+
+function SettingsPage({ snap, run, refreshMs, onRefreshMs }: PageProps & { refreshMs: number; onRefreshMs: (n: number) => void }) {
   const [settings, setSettings] = useState<SettingsShape>({
     dataDir: snap.settings?.dataDir || snap.node?.data_dir || "",
     startNodeOnLaunch: Boolean(snap.settings?.startNodeOnLaunch),
     stopNodeOnExit: Boolean(snap.settings?.stopNodeOnExit),
     defaultThreads: Number(snap.settings?.defaultThreads || 1),
     defaultMiningAddress: snap.settings?.defaultMiningAddress || snap.wallet?.default_mining_address || "",
-    theme: snap.settings?.theme || "dark",
+    theme: snap.settings?.theme || "classic",
     network: snap.settings?.network || { mode: "automatic", nodes: [] },
     launchpad: snap.settings?.launchpad || { apiUrl: "http://127.0.0.1:8090" },
   });
@@ -1492,16 +1769,17 @@ function SettingsPage({ snap, run }: PageProps) {
           {testResults.map((r) => <div key={r.node} className="nodeRow"><strong>{r.status}</strong><span>{r.node}</span><small>{r.message}</small></div>)}
         </div>
       </section>
-      <InfoPanel title="About" rows={[
-        ["Product", "Legacy Wallet 1.0.3"],
-        ["Core Engine", "Legacy Core 1.0.3"],
-        ["Network", "Legacy Coin Mainnet"],
-        ["Coin", "Legacy Coin / LBTC"],
-        ["P2P port", snap.coin?.p2p_port],
-        ["RPC port", `${snap.coin?.rpc_port}`],
-        ["Chain ID", snap.coin?.chain_id],
-        ["Genesis", snap.coin?.genesis_hash],
-      ]} />
+      <section className="panel">
+        <h3>Paths &amp; refresh</h3>
+        <Field label="Auto-refresh interval (ms)">
+          <input type="number" min={2000} step={1000} value={refreshMs} onChange={(e) => { const n = Number(e.target.value); onRefreshMs(n); localStorage.setItem("legacy-refresh-ms", String(n)); }} />
+        </Field>
+        <p className="muted">RPC host: 127.0.0.1 — RPC port: {snap.coin?.rpc_port ?? 19556} (local only; never expose publicly)</p>
+        <div className="row">
+          <button type="button" onClick={() => run("Open data folder", () => api().OpenDataDir())}>Open data folder</button>
+          <button type="button" onClick={() => { localStorage.removeItem("legacy-address-book"); localStorage.removeItem("legacy-advanced-mode"); }}>Reset UI cache</button>
+        </div>
+      </section>
       <section className="panel">
         <h3>Advanced Coin Tools</h3>
         <p className="muted compactNote">Split Coins creates many wallet-owned UTXOs after confirmation. This helps send many transactions in one block without depending on unconfirmed change.</p>
@@ -1545,17 +1823,18 @@ function TitleBar() {
 function StatusBar({ snap }: { snap: Dict | null }) {
   const peers = snap?.blockchain?.peer_count ?? (snap?.peers || []).length ?? 0;
   const height = snap?.blockchain?.height ?? "-";
-  const state = walletSyncState(snap);
+  const running = Boolean(snap?.node?.running);
+  const locked = Boolean(snap?.wallet?.wallet?.locked);
   const mining = snap?.mining || {};
-  const miningLabel = mining.active_mining ? "Mining running" : mining.mining_paused_reason ? `Mining paused: ${mining.mining_paused_reason}` : mining.mining_enabled ? "Mining paused" : "Mining idle";
+  const miningActive = Boolean(mining.active_mining);
   return (
-    <footer className={`statusBar ${state.tone}`}>
-      <span>Legacy Mainnet</span>
-      <span>Height: {height}</span>
-      <span><StatusDot ok={state.tone === "good"} /> {state.label}</span>
-      <span>{peers} direct peer{Number(peers) === 1 ? "" : "s"}</span>
-      <span>{miningLabel}</span>
-      <span className="bars"><i /><i /><i /><i /></span>
+    <footer className="statusBar">
+      <span><StatusDot ok={running} /> Node: {running ? "online" : "offline"}</span>
+      <span className="sep">Height: {height}</span>
+      <span className="sep">Peers: {peers}</span>
+      <span className="sep">Wallet: {locked ? "locked" : snap?.wallet_exists ? "unlocked" : "setup"}</span>
+      <span className="sep">Mining: {miningActive ? "active" : "inactive"}</span>
+      <span className="sep">Network: LBTC mainnet</span>
     </footer>
   );
 }

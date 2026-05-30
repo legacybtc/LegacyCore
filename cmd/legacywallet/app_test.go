@@ -32,3 +32,22 @@ func TestSaveSettingsRecreatesServiceWhenDataDirChanges(t *testing.T) {
 		t.Fatalf("expected service instance to change when data dir changes")
 	}
 }
+
+func TestRunRPCCommandHelp(t *testing.T) {
+	app := NewApp()
+	out, err := app.RunRPCCommand("help")
+	if err != nil {
+		t.Fatalf("RunRPCCommand help: %v", err)
+	}
+	if _, ok := out["help"]; !ok {
+		t.Fatalf("expected help list in response")
+	}
+}
+
+func TestRunRPCCommandBlocksDumpPrivKey(t *testing.T) {
+	app := NewApp()
+	_, err := app.RunRPCCommand("dumpprivkey abc")
+	if err == nil {
+		t.Fatalf("expected dumpprivkey to be blocked")
+	}
+}
