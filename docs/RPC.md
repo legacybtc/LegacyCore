@@ -96,6 +96,22 @@ Never expose unauthenticated public RPC.
 - Errors: addressindex disabled, malformed argument
 - Integration notes: not a replacement for full external accounting index
 
+### getaddresshistory
+
+- Status: implemented when `addressindex=1`
+- Parameters: `<address> [limit] [offset] [type_filter] [confirmations_filter]`
+- CLI:
+
+```bash
+./legacycoin-cli getaddresshistory <address>
+./legacycoin-cli getaddresshistory <address> 50 0 all all
+./legacycoin-cli getaddresshistory <address> 50 0 received confirmed
+```
+
+- Example response fields: `address`, `limit`, `offset`, `total`, `entries[]`, `txid`, `type`, `amount`, `confirmations`, `spent`, `spend_txid`, `coinbase`, `mature`
+- Errors: addressindex disabled, malformed params
+- Integration notes: foundation-level local explorer surface; if `addressindex` is off, block/tx lookups still work but address history is unavailable
+
 ### checkstorage
 
 - Status: implemented
@@ -155,6 +171,64 @@ Never expose unauthenticated public RPC.
 - Example response fields (`getblocktemplate`): `height`, `previousblockhash`, `transactions`, `coinbasevalue`, `bits`, `target`
 - Errors (`submitblock`): decode errors, reject codes (e.g. bad prev, bad bits, high hash)
 - Integration notes: use yespower with `LegacyCoinPoW` personalization
+
+## Wallet RPC Surfaces
+
+### getwalletinfo / getbalance / getwalletsummary
+
+- Status: implemented
+- CLI:
+
+```bash
+./legacycoin-cli getwalletinfo
+./legacycoin-cli getbalance
+./legacycoin-cli getwalletsummary
+```
+
+- Notes:
+  - `getbalance` reflects spendable wallet balance.
+  - `getwalletsummary` includes spendable, immature, pending, and confirmation-sensitive fields.
+  - Coinbase rewards require maturity before spending.
+
+### listtransactions / listunspent / gettransaction / getnewaddress
+
+- Status: implemented
+- CLI:
+
+```bash
+./legacycoin-cli listtransactions
+./legacycoin-cli listunspent
+./legacycoin-cli gettransaction <txid>
+./legacycoin-cli getnewaddress
+```
+
+### walletpassphrasechange
+
+- Status: implemented
+- CLI:
+
+```bash
+./legacycoin-cli walletpassphrasechange <oldpassphrase> <newpassphrase>
+```
+
+## Miner Control RPC Surfaces
+
+### getminerstatus / setminerthreads / startminer / stopminer / benchmarkminer
+
+- Status: implemented
+- CLI:
+
+```bash
+./legacycoin-cli getminerstatus
+./legacycoin-cli setminerthreads 4
+./legacycoin-cli startminer 4
+./legacycoin-cli stopminer
+./legacycoin-cli benchmarkminer 10 4
+```
+
+Notes:
+- `benchmarkminer` is benchmark-only and does not connect a mined block.
+- Mining safety and pause reasons should be checked via `getminerstatus`.
 
 ## Common Error Codes
 

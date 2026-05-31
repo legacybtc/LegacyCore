@@ -77,6 +77,6 @@ if ($missing.Count -gt 0) {
 if (-not $Quiet) {
     Write-Host ""
     Write-Host "Windows build environment looks ready."
-    Write-Host "Expected outputs: legacycoind.exe, legacycoin-cli.exe, legacy-wallet-internal.exe, Wails desktop package."
+    Write-Host "Expected outputs: legacycoind.exe, legacycoin-cli.exe, legacy-wallet-compile-smoke.exe, LegacyWallet.exe (Wails)."
 }
 exit 0

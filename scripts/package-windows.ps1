@@ -31,14 +31,14 @@ if (Test-Path $zipPath) {
 }
 New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
 
-$walletExe = Join-Path $repoRoot "cmd\legacywallet\build\bin\legacy-wallet.exe"
+$walletExe = Join-Path $repoRoot "cmd\legacywallet\build\bin\LegacyWallet.exe"
 $coreExe = Join-Path $repoRoot "legacycoind.exe"
 $cliExe = Join-Path $repoRoot "legacycoin-cli.exe"
-Assert-Path $walletExe "legacy-wallet.exe"
+Assert-Path $walletExe "LegacyWallet.exe"
 Assert-Path $coreExe "legacycoind.exe"
 Assert-Path $cliExe "legacycoin-cli.exe"
 
-Copy-Item $walletExe (Join-Path $stageDir "legacy-wallet.exe")
+Copy-Item $walletExe (Join-Path $stageDir "LegacyWallet.exe")
 Copy-Item $coreExe (Join-Path $stageDir "legacycoind.exe")
 Copy-Item $cliExe (Join-Path $stageDir "legacycoin-cli.exe")
 
@@ -66,11 +66,12 @@ foreach ($dll in $dlls) {
 $startHere = @(
     "@echo off",
     "cd /d ""%~dp0""",
-    "start ""Legacy Wallet"" ""%~dp0legacy-wallet.exe"""
+    "start ""Legacy Wallet"" ""%~dp0LegacyWallet.exe"""
 )
 $startHere | Set-Content -Path (Join-Path $stageDir "START_HERE.bat") -Encoding ASCII
 
 Copy-Item (Join-Path $repoRoot "README_FIRST.txt") (Join-Path $stageDir "README_FIRST.txt")
+Copy-Item (Join-Path $repoRoot "README_WALLET.txt") (Join-Path $stageDir "README_WALLET.txt")
 Copy-Item (Join-Path $repoRoot "LICENSE") (Join-Path $stageDir "LICENSE")
 Copy-Item (Join-Path $repoRoot "NOTICE") (Join-Path $stageDir "NOTICE")
 

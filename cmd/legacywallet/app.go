@@ -11,7 +11,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -58,7 +60,7 @@ type NodeTestResult struct {
 	Message string `json:"message"`
 }
 
-const lifecycleBuildMarker = "integration-hardening-v1.0.3-build-20260526"
+const lifecycleBuildMarker = "v1.0.4"
 
 func NewApp() *App {
 	s := defaultSettings()
@@ -369,6 +371,28 @@ func (a *App) SetMinerThreads(threads int) (map[string]any, error) {
 	return a.service.SetMinerThreads(threads)
 }
 
+func (a *App) BenchmarkMiner(durationSeconds int, threads int) (map[string]any, error) {
+	if durationSeconds <= 0 {
+		durationSeconds = 10
+	}
+	if threads <= 0 {
+		a.mu.Lock()
+		threads = a.settings.withDefaults().DefaultThreads
+		a.mu.Unlock()
+		if threads <= 0 {
+			threads = runtime.NumCPU()
+		}
+	}
+	out, err := a.service.RunRPCMethod("benchmarkminer", []any{durationSeconds, threads})
+	if err != nil {
+		return nil, err
+	}
+	if m, ok := out.(map[string]any); ok {
+		return m, nil
+	}
+	return map[string]any{"result": out}, nil
+}
+
 func (a *App) GetNodeConfig() map[string]any {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -467,6 +491,18 @@ func (a *App) OpenDataDir() map[string]any {
 	return a.service.OpenDataDir()
 }
 
+func (a *App) OpenConfigDir() map[string]any {
+	return a.service.OpenConfigDir()
+}
+
+func (a *App) OpenConfigFile() map[string]any {
+	return a.service.OpenConfigFile()
+}
+
+func (a *App) EnableAddressAndTxIndexConfig() map[string]any {
+	return a.service.EnableAddressAndTxIndexConfig()
+}
+
 func (a *App) GetExplorerSummary() (map[string]any, error) {
 	return a.service.GetExplorerSummary()
 }
@@ -497,17 +533,38 @@ func (a *App) SearchExplorer(query string) (map[string]any, error) {
 	return a.service.SearchExplorer(query)
 }
 
+func (a *App) RunRPCCommand(commandLine string) (map[string]any, error) {
+	method, params, err := parseRPCCommandLine(commandLine)
+	if err != nil {
+		return nil, err
+	}
+	result, err := a.service.RunRPCMethod(method, params)
+	if err != nil {
+		return map[string]any{
+			"ok":     false,
+			"method": method,
+			"params": params,
+			"error":  err.Error(),
+		}, err
+	}
+	return map[string]any{
+		"ok":     true,
+		"method": method,
+		"params": params,
+		"result": result,
+	}, nil
+}
+
 func (a *App) Snapshot() map[string]any {
 	nodeStatus := a.NodeStatus()
+	lifecycle := runtimeBuildMetadata()
+	lifecycle["log"] = lifecycleLogPath()
 	out := map[string]any{
 		"coin":          a.CoinInfo(),
 		"wallet_exists": a.WalletExists(),
 		"node":          nodeStatus,
 		"settings":      a.settings,
-		"lifecycle": map[string]any{
-			"marker": lifecycleBuildMarker,
-			"log":    lifecycleLogPath(),
-		},
+		"lifecycle":     lifecycle,
 	}
 	if !nodeStatus.Running {
 		return out
@@ -766,6 +823,54 @@ func currentExecutablePath() string {
 	return exe
 }
 
+func runtimeBuildMetadata() map[string]any {
+	meta := map[string]any{
+		"marker":       lifecycleBuildMarker,
+		"commit":       "local build",
+		"commit_short": "local build",
+		"build_time":   "",
+		"vcs_modified": "false",
+	}
+	if exe, err := os.Executable(); err == nil {
+		if stat, statErr := os.Stat(exe); statErr == nil {
+			meta["build_time"] = stat.ModTime().UTC().Format(time.RFC3339)
+		}
+	}
+	info, ok := debug.ReadBuildInfo()
+	if !ok || info == nil {
+		if strings.TrimSpace(fmt.Sprint(meta["build_time"])) == "" {
+			meta["build_time"] = time.Now().UTC().Format(time.RFC3339)
+		}
+		return meta
+	}
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			commit := strings.TrimSpace(setting.Value)
+			if commit == "" {
+				continue
+			}
+			meta["commit"] = commit
+			if len(commit) > 12 {
+				meta["commit_short"] = commit[:12]
+			} else {
+				meta["commit_short"] = commit
+			}
+		case "vcs.time":
+			ts := strings.TrimSpace(setting.Value)
+			if ts != "" {
+				meta["build_time"] = ts
+			}
+		case "vcs.modified":
+			meta["vcs_modified"] = strings.TrimSpace(setting.Value)
+		}
+	}
+	if strings.TrimSpace(fmt.Sprint(meta["build_time"])) == "" {
+		meta["build_time"] = time.Now().UTC().Format(time.RFC3339)
+	}
+	return meta
+}
+
 func (a *App) lifecycleLogf(format string, args ...any) {
 	a.lifecycleLog(fmt.Sprintf(format, args...))
 }
@@ -827,6 +932,115 @@ func reportJSON(m map[string]any) string {
 		return fmt.Sprintf("%v", m)
 	}
 	return string(b)
+}
+
+func parseRPCCommandLine(commandLine string) (string, []any, error) {
+	line := strings.TrimSpace(commandLine)
+	if line == "" {
+		return "", nil, fmt.Errorf("rpc command is empty")
+	}
+	tokens, err := splitRPCCommandTokens(line)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(tokens) == 0 {
+		return "", nil, fmt.Errorf("rpc command is empty")
+	}
+	method := strings.ToLower(strings.TrimSpace(tokens[0]))
+	if method == "" {
+		return "", nil, fmt.Errorf("rpc method is required")
+	}
+	capHint := 0
+	if len(tokens) > 1 {
+		capHint = len(tokens) - 1
+	}
+	params := make([]any, 0, capHint)
+	for _, token := range tokens[1:] {
+		v, err := parseRPCParamToken(token)
+		if err != nil {
+			return "", nil, err
+		}
+		params = append(params, v)
+	}
+	return method, params, nil
+}
+
+func splitRPCCommandTokens(line string) ([]string, error) {
+	var tokens []string
+	var b strings.Builder
+	inQuote := byte(0)
+	escaped := false
+	flush := func() {
+		if b.Len() == 0 {
+			return
+		}
+		tokens = append(tokens, b.String())
+		b.Reset()
+	}
+	for i := 0; i < len(line); i++ {
+		ch := line[i]
+		if escaped {
+			b.WriteByte(ch)
+			escaped = false
+			continue
+		}
+		if ch == '\\' {
+			escaped = true
+			continue
+		}
+		if inQuote != 0 {
+			if ch == inQuote {
+				inQuote = 0
+				continue
+			}
+			b.WriteByte(ch)
+			continue
+		}
+		if ch == '"' || ch == '\'' {
+			inQuote = ch
+			continue
+		}
+		if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
+			flush()
+			continue
+		}
+		b.WriteByte(ch)
+	}
+	if escaped || inQuote != 0 {
+		return nil, fmt.Errorf("rpc command has an unterminated escape or quote")
+	}
+	flush()
+	return tokens, nil
+}
+
+func parseRPCParamToken(token string) (any, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "", nil
+	}
+	lower := strings.ToLower(token)
+	switch lower {
+	case "null":
+		return nil, nil
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	}
+	if i, err := strconv.ParseInt(token, 10, 64); err == nil {
+		return i, nil
+	}
+	if f, err := strconv.ParseFloat(token, 64); err == nil && strings.Contains(token, ".") {
+		return f, nil
+	}
+	if strings.HasPrefix(token, "{") || strings.HasPrefix(token, "[") {
+		var parsed any
+		if err := json.Unmarshal([]byte(token), &parsed); err != nil {
+			return nil, fmt.Errorf("invalid JSON parameter %q: %w", token, err)
+		}
+		return parsed, nil
+	}
+	return token, nil
 }
 
 func asInt(v any) int {

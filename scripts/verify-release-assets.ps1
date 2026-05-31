@@ -32,9 +32,10 @@ function Verify-ZipArchive([string]$archive) {
     try {
         $names = $zip.Entries | ForEach-Object { $_.FullName.TrimStart('/') }
         $required = @(
-            "legacy-wallet.exe",
+            "LegacyWallet.exe",
             "legacycoind.exe",
             "legacycoin-cli.exe",
+            "README_WALLET.txt",
             "README_FIRST.txt",
             "LICENSE",
             "NOTICE",
