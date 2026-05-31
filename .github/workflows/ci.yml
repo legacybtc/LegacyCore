@@ -90,7 +90,7 @@ jobs:
         run: |
           go build -trimpath -o legacycoind ./cmd/legacycoind
           go build -trimpath -o legacycoin-cli ./cmd/legacycoin-cli
-          go build -trimpath -o legacy-wallet-internal ./cmd/legacywallet
+          go build -trimpath -o legacy-wallet-compile-smoke ./cmd/legacywallet
           ./legacycoind params | tee params.txt
           grep -q "yespower backend: cgo-c-reference" params.txt
           pwsh ./scripts/verify-mainnet-identity.ps1 -Binary ./legacycoind
@@ -125,7 +125,7 @@ jobs:
           $env:Path = "C:\msys64\ucrt64\bin;$env:Path"
           go build -trimpath -o legacycoind.exe ./cmd/legacycoind
           go build -trimpath -o legacycoin-cli.exe ./cmd/legacycoin-cli
-          go build -trimpath -o legacy-wallet-internal.exe ./cmd/legacywallet
+          go build -trimpath -o legacy-wallet-compile-smoke.exe ./cmd/legacywallet
           $params = .\legacycoind.exe params | Out-String
           $params
           if ($params -notmatch "yespower backend:\s+cgo-c-reference") { throw "Expected cgo-c-reference backend for production build." }

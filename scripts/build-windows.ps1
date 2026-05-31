@@ -29,8 +29,8 @@ function Sync-WalletBrandingAssets {
 }
 
 $env:GOTELEMETRY = "off"
-$env:GOCACHE = Join-Path $repoRoot ".gocache-build"
-$env:GOTMPDIR = Join-Path $repoRoot ".gotmp-build"
+$env:GOCACHE = Join-Path $env:TEMP "legacycore-gocache-build"
+$env:GOTMPDIR = Join-Path $env:TEMP "legacycore-gotmp-build"
 New-Item -ItemType Directory -Force -Path $env:GOCACHE, $env:GOTMPDIR | Out-Null
 
 function Resolve-CompilerCandidates {
@@ -56,7 +56,7 @@ function Try-CgoCompiler([string]$compilerPath) {
     }
     $compilerDir = Split-Path $compilerPath -Parent
     $oldPath = $env:PATH
-    $probeDir = Join-Path $repoRoot ".gotmp"
+    $probeDir = Join-Path $env:TEMP "legacycore-cgo-probe"
     $probeOut = Join-Path $probeDir "cgo-probe.exe"
     $env:PATH = "$compilerDir;$oldPath"
     $env:CGO_ENABLED = "1"
@@ -102,10 +102,18 @@ foreach ($cmd in @("go", "node", "npm")) {
 
 Write-Host "Building wallet frontend..."
 Push-Location "cmd\legacywallet\frontend"
-npm install
-Assert-LastExitCode "npm install"
-npm run build
-Assert-LastExitCode "npm run build"
+if (-not (Test-Path "node_modules")) {
+    npm install
+    Assert-LastExitCode "npm install"
+}
+$frontendDist = Join-Path (Get-Location) "dist"
+$distReady = (Test-Path $frontendDist) -and ((Get-ChildItem -Path $frontendDist -ErrorAction SilentlyContinue | Measure-Object).Count -gt 0)
+if (-not $distReady) {
+    npm run build
+    Assert-LastExitCode "npm run build"
+} else {
+    Write-Host "Using existing frontend dist output."
+}
 Pop-Location
 
 $env:CGO_ENABLED = "1"
@@ -122,12 +130,13 @@ go vet ./...
 Assert-LastExitCode "go vet ./..."
 
 Write-Host "Building Core and CLI with -trimpath..."
+Remove-Item -Force .\legacycoind.exe, .\legacycoin-cli.exe, .\legacy-wallet-compile-smoke.exe -ErrorAction SilentlyContinue
 go build -trimpath -o legacycoind.exe .\cmd\legacycoind
 Assert-LastExitCode "go build legacycoind.exe"
 go build -trimpath -o legacycoin-cli.exe .\cmd\legacycoin-cli
 Assert-LastExitCode "go build legacycoin-cli.exe"
-go build -trimpath -o legacy-wallet-internal.exe .\cmd\legacywallet
-Assert-LastExitCode "go build legacy-wallet-internal.exe"
+go build -trimpath -o legacy-wallet-compile-smoke.exe .\cmd\legacywallet
+Assert-LastExitCode "go build legacy-wallet-compile-smoke.exe"
 
 $params = (.\legacycoind.exe params) -join "`n"
 Write-Host $params

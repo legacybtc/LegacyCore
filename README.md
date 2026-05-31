@@ -55,7 +55,7 @@ Always verify SHA256 checksums before use.
 Windows:
 
 1. Extract the wallet ZIP.
-2. Run `START_HERE.bat`.
+2. Run `LegacyWallet.exe` (or `START_HERE.bat`).
 3. Check status with wallet diagnostics or CLI.
 
 Linux:
@@ -111,7 +111,12 @@ cd ..\..\..
 
 ## Run Wallet
 
-Build/run from source in `cmd/legacywallet`, or use the Windows wallet release package.
+Build/run from source in `cmd/legacywallet` using Wails, or use the Windows wallet release package.
+
+```powershell
+cd cmd\legacywallet
+wails build
+```
 
 ## Mining
 

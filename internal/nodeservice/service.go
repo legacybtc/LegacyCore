@@ -336,12 +336,47 @@ func callLocalRPC(dataDir, method string, params []any, timeout time.Duration) (
 	if payload.Error != nil {
 		if m, ok := payload.Error.(map[string]any); ok {
 			if msg, ok := m["message"].(string); ok && strings.TrimSpace(msg) != "" {
+				if code, ok := m["code"].(float64); ok {
+					return nil, fmt.Errorf("rpc error %d: %s", int(code), msg)
+				}
 				return nil, errors.New(msg)
 			}
 		}
 		return nil, fmt.Errorf("rpc error: %v", payload.Error)
 	}
 	return payload.Result, nil
+}
+
+// RunRPCMethod sends a direct JSON-RPC command to the local Legacy Core endpoint.
+func (s *Service) RunRPCMethod(method string, params []any) (any, error) {
+	method = strings.ToLower(strings.TrimSpace(method))
+	if method == "" {
+		return nil, fmt.Errorf("rpc method is required")
+	}
+	result, err := callLocalRPC(s.dataDir, method, params, 8*time.Second)
+	if err != nil {
+		return nil, normalizeRPCCommandError(err)
+	}
+	return result, nil
+}
+
+func normalizeRPCCommandError(err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	switch {
+	case strings.Contains(msg, ".cookie"), strings.Contains(msg, "no such file"):
+		return fmt.Errorf("daemon offline / rpc unavailable: RPC cookie not ready")
+	case strings.Contains(msg, "connection refused"), strings.Contains(msg, "actively refused"):
+		return fmt.Errorf("daemon offline / rpc unavailable: connection refused")
+	case strings.Contains(msg, "timeout"), strings.Contains(msg, "deadline exceeded"):
+		return fmt.Errorf("daemon offline / rpc unavailable: request timed out")
+	case strings.Contains(msg, "status 401"), strings.Contains(msg, "unauthorized"):
+		return fmt.Errorf("rpc authentication failed (401 unauthorized)")
+	default:
+		return err
+	}
 }
 
 func requiredPortsAvailable(dataDir string, walletOwns bool) error {

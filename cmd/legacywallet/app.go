@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -497,6 +498,28 @@ func (a *App) SearchExplorer(query string) (map[string]any, error) {
 	return a.service.SearchExplorer(query)
 }
 
+func (a *App) RunRPCCommand(commandLine string) (map[string]any, error) {
+	method, params, err := parseRPCCommandLine(commandLine)
+	if err != nil {
+		return nil, err
+	}
+	result, err := a.service.RunRPCMethod(method, params)
+	if err != nil {
+		return map[string]any{
+			"ok":     false,
+			"method": method,
+			"params": params,
+			"error":  err.Error(),
+		}, err
+	}
+	return map[string]any{
+		"ok":     true,
+		"method": method,
+		"params": params,
+		"result": result,
+	}, nil
+}
+
 func (a *App) Snapshot() map[string]any {
 	nodeStatus := a.NodeStatus()
 	out := map[string]any{
@@ -827,6 +850,115 @@ func reportJSON(m map[string]any) string {
 		return fmt.Sprintf("%v", m)
 	}
 	return string(b)
+}
+
+func parseRPCCommandLine(commandLine string) (string, []any, error) {
+	line := strings.TrimSpace(commandLine)
+	if line == "" {
+		return "", nil, fmt.Errorf("rpc command is empty")
+	}
+	tokens, err := splitRPCCommandTokens(line)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(tokens) == 0 {
+		return "", nil, fmt.Errorf("rpc command is empty")
+	}
+	method := strings.ToLower(strings.TrimSpace(tokens[0]))
+	if method == "" {
+		return "", nil, fmt.Errorf("rpc method is required")
+	}
+	capHint := 0
+	if len(tokens) > 1 {
+		capHint = len(tokens) - 1
+	}
+	params := make([]any, 0, capHint)
+	for _, token := range tokens[1:] {
+		v, err := parseRPCParamToken(token)
+		if err != nil {
+			return "", nil, err
+		}
+		params = append(params, v)
+	}
+	return method, params, nil
+}
+
+func splitRPCCommandTokens(line string) ([]string, error) {
+	var tokens []string
+	var b strings.Builder
+	inQuote := byte(0)
+	escaped := false
+	flush := func() {
+		if b.Len() == 0 {
+			return
+		}
+		tokens = append(tokens, b.String())
+		b.Reset()
+	}
+	for i := 0; i < len(line); i++ {
+		ch := line[i]
+		if escaped {
+			b.WriteByte(ch)
+			escaped = false
+			continue
+		}
+		if ch == '\\' {
+			escaped = true
+			continue
+		}
+		if inQuote != 0 {
+			if ch == inQuote {
+				inQuote = 0
+				continue
+			}
+			b.WriteByte(ch)
+			continue
+		}
+		if ch == '"' || ch == '\'' {
+			inQuote = ch
+			continue
+		}
+		if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
+			flush()
+			continue
+		}
+		b.WriteByte(ch)
+	}
+	if escaped || inQuote != 0 {
+		return nil, fmt.Errorf("rpc command has an unterminated escape or quote")
+	}
+	flush()
+	return tokens, nil
+}
+
+func parseRPCParamToken(token string) (any, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "", nil
+	}
+	lower := strings.ToLower(token)
+	switch lower {
+	case "null":
+		return nil, nil
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	}
+	if i, err := strconv.ParseInt(token, 10, 64); err == nil {
+		return i, nil
+	}
+	if f, err := strconv.ParseFloat(token, 64); err == nil && strings.Contains(token, ".") {
+		return f, nil
+	}
+	if strings.HasPrefix(token, "{") || strings.HasPrefix(token, "[") {
+		var parsed any
+		if err := json.Unmarshal([]byte(token), &parsed); err != nil {
+			return nil, fmt.Errorf("invalid JSON parameter %q: %w", token, err)
+		}
+		return parsed, nil
+	}
+	return token, nil
 }
 
 func asInt(v any) int {

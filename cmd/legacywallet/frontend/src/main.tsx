@@ -104,6 +104,7 @@ type Backend = {
   GetTransaction(txid: string): Promise<Dict>;
   GetMempool(): Promise<Dict>;
   SearchExplorer(query: string): Promise<Dict>;
+  RunRPCCommand(commandLine: string): Promise<Dict>;
   SaveSettings(settings: SettingsShape): Promise<SettingsShape>;
 };
 
@@ -121,16 +122,18 @@ const api = () => {
 
 const tabs = [
   ["overview", Activity, "Overview"],
-  ["wallet", Wallet, "Wallet"],
-  ["receive", Coins, "Receive"],
   ["send", Send, "Send"],
-  ["activity", History, "Activity"],
-  ["explorer", Globe2, "Explorer"],
-  ["backup", Archive, "Backup"],
+  ["receive", Coins, "Receive"],
+  ["transactions", History, "Transactions"],
   ["mining", Pickaxe, "Mining"],
-  ["network", Network, "Network"],
-  ["diagnostics", Bug, "Diagnostics"],
+  ["network", Network, "Network / Peers"],
+  ["blockchain", Database, "Blockchain / Node"],
+  ["explorer", Globe2, "Explorer"],
+  ["wallet-security", Shield, "Wallet Security"],
+  ["address-book", Archive, "Address Book"],
+  ["rpc-console", Bug, "RPC Console"],
   ["settings", Settings, "Settings"],
+  ["about", BadgeCheck, "About"],
 ] as const;
 
 function App() {
@@ -196,16 +199,18 @@ function App() {
     if (!snap) return <Loading />;
     if (!snap.wallet_exists) return <FirstRun run={run} />;
     const p = { snap, run, refresh };
-    if (tab === "wallet") return <WalletPage {...p} />;
-    if (tab === "receive") return <ReceivePage {...p} />;
     if (tab === "send") return <SendPage {...p} />;
-    if (tab === "activity") return <ActivityPage {...p} />;
-    if (tab === "explorer") return <ExplorerPage {...p} />;
-    if (tab === "backup") return <BackupPage {...p} />;
+    if (tab === "receive") return <ReceivePage {...p} />;
+    if (tab === "transactions") return <ActivityPage {...p} />;
     if (tab === "mining") return <MiningPage {...p} />;
     if (tab === "network") return <NetworkPage {...p} />;
-    if (tab === "diagnostics") return <DiagnosticsPage {...p} />;
+    if (tab === "blockchain") return <NodePage {...p} />;
+    if (tab === "explorer") return <ExplorerPage {...p} />;
+    if (tab === "wallet-security") return <WalletSecurityPage {...p} />;
+    if (tab === "address-book") return <AddressBookPage />;
+    if (tab === "rpc-console") return <RPCConsolePage snap={snap} />;
     if (tab === "settings") return <SettingsPage {...p} />;
+    if (tab === "about") return <AboutPage snap={snap} />;
     return <Overview {...p} />;
   }, [snap, tab]);
 
@@ -225,7 +230,7 @@ function App() {
 
   return (
     <main className={`appWindow ${displayMode === "compact" ? "compactMode" : "comfortableMode"} ${advancedMode ? "advancedMode" : ""}`}>
-      <TitleBar />
+      <TitleBarClassic />
       <div className="shell">
         <aside className="sidebar">
           <div className="brand">
@@ -253,9 +258,17 @@ function App() {
         </aside>
 
         <section className="workspace">
+          <div className="menuBar">
+            <button type="button">File</button>
+            <button type="button">Wallet</button>
+            <button type="button">Node</button>
+            <button type="button">Mining</button>
+            <button type="button">Tools</button>
+            <button type="button">Help</button>
+          </div>
           <header>
             <div>
-              <p className="eyebrow">Legacy Wallet 1.0.3</p>
+              <p className="eyebrow">Legacy Wallet 1.0.4</p>
               <h2>{tabs.find(([id]) => id === tab)?.[2] || "Overview"}</h2>
             </div>
             <div className="toolbar">
@@ -286,7 +299,7 @@ function App() {
           {toast && <div className="toast" onClick={() => setToast("")}>{toast}</div>}
         </section>
       </div>
-      <StatusBar snap={snap} />
+      <StatusBarClassic snap={snap} />
     </main>
   );
 }
@@ -1106,7 +1119,7 @@ function MiningPage({ snap, run }: PageProps) {
           ["Last template refresh", mining.last_template_refresh_time ? dateTime(mining.last_template_refresh_time) : "-"],
           ["Template age", seconds(mining.last_template_refresh_ago_seconds)],
           ["Watchdog action", mining.watchdog_last_recovery_action || "-"],
-          ["Active mining address", mining.active_mining_address || snap.wallet?.default_mining_address || "Set in Receive/Wallet tab"],
+          ["Active mining address", mining.active_mining_address || snap.wallet?.default_mining_address || "Set in Receive / Wallet Security tab"],
           ["Pubkey hash", mining.mining_pubkey_hash || "-"],
           ["Configured threads", mining.configured_threads || threads],
           ["Active threads", mining.active_threads || 0],
@@ -1493,8 +1506,8 @@ function SettingsPage({ snap, run }: PageProps) {
         </div>
       </section>
       <InfoPanel title="About" rows={[
-        ["Product", "Legacy Wallet 1.0.3"],
-        ["Core Engine", "Legacy Core 1.0.3"],
+        ["Product", "Legacy Wallet 1.0.4"],
+        ["Core Engine", "Legacy Core 1.0.4"],
         ["Network", "Legacy Coin Mainnet"],
         ["Coin", "Legacy Coin / LBTC"],
         ["P2P port", snap.coin?.p2p_port],
@@ -1519,6 +1532,337 @@ function SettingsPage({ snap, run }: PageProps) {
   );
 }
 
+function NodePage({ snap, run }: PageProps) {
+  const [storage, setStorage] = useState<Dict | null>(null);
+  const [doctor, setDoctor] = useState<Dict | null>(null);
+  const chain = snap.blockchain || {};
+  const coin = snap.coin || {};
+
+  async function refreshStorage() {
+    const res = await run("Check storage", () => api().CheckStorage());
+    setStorage(res);
+  }
+
+  async function refreshDoctor() {
+    const res = await run("Run doctor", () => api().Doctor());
+    setDoctor(res);
+  }
+
+  return (
+    <div className="page">
+      <div className="metricGrid">
+        <Metric label="Node" value={snap.node?.running ? "Online" : "Offline"} />
+        <Metric label="Height" value={chain.height ?? "-"} />
+        <Metric label="Peers" value={chain.peer_count ?? (snap.peers || []).length ?? 0} />
+        <Metric label="Difficulty bits" value={chain.current_bits || "-"} mono />
+        <Metric label="Tx index" value={chain.txindex?.enabled ? "Enabled" : "Disabled"} />
+        <Metric label="Address index" value={chain.addressindex?.enabled ? "Enabled" : "Disabled"} />
+        <Metric label="Chainwork" value={chain.chainwork || "-"} mono copyable />
+        <Metric label="Fork choice" value={chain.fork_choice || "-"} />
+      </div>
+      <InfoPanel title="Blockchain / Node" rows={[
+        ["Best block", chain.bestblockhash || "-"],
+        ["Genesis hash", coin.genesis_hash || "-"],
+        ["Message start", "a4 ac c6 4d"],
+        ["yespower personalization", coin.yespower_personalization || "LegacyCoinPoW"],
+        ["P2P port", coin.p2p_port ?? 19555],
+        ["RPC port", coin.rpc_port ?? 19556],
+        ["DNS seeds", (coin.dns_seeds || []).join(", ") || "legacycoinseed.space, legacycoinseed2.space"],
+        ["Data dir", snap.node?.data_dir || snap.settings?.dataDir || "-"],
+      ]} />
+      <section className="panel">
+        <h3>Node diagnostics</h3>
+        <p className="muted">Run storage and node diagnostics with the real backend. No mock data is shown.</p>
+        <div className="row">
+          <button onClick={refreshStorage}>checkstorage</button>
+          <button onClick={refreshDoctor}>doctor</button>
+        </div>
+        {storage && <pre>{JSON.stringify(storage, null, 2)}</pre>}
+        {doctor && <pre>{JSON.stringify(doctor, null, 2)}</pre>}
+      </section>
+    </div>
+  );
+}
+
+function WalletSecurityPage({ snap, run, refresh }: PageProps) {
+  const wallet = snap.wallet || {};
+  const security = wallet.wallet || {};
+  const [passphrase, setPassphrase] = useState("");
+  const [newPassphrase, setNewPassphrase] = useState("");
+  const [unlockSeconds, setUnlockSeconds] = useState(900);
+  const [backupPath, setBackupPath] = useState(() => `${snap.settings?.dataDir || "."}\\backups\\legacy-wallet-backup-${new Date().toISOString().slice(0, 10)}.json`);
+  const [restorePath, setRestorePath] = useState("");
+  const [lastResult, setLastResult] = useState<Dict | null>(null);
+
+  return (
+    <div className="page">
+      <div className="metricGrid">
+        <Metric label="Encrypted" value={yesNo(security.encrypted)} icon={<Shield />} />
+        <Metric label="Locked" value={yesNo(security.locked)} icon={security.locked ? <Lock /> : <Unlock />} />
+        <Metric label="Spendable" value={wallet.spendable_lbtc ? lbtc(wallet.spendable_lbtc) : fmtAmount(wallet.spendable)} />
+        <Metric label="Immature" value={wallet.immature_lbtc ? lbtc(wallet.immature_lbtc) : fmtAmount(wallet.immature)} />
+      </div>
+      <section className="panel">
+        <h3>Wallet Security</h3>
+        <Notice tone="warn" text="Never share private keys, WIF keys, wallet passphrases, seed phrases, or RPC credentials." />
+        <div className="row">
+          <Field label="Passphrase">
+            <input type="password" value={passphrase} onChange={(e) => setPassphrase(e.target.value)} />
+          </Field>
+          <Field label="Unlock seconds">
+            <input type="number" min={60} value={unlockSeconds} onChange={(e) => setUnlockSeconds(Math.max(60, Number(e.target.value) || 900))} />
+          </Field>
+          <Field label="New passphrase">
+            <input type="password" value={newPassphrase} onChange={(e) => setNewPassphrase(e.target.value)} />
+          </Field>
+        </div>
+        <div className="row">
+          {!security.encrypted && <button className="primary" disabled={!passphrase} onClick={async () => { setLastResult(await run("Encrypt wallet", () => api().EncryptWallet(passphrase))); setPassphrase(""); await refresh(); }}>Encrypt wallet</button>}
+          {security.encrypted && security.locked && <button className="primary" disabled={!passphrase} onClick={async () => { setLastResult(await run("Unlock wallet", () => api().UnlockWallet(passphrase, unlockSeconds))); setPassphrase(""); await refresh(); }}>Unlock wallet</button>}
+          {security.encrypted && !security.locked && <button onClick={async () => { setLastResult(await run("Lock wallet", () => api().LockWallet())); await refresh(); }}>Lock wallet</button>}
+          {security.encrypted && <button disabled={!passphrase || !newPassphrase} onClick={async () => { setLastResult(await run("Change passphrase", () => api().ChangeWalletPassphrase(passphrase, newPassphrase))); setPassphrase(""); setNewPassphrase(""); await refresh(); }}>walletpassphrasechange</button>}
+        </div>
+      </section>
+      <section className="panel">
+        <h3>Wallet backups</h3>
+        <Field label="Backup destination">
+          <input value={backupPath} onChange={(e) => setBackupPath(e.target.value)} />
+        </Field>
+        <div className="row">
+          <button className="primary" onClick={async () => setLastResult(await run("Backup wallet", () => api().BackupWallet(backupPath)))}>backupwallet</button>
+        </div>
+        <Field label="Restore path">
+          <input value={restorePath} onChange={(e) => setRestorePath(e.target.value)} />
+        </Field>
+        <div className="row">
+          <button disabled={!restorePath.trim()} onClick={async () => setLastResult(await run("Restore wallet backup", () => api().RestoreWalletBackup(restorePath.trim())))}>restore wallet</button>
+        </div>
+        {lastResult && <pre>{JSON.stringify(lastResult, null, 2)}</pre>}
+      </section>
+    </div>
+  );
+}
+
+function AddressBookPage() {
+  const storageKey = "legacy-wallet-address-book-v1";
+  const [entries, setEntries] = useState<Array<{ label: string; address: string }>>(() => {
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .map((e) => ({ label: String(e?.label || ""), address: String(e?.address || "") }))
+        .filter((e) => e.address);
+    } catch {
+      return [];
+    }
+  });
+  const [label, setLabel] = useState("");
+  const [address, setAddress] = useState("");
+  const [message, setMessage] = useState("");
+
+  function save(next: Array<{ label: string; address: string }>) {
+    setEntries(next);
+    localStorage.setItem(storageKey, JSON.stringify(next));
+  }
+
+  function addEntry() {
+    const cleanAddress = address.trim();
+    if (!cleanAddress) {
+      setMessage("Address is required.");
+      return;
+    }
+    if (!isLikelyLegacyAddress(cleanAddress)) {
+      setMessage("Address format looks invalid for LBTC.");
+      return;
+    }
+    save([...entries, { label: label.trim() || "Contact", address: cleanAddress }]);
+    setLabel("");
+    setAddress("");
+    setMessage("Address saved locally.");
+  }
+
+  function removeEntry(index: number) {
+    save(entries.filter((_, i) => i !== index));
+  }
+
+  return (
+    <div className="page">
+      <section className="panel">
+        <h3>Address Book</h3>
+        <p className="muted">This wallet stores address book entries locally in the desktop UI profile.</p>
+        <div className="row">
+          <Field label="Label">
+            <input value={label} onChange={(e) => setLabel(e.target.value)} />
+          </Field>
+          <Field label="Address">
+            <input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Legacy address" />
+          </Field>
+          <button className="primary" onClick={addEntry}>Add</button>
+        </div>
+        {message && <Notice tone="info" text={message} />}
+      </section>
+      <section className="panel">
+        <h3>Saved contacts</h3>
+        {entries.length === 0 && <p className="muted">No saved contacts yet.</p>}
+        <div className="nodeList">
+          {entries.map((entry, index) => (
+            <div className="nodeRow" key={`${entry.address}-${index}`}>
+              <strong>{entry.label}</strong>
+              <span className="mono"><CopyableValue value={entry.address} /></span>
+              <button onClick={() => removeEntry(index)}>Delete</button>
+            </div>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function RPCConsolePage({ snap }: { snap: Dict }) {
+  const [command, setCommand] = useState("");
+  const [outputLines, setOutputLines] = useState<Array<{ command: string; result: string; error: boolean; ts: number }>>([]);
+  const [history, setHistory] = useState<string[]>([]);
+  const [historyIndex, setHistoryIndex] = useState<number>(-1);
+  const [status, setStatus] = useState("");
+  const [running, setRunning] = useState(false);
+
+  const runCommand = useCallback(async () => {
+    const line = command.trim();
+    if (!line) {
+      setStatus("Enter a command.");
+      return;
+    }
+    const method = firstToken(line).toLowerCase();
+    if (isDangerousRPCMethod(method)) {
+      const ok = window.confirm(`Dangerous command detected: ${method}\n\nThis may affect your wallet or node. Continue?`);
+      if (!ok) {
+        setStatus("Command cancelled.");
+        return;
+      }
+    }
+    setRunning(true);
+    setStatus("Executing...");
+    try {
+      const response = await api().RunRPCCommand(line);
+      const clean = sanitizeConsoleResult(response?.result ?? response);
+      setOutputLines((prev) => [...prev, { command: line, result: JSON.stringify(clean, null, 2), error: false, ts: Date.now() }]);
+      setHistory((prev) => [line, ...prev.filter((v) => v !== line)].slice(0, 50));
+      setHistoryIndex(-1);
+      setStatus("OK");
+      setCommand("");
+    } catch (e) {
+      const errText = cleanError(e);
+      setOutputLines((prev) => [...prev, { command: line, result: errText, error: true, ts: Date.now() }]);
+      setHistory((prev) => [line, ...prev.filter((v) => v !== line)].slice(0, 50));
+      setHistoryIndex(-1);
+      setStatus(errText);
+    } finally {
+      setRunning(false);
+    }
+  }, [command]);
+
+  function handleHistoryKey(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!history.length) return;
+      const nextIndex = Math.min(history.length - 1, historyIndex + 1);
+      setHistoryIndex(nextIndex);
+      setCommand(history[nextIndex]);
+      return;
+    }
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      if (!history.length) return;
+      const nextIndex = Math.max(-1, historyIndex - 1);
+      setHistoryIndex(nextIndex);
+      setCommand(nextIndex >= 0 ? history[nextIndex] : "");
+      return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void runCommand();
+    }
+  }
+
+  return (
+    <div className="page">
+      <section className="panel">
+        <h3>RPC Console</h3>
+        <Notice tone="warn" text="Advanced console. Commands may affect your wallet or node. Never share private keys, seed phrases, WIF keys, wallet passwords, or RPC credentials." />
+        {!snap.node?.running && <Notice tone="danger" text="Daemon offline / RPC unavailable. Start the node before executing commands." />}
+        <div className="row">
+          <input
+            value={command}
+            onChange={(e) => setCommand(e.target.value)}
+            onKeyDown={handleHistoryKey}
+            placeholder="help | getblockchaininfo | getpeerinfo | getwalletinfo | getbalance"
+          />
+          <button className="primary" disabled={running} onClick={() => void runCommand()}>Execute</button>
+          <button onClick={() => setOutputLines([])}>Clear output</button>
+          <button onClick={() => setCommand("help")}>Help</button>
+        </div>
+        <small className="muted">Status: {status || "idle"}</small>
+      </section>
+      <section className="panel consolePanel">
+        <h3>Output</h3>
+        <div className="consoleOutput">
+          {outputLines.length === 0 && <p className="muted">No command output yet.</p>}
+          {outputLines.map((line) => (
+            <div key={`${line.ts}-${line.command}`} className={`consoleLine ${line.error ? "error" : "ok"}`}>
+              <div className="consoleHead">
+                <strong className="mono">{line.command}</strong>
+                <button onClick={() => copy(line.result)}><Copy size={12} /> Copy</button>
+              </div>
+              <pre>{line.result}</pre>
+            </div>
+          ))}
+        </div>
+      </section>
+      <section className="panel">
+        <h3>Recent commands</h3>
+        <div className="row">
+          {history.slice(0, 10).map((item) => (
+            <button key={item} onClick={() => setCommand(item)}>{item}</button>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function AboutPage({ snap }: { snap: Dict }) {
+  return (
+    <div className="page">
+      <InfoPanel title="About Legacy Wallet" rows={[
+        ["Product", "Legacy Wallet v1.0.4"],
+        ["Core", "Legacy Core v1.0.4"],
+        ["Coin", "Legacy Coin / LBTC"],
+        ["Tagline", "Pure fair-launch Proof-of-Work"],
+        ["Mining", "CPU-friendly yespower mining"],
+        ["Inspired by", "Early Bitcoin Core and One CPU, One Vote"],
+        ["GitHub", "https://github.com/legacybtc/LegacyCore"],
+      ]} />
+      <InfoPanel title="Mainnet Identity" rows={[
+        ["P2P port", snap.coin?.p2p_port ?? 19555],
+        ["RPC port", snap.coin?.rpc_port ?? 19556],
+        ["Message start", "a4 ac c6 4d"],
+        ["Address version", 48],
+        ["WIF version", 176],
+        ["PoW", "yespower"],
+        ["PoW personalization", snap.coin?.yespower_personalization || "LegacyCoinPoW"],
+        ["Genesis time", 1779235200],
+        ["Genesis bits", "207fffff"],
+        ["Post-genesis launch bits", "1f0fffff"],
+        ["Genesis nonce", 3],
+        ["Genesis hash", snap.coin?.genesis_hash || "5b4c78e4556afcd51acf7b9eb2e387fbea2d1414e6042d80d38e6256987154f5"],
+        ["DNS seeds", (snap.coin?.dns_seeds || []).join(", ") || "legacycoinseed.space, legacycoinseed2.space"],
+      ]} />
+    </div>
+  );
+}
+
 type PageProps = {
   snap: Dict;
   run: <T>(label: string, fn: () => Promise<T>) => Promise<T>;
@@ -1527,6 +1871,40 @@ type PageProps = {
 
 function Loading() {
   return <div className="loading"><img src={legacyLogo} alt="" /><strong>Opening Legacy Wallet</strong><span>Starting the desktop backend...</span></div>;
+}
+
+function TitleBarClassic() {
+  return (
+    <div className="titleBar">
+      <div className="titleIdentity"><img src={legacyLogo} alt="" /><strong>Legacy Wallet</strong><span>Mainnet</span></div>
+      <div className="windowButtons">
+        <button aria-label="Minimize" title="Minimize" onClick={() => api().WindowMinimise()}><span>-</span></button>
+        <button aria-label="Maximize" title="Maximize / restore" onClick={() => api().WindowToggleMaximise()}><span>[]</span></button>
+        <button aria-label="Close" title="Close" className="close" onClick={() => api().Quit()}><span>X</span></button>
+      </div>
+    </div>
+  );
+}
+
+function StatusBarClassic({ snap }: { snap: Dict | null }) {
+  const peers = snap?.blockchain?.peer_count ?? (snap?.peers || []).length ?? 0;
+  const height = snap?.blockchain?.height ?? "-";
+  const state = walletSyncState(snap);
+  const mining = snap?.mining || {};
+  const miningLabel = mining.active_mining ? "Mining: active" : mining.mining_paused_reason ? `Mining: paused (${mining.mining_paused_reason})` : "Mining: inactive";
+  const nodeLabel = snap?.node?.running ? "Node: online" : "Node: offline";
+  const walletLabel = snap?.wallet?.wallet?.locked ? "Wallet: locked" : "Wallet: unlocked";
+  return (
+    <footer className={`statusBar ${state.tone}`}>
+      <span>{nodeLabel}</span>
+      <span>Height: {height}</span>
+      <span><StatusDot ok={state.tone === "good"} /> Peers: {peers}</span>
+      <span>{walletLabel}</span>
+      <span>{miningLabel}</span>
+      <span>Network: LBTC mainnet</span>
+      <span className="bars"><i /><i /><i /><i /></span>
+    </footer>
+  );
 }
 
 function TitleBar() {
@@ -1851,6 +2229,65 @@ function title(v: string) {
 
 function titleCase(v: string) {
   return v.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function firstToken(v: string) {
+  const t = String(v || "").trim();
+  if (!t) return "";
+  const parts = t.split(/\s+/);
+  return parts[0] || "";
+}
+
+function isDangerousRPCMethod(method: string) {
+  const set = new Set([
+    "dumpprivkey",
+    "dumpwallet",
+    "importprivkey",
+    "encryptwallet",
+    "walletpassphrase",
+    "walletpassphrasechange",
+    "sendtoaddress",
+    "sendrawtransaction",
+    "stop",
+  ]);
+  return set.has(String(method || "").toLowerCase());
+}
+
+function sanitizeConsoleResult(value: any): any {
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) return value.map(sanitizeConsoleResult);
+  if (typeof value === "object") {
+    const out: Dict = {};
+    for (const [k, v] of Object.entries(value as Dict)) {
+      const lower = k.toLowerCase();
+      if (lower.includes("passphrase") || lower.includes("password") || lower.includes("seed")) {
+        out[k] = "***masked***";
+        continue;
+      }
+      if (lower.includes("privkey") || lower.includes("privatekey") || lower.includes("wif")) {
+        out[k] = "***masked***";
+        continue;
+      }
+      out[k] = sanitizeConsoleResult(v);
+    }
+    return out;
+  }
+  if (typeof value === "string") {
+    const lower = value.toLowerCase();
+    if (lower.includes("walletpassphrase") || lower.includes("dumpprivkey") || lower.includes("seed phrase")) {
+      return "***masked-sensitive-output***";
+    }
+    if (/^[LK][1-9A-HJ-NP-Za-km-z]{25,64}$/.test(value)) {
+      return "***masked-address-or-key***";
+    }
+    return value;
+  }
+  return value;
+}
+
+function isLikelyLegacyAddress(address: string) {
+  const clean = String(address || "").trim();
+  return /^L[1-9A-HJ-NP-Za-km-z]{25,62}$/.test(clean);
 }
 
 async function copy(text: string) {

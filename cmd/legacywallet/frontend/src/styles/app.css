@@ -209,6 +209,31 @@ button:disabled { opacity: .45; cursor: not-allowed; }
     radial-gradient(circle at top right, rgba(42, 87, 150, .18), transparent 340px),
     linear-gradient(180deg, #0d1119 0%, #07090d 100%);
 }
+.menuBar {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin-bottom: 6px;
+  border: 1px solid #2f3b4e;
+  border-radius: 6px;
+  background: linear-gradient(180deg, #151d29, #0a0f17);
+  overflow: hidden;
+}
+.menuBar button {
+  min-height: 30px;
+  border: 0;
+  border-right: 1px solid #2f3b4e;
+  border-radius: 0;
+  background: transparent;
+  color: #d4e2f5;
+  padding: 6px 12px;
+}
+.menuBar button:last-child {
+  border-right: 0;
+}
+.menuBar button:hover {
+  background: #1b2738;
+}
 header {
   min-height: 38px;
   display: flex;
@@ -1026,6 +1051,47 @@ input:focus {
   max-height: none;
   min-height: 0;
 }
+.consolePanel {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 8px;
+}
+.consoleOutput {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  gap: 8px;
+}
+.consoleLine {
+  border: 1px solid #2f3b4e;
+  border-radius: 6px;
+  background: #05080d;
+  padding: 8px;
+}
+.consoleLine.ok {
+  border-color: #2d6f43;
+}
+.consoleLine.error {
+  border-color: #793432;
+  background: #1b0d0d;
+}
+.consoleHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.consoleLine pre {
+  margin-top: 8px;
+  max-height: 260px;
+  overflow: auto;
+  padding: 8px;
+  border-radius: 6px;
+  border: 1px solid #223148;
+  background: #020409;
+  color: #d8e8ff;
+}
 
 .modalShade {
   position: fixed;
@@ -1072,7 +1138,7 @@ input:focus {
 
 .statusBar {
   display: grid;
-  grid-template-columns: 150px 110px 170px 140px minmax(160px, 1fr) 58px;
+  grid-template-columns: 130px 110px 130px 130px minmax(150px, 1fr) 170px 58px;
   align-items: center;
   border-top: 1px solid #303744;
   background: linear-gradient(180deg, #111820, #06080c);
@@ -1336,7 +1402,7 @@ input:focus {
   .networkCollapses { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .peerTableRedesign .tr { grid-template-columns: minmax(140px, 1fr) 98px 76px 58px 58px minmax(72px, .7fr) 62px; gap: 5px; }
   .peerTable .tr { grid-template-columns: 72px minmax(150px, 1fr) 60px 62px minmax(78px, .7fr) 68px; gap: 6px; }
-  .statusBar { grid-template-columns: 130px 96px 150px 118px minmax(120px, 1fr) 46px; font-size: 12px; }
+  .statusBar { grid-template-columns: 115px 90px 120px 110px minmax(100px, 1fr) 140px 46px; font-size: 12px; }
   .statusBar span { padding: 0 8px; }
 }
 
