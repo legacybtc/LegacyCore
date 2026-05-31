@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -59,7 +60,7 @@ type NodeTestResult struct {
 	Message string `json:"message"`
 }
 
-const lifecycleBuildMarker = "integration-hardening-v1.0.3-build-20260526"
+const lifecycleBuildMarker = "v1.0.4"
 
 func NewApp() *App {
 	s := defaultSettings()
@@ -370,6 +371,28 @@ func (a *App) SetMinerThreads(threads int) (map[string]any, error) {
 	return a.service.SetMinerThreads(threads)
 }
 
+func (a *App) BenchmarkMiner(durationSeconds int, threads int) (map[string]any, error) {
+	if durationSeconds <= 0 {
+		durationSeconds = 10
+	}
+	if threads <= 0 {
+		a.mu.Lock()
+		threads = a.settings.withDefaults().DefaultThreads
+		a.mu.Unlock()
+		if threads <= 0 {
+			threads = runtime.NumCPU()
+		}
+	}
+	out, err := a.service.RunRPCMethod("benchmarkminer", []any{durationSeconds, threads})
+	if err != nil {
+		return nil, err
+	}
+	if m, ok := out.(map[string]any); ok {
+		return m, nil
+	}
+	return map[string]any{"result": out}, nil
+}
+
 func (a *App) GetNodeConfig() map[string]any {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -468,6 +491,18 @@ func (a *App) OpenDataDir() map[string]any {
 	return a.service.OpenDataDir()
 }
 
+func (a *App) OpenConfigDir() map[string]any {
+	return a.service.OpenConfigDir()
+}
+
+func (a *App) OpenConfigFile() map[string]any {
+	return a.service.OpenConfigFile()
+}
+
+func (a *App) EnableAddressAndTxIndexConfig() map[string]any {
+	return a.service.EnableAddressAndTxIndexConfig()
+}
+
 func (a *App) GetExplorerSummary() (map[string]any, error) {
 	return a.service.GetExplorerSummary()
 }
@@ -522,15 +557,14 @@ func (a *App) RunRPCCommand(commandLine string) (map[string]any, error) {
 
 func (a *App) Snapshot() map[string]any {
 	nodeStatus := a.NodeStatus()
+	lifecycle := runtimeBuildMetadata()
+	lifecycle["log"] = lifecycleLogPath()
 	out := map[string]any{
 		"coin":          a.CoinInfo(),
 		"wallet_exists": a.WalletExists(),
 		"node":          nodeStatus,
 		"settings":      a.settings,
-		"lifecycle": map[string]any{
-			"marker": lifecycleBuildMarker,
-			"log":    lifecycleLogPath(),
-		},
+		"lifecycle":     lifecycle,
 	}
 	if !nodeStatus.Running {
 		return out
@@ -787,6 +821,54 @@ func currentExecutablePath() string {
 		return "unknown"
 	}
 	return exe
+}
+
+func runtimeBuildMetadata() map[string]any {
+	meta := map[string]any{
+		"marker":       lifecycleBuildMarker,
+		"commit":       "local build",
+		"commit_short": "local build",
+		"build_time":   "",
+		"vcs_modified": "false",
+	}
+	if exe, err := os.Executable(); err == nil {
+		if stat, statErr := os.Stat(exe); statErr == nil {
+			meta["build_time"] = stat.ModTime().UTC().Format(time.RFC3339)
+		}
+	}
+	info, ok := debug.ReadBuildInfo()
+	if !ok || info == nil {
+		if strings.TrimSpace(fmt.Sprint(meta["build_time"])) == "" {
+			meta["build_time"] = time.Now().UTC().Format(time.RFC3339)
+		}
+		return meta
+	}
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			commit := strings.TrimSpace(setting.Value)
+			if commit == "" {
+				continue
+			}
+			meta["commit"] = commit
+			if len(commit) > 12 {
+				meta["commit_short"] = commit[:12]
+			} else {
+				meta["commit_short"] = commit
+			}
+		case "vcs.time":
+			ts := strings.TrimSpace(setting.Value)
+			if ts != "" {
+				meta["build_time"] = ts
+			}
+		case "vcs.modified":
+			meta["vcs_modified"] = strings.TrimSpace(setting.Value)
+		}
+	}
+	if strings.TrimSpace(fmt.Sprint(meta["build_time"])) == "" {
+		meta["build_time"] = time.Now().UTC().Format(time.RFC3339)
+	}
+	return meta
 }
 
 func (a *App) lifecycleLogf(format string, args ...any) {

@@ -84,6 +84,7 @@ type Backend = {
   StopMiner(): Promise<Dict>;
   ForceStopMiner(): Promise<Dict>;
   SetMinerThreads(threads: number): Promise<Dict>;
+  BenchmarkMiner(durationSeconds: number, threads: number): Promise<Dict>;
   GetNodeConfig(): Promise<Dict>;
   SaveNetworkSettings(s: { mode: string; nodes: string[] }): Promise<Dict>;
   TestNodeConnection(node: string): Promise<Dict>;
@@ -96,6 +97,9 @@ type Backend = {
   BackupWallet(dest: string): Promise<Dict>;
   RestoreWalletBackup(path: string): Promise<Dict>;
   OpenDataDir(): Promise<Dict>;
+  OpenConfigDir(): Promise<Dict>;
+  OpenConfigFile(): Promise<Dict>;
+  EnableAddressAndTxIndexConfig(): Promise<Dict>;
   GetExplorerSummary(): Promise<Dict>;
   GetSupplyInfo(): Promise<Dict>;
   GetRecentBlocks(limit: number): Promise<Dict[]>;
@@ -122,36 +126,70 @@ const api = () => {
 
 const tabs = [
   ["overview", Activity, "Overview"],
+  ["wallet", Wallet, "Wallet"],
   ["send", Send, "Send"],
   ["receive", Coins, "Receive"],
   ["transactions", History, "Transactions"],
   ["mining", Pickaxe, "Mining"],
-  ["network", Network, "Network / Peers"],
+  ["network", Network, "Network / Seeds & Peers"],
   ["blockchain", Database, "Blockchain / Node"],
   ["explorer", Globe2, "Explorer"],
-  ["wallet-security", Shield, "Wallet Security"],
   ["address-book", Archive, "Address Book"],
   ["rpc-console", Bug, "RPC Console"],
   ["settings", Settings, "Settings"],
   ["about", BadgeCheck, "About"],
 ] as const;
 
+type AlertTone = "info" | "warn" | "danger" | "success";
+type UIMessage = {
+  id: number;
+  tone: AlertTone;
+  title: string;
+  text: string;
+  critical?: boolean;
+  ts: number;
+};
+
 function App() {
   const [snap, setSnap] = useState<Dict | null>(null);
   const [tab, setTab] = useState("overview");
-  const [toast, setToast] = useState("");
+  const [messages, setMessages] = useState<UIMessage[]>([]);
   const [busy, setBusy] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState<number>(0);
+  const [refreshInterval, setRefreshInterval] = useState<number>(() => {
+    const saved = Number(localStorage.getItem("legacy-refresh-seconds") || "10");
+    if (!Number.isFinite(saved) || saved < 0) return 10;
+    return saved;
+  });
   const refreshInFlight = useRef(false);
-  const [displayMode, setDisplayMode] = useState<"comfortable" | "compact">(() => (localStorage.getItem("legacy-display-mode") as any) || "compact");
-  const [advancedMode, setAdvancedMode] = useState(() => localStorage.getItem("legacy-advanced-mode") === "1");
+  const messageSeq = useRef(1);
+
+  function pushMessage(tone: AlertTone, title: string, text: string, critical = false) {
+    const next: UIMessage = { id: messageSeq.current++, tone, title, text, critical, ts: Date.now() };
+    setMessages((prev) => {
+      if (prev.some((m) => m.tone === tone && m.title === title && m.text === text)) {
+        return prev;
+      }
+      return [next, ...prev].slice(0, 30);
+    });
+  }
+
+  function dismissMessage(id: number) {
+    setMessages((prev) => prev.filter((m) => m.id !== id));
+  }
+
+  function clearNonCriticalMessages() {
+    setMessages((prev) => prev.filter((m) => m.critical));
+  }
 
   async function refresh() {
     if (refreshInFlight.current) return;
     refreshInFlight.current = true;
     try {
       setSnap(await api().Snapshot());
+      setLastUpdated(Date.now());
     } catch (e) {
-      setToast(cleanError(e));
+      pushMessage("danger", "Refresh failed", cleanError(e), true);
     } finally {
       refreshInFlight.current = false;
     }
@@ -165,10 +203,10 @@ function App() {
       } catch {
         // Snapshot below will show the node/RPC error if the node is offline.
       }
-      setSnap(await api().Snapshot());
-      setToast("Live refresh complete");
+      await refresh();
+      pushMessage("success", "Refresh complete", "Live refresh complete.");
     } catch (e) {
-      setToast(cleanError(e));
+      pushMessage("danger", "Refresh failed", cleanError(e), true);
     } finally {
       setBusy(false);
     }
@@ -178,72 +216,158 @@ function App() {
     setBusy(true);
     try {
       const result = await fn();
-      setToast(`${label} complete`);
+      pushMessage("success", `${label}`, "Completed successfully.");
       void refresh();
       return result;
     } catch (e) {
-      setToast(cleanError(e));
+      pushMessage("danger", `${label} failed`, cleanError(e), true);
       throw e;
     } finally {
       setBusy(false);
     }
   }
 
+  async function startNodeWithProgress() {
+    setBusy(true);
+    pushMessage("info", "Node start", "Starting internal Legacy Core node.");
+    try {
+      await api().StartNode();
+      await refresh();
+      pushMessage("success", "Node started", "Internal node is online.");
+    } catch (e) {
+      const err = cleanError(e);
+      pushMessage("danger", "Node start failed", err, true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openDataFolder() {
+    try {
+      const out = await api().OpenDataDir();
+      const path = String(out?.data_dir || snap?.node?.data_dir || snap?.settings?.dataDir || "-");
+      if (out?.opened) {
+        pushMessage("success", "Data folder opened", path);
+        return;
+      }
+      pushMessage("warn", "Data folder", String(out?.message || `Could not open data folder: ${path}`));
+    } catch (e) {
+      pushMessage("warn", "Data folder", cleanError(e));
+    }
+  }
+
+  async function openConfigFolder() {
+    try {
+      const out = await api().OpenConfigDir();
+      const configDir = String(out?.config_dir || "");
+      if (out?.opened) {
+        pushMessage("success", "Config folder opened", configDir || String(out?.config_path || ""));
+        return;
+      }
+      pushMessage("warn", "Config folder", String(out?.message || "Config folder is unavailable."));
+    } catch (e) {
+      pushMessage("warn", "Config folder", cleanError(e));
+    }
+  }
+
+  async function openConfigFile() {
+    try {
+      const out = await api().OpenConfigFile();
+      const configPath = String(out?.config_path || snap?.node?.config_path || "");
+      if (out?.opened) {
+        pushMessage("success", "Config file opened", configPath);
+        return;
+      }
+      pushMessage("warn", "Config file", String(out?.message || "Config file is unavailable."));
+    } catch (e) {
+      pushMessage("warn", "Config file", cleanError(e));
+    }
+  }
+
+  async function copyDataPath() {
+    const path = String(snap?.node?.data_dir || snap?.settings?.dataDir || "");
+    if (!path) {
+      pushMessage("warn", "Copy data path", "Data path is unavailable.");
+      return;
+    }
+    await copy(path);
+    pushMessage("success", "Data path copied", path);
+  }
+
+  async function copyConfigPath() {
+    const path = String(snap?.node?.config_path || "");
+    if (!path) {
+      pushMessage("warn", "Copy config path", "Config path is unavailable.");
+      return;
+    }
+    await copy(path);
+    pushMessage("success", "Config path copied", path);
+  }
+
   useEffect(() => {
     refresh();
-    const id = setInterval(refresh, 3000);
-    return () => clearInterval(id);
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem("legacy-refresh-seconds", String(refreshInterval));
+    if (refreshInterval <= 0) return;
+    const id = setInterval(() => { void refresh(); }, refreshInterval * 1000);
+    return () => clearInterval(id);
+  }, [refreshInterval]);
 
   const page = useMemo(() => {
     if (!snap) return <Loading />;
     if (!snap.wallet_exists) return <FirstRun run={run} />;
     const p = { snap, run, refresh };
+    const ui = {
+      busy,
+      lastUpdated,
+      refreshInterval,
+      setRefreshInterval,
+      forceRefresh,
+      startNodeWithProgress,
+      openDataFolder,
+      openConfigFolder,
+      openConfigFile,
+      copyDataPath,
+      copyConfigPath,
+      portConflict: portConflictMessage(snap?.node),
+    };
+    if (tab === "overview") return <Overview {...p} {...ui} />;
+    if (tab === "wallet") return <WalletPage {...p} />;
     if (tab === "send") return <SendPage {...p} />;
     if (tab === "receive") return <ReceivePage {...p} />;
     if (tab === "transactions") return <ActivityPage {...p} />;
     if (tab === "mining") return <MiningPage {...p} />;
     if (tab === "network") return <NetworkPage {...p} />;
-    if (tab === "blockchain") return <NodePage {...p} />;
+    if (tab === "blockchain") return <NodePage {...p} {...ui} />;
     if (tab === "explorer") return <ExplorerPage {...p} />;
-    if (tab === "wallet-security") return <WalletSecurityPage {...p} />;
     if (tab === "address-book") return <AddressBookPage />;
     if (tab === "rpc-console") return <RPCConsolePage snap={snap} />;
     if (tab === "settings") return <SettingsPage {...p} />;
     if (tab === "about") return <AboutPage snap={snap} />;
-    return <Overview {...p} />;
-  }, [snap, tab]);
+    return <Overview {...p} {...ui} />;
+  }, [snap, tab, busy, lastUpdated, refreshInterval]);
 
   const running = Boolean(snap?.node?.running);
   const walletLocked = Boolean(snap?.wallet?.wallet?.locked);
-  const portConflict = portConflictMessage(snap?.node);
-  function toggleDisplayMode() {
-    const next = displayMode === "compact" ? "comfortable" : "compact";
-    setDisplayMode(next);
-    localStorage.setItem("legacy-display-mode", next);
-  }
-  function toggleAdvancedMode() {
-    const next = !advancedMode;
-    setAdvancedMode(next);
-    localStorage.setItem("legacy-advanced-mode", next ? "1" : "0");
-  }
 
   return (
-    <main className={`appWindow ${displayMode === "compact" ? "compactMode" : "comfortableMode"} ${advancedMode ? "advancedMode" : ""}`}>
-      <TitleBarClassic />
+    <main className="appWindow compactMode">
+      <TitleBarClassic snap={snap} />
       <div className="shell">
         <aside className="sidebar">
           <div className="brand">
-            <img src={legacyLogo} alt="" aria-hidden="true" />
+            <img src={legacyLogo} alt="" />
             <div>
               <h1>Legacy Wallet</h1>
-              <p>Full-node desktop wallet</p>
+              <p>LBTC Mainnet Desktop Wallet</p>
             </div>
           </div>
           <nav>
             {tabs.map(([id, Icon, label]) => (
               <button key={id} className={tab === id ? "active" : ""} onClick={() => setTab(id)}>
-                <Icon size={17} />
+                <Icon size={16} />
                 <span>{label}</span>
               </button>
             ))}
@@ -251,52 +375,38 @@ function App() {
           <div className="sidebarCard">
             <StatusDot ok={running} />
             <div>
-              <strong>{running ? "Internal node running" : "Node offline"}</strong>
-              <small>{walletLocked ? "Wallet locked" : "Wallet ready"}</small>
+              <strong>{running ? "Node online" : "Node offline"}</strong>
+              <small>{walletLocked ? "Wallet locked" : "Wallet unlocked"}</small>
             </div>
           </div>
         </aside>
 
-        <section className="workspace">
-          <div className="menuBar">
-            <button type="button">File</button>
-            <button type="button">Wallet</button>
-            <button type="button">Node</button>
-            <button type="button">Mining</button>
-            <button type="button">Tools</button>
-            <button type="button">Help</button>
-          </div>
-          <header>
-            <div>
-              <p className="eyebrow">Legacy Wallet 1.0.4</p>
-              <h2>{tabs.find(([id]) => id === tab)?.[2] || "Overview"}</h2>
-            </div>
-            <div className="toolbar">
-              <button onClick={toggleDisplayMode}>{displayMode === "compact" ? "Compact" : "Comfortable"}</button>
-              <button className={advancedMode ? "active" : ""} onClick={toggleAdvancedMode}>Advanced</button>
-              <button className="iconText" onClick={forceRefresh} disabled={busy}><RefreshCw size={16} /> Refresh</button>
-              <button className="primary" onClick={() => run("Start node", () => api().StartNode())} disabled={busy || running}>
-                <Play size={16} /> Start Node
-              </button>
-              <button onClick={() => run("Stop node", () => api().StopNode())} disabled={busy || !running}>
-                <Square size={16} /> Stop
-              </button>
-            </div>
-          </header>
-          {snap?.node?.error && <Notice tone="danger" text={snap.node.error} />}
-          {!running && portConflict && (
-            <section className="panel compactPanel">
-              <h3>RPC port status</h3>
-              <p className="muted">{portConflict}</p>
-              <div className="row">
-                <button onClick={() => run("Stop internal node", () => api().StopNode())}>Stop internal node</button>
-                <button className="primary" onClick={() => run("Retry start node", () => api().StartNode())}>Retry start node</button>
-              </div>
+        <section className="workspace workspaceFull">
+          {messages.length > 0 && (
+            <section className="alertStack">
+              {messages.some((m) => !m.critical) && (
+                <div className="row">
+                  <button type="button" onClick={clearNonCriticalMessages}>Clear all non-critical alerts</button>
+                </div>
+              )}
+              {messages.map((m) => (
+                <Notice
+                  key={m.id}
+                  tone={m.tone}
+                  title={m.title}
+                  text={m.text}
+                  source="wallet-ui"
+                  timestamp={m.ts}
+                  onClose={() => dismissMessage(m.id)}
+                  dismissible={!m.critical || m.tone !== "danger"}
+                />
+              ))}
             </section>
           )}
-          {snap?.sync?.sync_stalled && <Notice tone="warn" text="Sync appears stalled. Retrying peer sync..." />}
+
+          {snap?.node?.error && <Notice tone="danger" title="Node error" source="node" text={snap.node.error} dismissible={false} />}
+          {snap?.sync?.sync_stalled && <Notice tone="warn" title="Sync status" source="sync" text="Sync appears stalled. Retrying peer sync..." />}
           {page}
-          {toast && <div className="toast" onClick={() => setToast("")}>{toast}</div>}
         </section>
       </div>
       <StatusBarClassic snap={snap} />
@@ -348,11 +458,46 @@ function FirstRun({ run }: { run: <T>(label: string, fn: () => Promise<T>) => Pr
   );
 }
 
-function Overview({ snap }: PageProps) {
+type SurfaceControls = {
+  busy: boolean;
+  lastUpdated: number;
+  refreshInterval: number;
+  setRefreshInterval: React.Dispatch<React.SetStateAction<number>>;
+  forceRefresh: () => Promise<void>;
+  startNodeWithProgress: () => Promise<void>;
+  openDataFolder: () => Promise<void>;
+  openConfigFolder: () => Promise<void>;
+  openConfigFile: () => Promise<void>;
+  copyDataPath: () => Promise<void>;
+  copyConfigPath: () => Promise<void>;
+  portConflict: string;
+};
+
+function Overview({
+  snap,
+  run,
+  refresh,
+  busy,
+  lastUpdated,
+  refreshInterval,
+  setRefreshInterval,
+  forceRefresh,
+  startNodeWithProgress,
+  openDataFolder,
+  openConfigFolder,
+  openConfigFile,
+  copyDataPath,
+  copyConfigPath,
+  portConflict,
+}: PageProps & SurfaceControls) {
   const chain = snap.blockchain || {};
   const wallet = snap.wallet || {};
   const mining = snap.mining || {};
   const sync = snap.sync || {};
+  const running = Boolean(snap.node?.running);
+  const connectedPeers = Number(chain.peer_count ?? (snap.peers || []).length ?? 0);
+  const dnsSeeds = Number((chain.dns_seeds || snap.coin?.dns_seeds || []).length || 0);
+  const knownPeers = chain.known_peers_available ? Number(chain.known_peer_count || 0) : "Unavailable";
   return (
     <div className="page">
       <div className="heroPanel compactHero">
@@ -367,7 +512,9 @@ function Overview({ snap }: PageProps) {
         <Metric label="Wallet" value={snap.wallet_exists ? "Ready" : "Setup required"} icon={<Wallet />} />
         <Metric label="Node" value={snap.node?.running ? "Online" : "Offline"} icon={<Radio />} />
         <Metric label="Height" value={chain.height ?? "Starting"} />
-        <Metric label="Peers" value={chain.peer_count ?? (snap.peers || []).length ?? 0} />
+        <Metric label="Connected Peers" value={connectedPeers} />
+        <Metric label="DNS Seeds" value={dnsSeeds} />
+        <Metric label="Known Peers" value={knownPeers} />
         <Metric label="Sync" value={syncLabel(chain, snap.peers || [])} />
         <Metric label="Best block" value={chain.bestblockhash || "-"} mono copyable />
         <Metric label="Chain ID" value={snap.coin?.chain_id} mono copyable />
@@ -379,21 +526,60 @@ function Overview({ snap }: PageProps) {
           <h3>Node Lifecycle</h3>
           <p className="muted">This app starts Legacy Core internally. Local RPC remains available for CLI compatibility only.</p>
           <div className="pillRow">
-            <span className="pill good"><StatusDot ok={Boolean(snap.node?.running)} /> {snap.node?.running ? "Internal node running" : "Internal node stopped"}</span>
+            <span className="pill good"><StatusDot ok={running} /> {running ? "Internal node running" : "Internal node stopped"}</span>
             <span className="pill">Legacy Coin Mainnet</span>
           </div>
         </div>
         <div className="kv miniKv">
           <div><span>Node Status</span><strong>{snap.node?.running ? "Running" : "Stopped"}</strong></div>
           <div><span>Uptime</span><strong>{seconds(snap.node?.uptime_seconds)}</strong></div>
-          <div><span>Connections</span><strong>{chain.peer_count ?? (snap.peers || []).length ?? 0}</strong></div>
+          <div><span>Connected peers</span><strong>{connectedPeers}</strong></div>
+          <div><span>DNS seeds</span><strong>{dnsSeeds}</strong></div>
           <div><span>Network</span><strong>Legacy Coin Mainnet</strong></div>
           <div><span>Sync Progress</span><strong>{syncLabel(chain, snap.peers || [])}</strong></div>
         </div>
       </section>
+      <section className="panel">
+        <h3>Node Controls</h3>
+        <div className="row">
+          <button className="primary" onClick={startNodeWithProgress} disabled={busy || running || Boolean(snap?.node?.starting)}>
+            <Play size={16} /> Start node
+          </button>
+          <button onClick={() => run("Stop node", () => Promise.resolve(api().StopNode()))} disabled={busy || !running}>
+            <Square size={16} /> Stop node
+          </button>
+          <button onClick={() => run("Restart node", () => api().RestartInternalNode())} disabled={busy}>
+            <Rocket size={16} /> Restart node
+          </button>
+          <button onClick={forceRefresh} disabled={busy}>
+            <RefreshCw size={16} /> Refresh
+          </button>
+          <button onClick={() => void openDataFolder()}>Open Data Folder</button>
+          <button onClick={() => void openConfigFolder()}>Open Config Folder</button>
+          <button onClick={() => void openConfigFile()}>Open Config File</button>
+          <button onClick={() => void copyDataPath()}>Copy Data Path</button>
+          <button onClick={() => void copyConfigPath()}>Copy Config Path</button>
+        </div>
+        <div className="row">
+          <label className="inline refreshPicker">
+            Auto-refresh
+            <select value={refreshInterval} onChange={(e) => setRefreshInterval(Number(e.target.value))}>
+              <option value={0}>Off</option>
+              <option value={5}>5s</option>
+              <option value={10}>10s</option>
+              <option value={30}>30s</option>
+              <option value={60}>60s</option>
+            </select>
+          </label>
+          <span className="pill">Last updated: {lastUpdated ? new Date(lastUpdated).toLocaleTimeString() : "-"}</span>
+        </div>
+        {portConflict && !running && <Notice tone="warn" title="RPC port status" source="node-port" text={portConflict} />}
+        {snap?.node?.last_start_error && <p className="muted">Last start error: {snap.node.last_start_error}</p>}
+      </section>
       {sync.behind && (
         <Notice
           tone="warn"
+          source="sync"
           text={`${sync.message || "Node is behind peers. Waiting for blocks / requesting blocks."} Local height ${sync.local_height}; best peer height ${sync.best_peer_height}. ${sync.last_block_reject ? `Last reject: ${sync.last_block_reject}` : sync.last_sync_error ? `Last sync error: ${sync.last_sync_error}` : ""}`}
         />
       )}
@@ -402,7 +588,8 @@ function Overview({ snap }: PageProps) {
           <h3>Recent Activity</h3>
           <div className="eventList">
             <div><BadgeCheck size={18} /><span>Node status: {snap.node?.running ? "running" : "stopped"}</span><small>{seconds(snap.node?.uptime_seconds)}</small></div>
-            <div><Network size={18} /><span>Connected peers: {chain.peer_count ?? (snap.peers || []).length ?? 0}</span><small>live</small></div>
+            <div><Network size={18} /><span>Connected peers: {connectedPeers}</span><small>live</small></div>
+            <div><Globe2 size={18} /><span>DNS seeds configured: {dnsSeeds}</span><small>bootstrap</small></div>
             <div><Wallet size={18} /><span>Wallet balance: {wallet.total_lbtc ? lbtc(wallet.total_lbtc) : fmtAmount(wallet.total)}</span><small>local</small></div>
             <div><Shield size={18} /><span>Storage health monitored</span><small>doctor</small></div>
           </div>
@@ -410,7 +597,8 @@ function Overview({ snap }: PageProps) {
         <section className="panel networkSummary">
           <h3>Network Summary</h3>
           <div className="summaryTiles">
-            <Metric label="Peers" value={chain.peer_count ?? (snap.peers || []).length ?? 0} />
+            <Metric label="Connected Peers" value={connectedPeers} />
+            <Metric label="DNS Seeds" value={dnsSeeds} />
             <Metric label="Blocks" value={chain.height ?? "-"} />
             <Metric label="Last Block" value={seconds(chain.last_block_age_seconds)} />
             <Metric label="Difficulty" value={chain.current_bits || mining.current_bits || "-"} />
@@ -427,6 +615,12 @@ function WalletPage({ snap, run, refresh }: PageProps) {
   const [address, setAddress] = useState("");
   const [passphrase, setPassphrase] = useState("");
   const [newPassphrase, setNewPassphrase] = useState("");
+  const [backupPath, setBackupPath] = useState(() => `${snap.settings?.dataDir || "."}\\backups\\legacy-wallet-backup-${new Date().toISOString().slice(0, 10)}.json`);
+  const [backupResult, setBackupResult] = useState<Dict | null>(null);
+  const [recent, setRecent] = useState<Dict[]>([]);
+  const [recentLoading, setRecentLoading] = useState(false);
+  const [recentError, setRecentError] = useState("");
+  const [qrDataURL, setQrDataURL] = useState("");
   const [unlockSeconds, setUnlockSeconds] = useState(() => {
     const saved = Number(localStorage.getItem("legacy-unlock-seconds") || "900");
     if (!Number.isFinite(saved) || saved < 60) return 900;
@@ -434,35 +628,105 @@ function WalletPage({ snap, run, refresh }: PageProps) {
   });
   const current = address || (w.receive_addresses || [])[Math.max(0, (w.receive_addresses || []).length - 1)] || "";
   const defaultMining = w.default_mining_address || snap.settings?.defaultMiningAddress || "";
+  const pendingTotal =
+    Number(w.pending_outgoing || 0) +
+    Number(w.safe_pending_change || 0) +
+    Number(w.pending_external_incoming || 0);
+  const encryptionState = security.encrypted ? (security.locked ? "Encrypted + locked" : "Encrypted + unlocked") : "Unencrypted";
+
   useEffect(() => {
     if (!Number.isFinite(unlockSeconds) || unlockSeconds < 60) return;
     localStorage.setItem("legacy-unlock-seconds", String(Math.round(unlockSeconds)));
   }, [unlockSeconds]);
-  const encryptionState = security.encrypted ? (security.locked ? "Encrypted + locked" : "Encrypted + unlocked") : "Unencrypted";
+
+  useEffect(() => {
+    let canceled = false;
+    if (!current) {
+      setQrDataURL("");
+      return;
+    }
+    void (async () => {
+      try {
+        const mod = await import("qrcode");
+        const url = await mod.toDataURL(current, { margin: 1, width: 180 });
+        if (!canceled) setQrDataURL(url);
+      } catch {
+        if (!canceled) setQrDataURL("");
+      }
+    })();
+    return () => {
+      canceled = true;
+    };
+  }, [current]);
+
+  useEffect(() => {
+    let canceled = false;
+    if (!snap?.node?.running) {
+      setRecent([]);
+      setRecentError("");
+      return;
+    }
+    setRecentLoading(true);
+    void api()
+      .ListWalletTransactions()
+      .then((rows) => {
+        if (canceled) return;
+        const list = Array.isArray(rows) ? rows : [];
+        setRecent(list.slice(0, 6));
+        setRecentError("");
+      })
+      .catch((e) => {
+        if (canceled) return;
+        setRecentError(cleanError(e));
+      })
+      .finally(() => {
+        if (canceled) return;
+        setRecentLoading(false);
+      });
+    return () => {
+      canceled = true;
+    };
+  }, [snap?.node?.running, snap?.blockchain?.height]);
+
   return (
     <div className="page">
       <div className="metricGrid">
-        <Metric label="Confirmed available" value={w.confirmed_available_lbtc ? lbtc(w.confirmed_available_lbtc) : fmtAmount(w.confirmed_available)} />
-        <Metric label="Safe pending change" value={w.safe_pending_change_lbtc ? lbtc(w.safe_pending_change_lbtc) : fmtAmount(w.safe_pending_change)} />
-        <Metric label="Pending outgoing" value={w.pending_outgoing_lbtc ? lbtc(w.pending_outgoing_lbtc) : fmtAmount(w.pending_outgoing)} />
-        <Metric label="Locked pending change" value={w.locked_pending_change_lbtc ? lbtc(w.locked_pending_change_lbtc) : fmtAmount(w.locked_pending_change)} />
-        <Metric label="Unsafe pending change" value={w.unsafe_pending_change_lbtc ? lbtc(w.unsafe_pending_change_lbtc) : fmtAmount(w.unsafe_pending_change)} />
-        <Metric label="Pending external incoming" value={w.pending_external_incoming_lbtc ? lbtc(w.pending_external_incoming_lbtc) : fmtAmount(w.pending_external_incoming)} />
-        <Metric label="Immature" value={w.immature_lbtc ? lbtc(w.immature_lbtc) : fmtAmount(w.immature)} />
-        <Metric label="Total" value={w.total_lbtc ? lbtc(w.total_lbtc) : fmtAmount(w.total)} />
+        <Metric label="Total balance" value={w.total_lbtc ? lbtc(w.total_lbtc) : fmtAmount(w.total)} />
+        <Metric label="Available / Matured" value={w.available_lbtc ? lbtc(w.available_lbtc) : fmtAmount(w.available)} />
+        <Metric label="Immature mining rewards" value={w.immature_lbtc ? lbtc(w.immature_lbtc) : fmtAmount(w.immature)} />
+        <Metric label="Pending / Unconfirmed" value={formatHumanLBTC(pendingTotal / 1e8)} />
         <Metric label="Encryption" value={encryptionState} icon={security.locked ? <Lock /> : <Unlock />} />
       </div>
-      {Number(w.safe_pending_change || 0) > 0 && <Notice tone="info" text="Safe pending change can be used for another transaction. It confirms after its parent transaction confirms." />}
-      {Number(w.locked_pending_change || 0) > 0 && <Notice tone="warn" text="Some pending change is already used by child transactions and cannot be spent again." />}
+      <Notice tone="info" title="Wallet summary" source="wallet" text="Available balance is spendable now. Immature mining rewards need 100 confirmations before spending." />
       <div className="twoCol">
         <section className="panel">
-          <h3>Wallet security</h3>
+          <h3>Receive address</h3>
+          <div className="addressBox">{current ? <CopyableValue value={current} /> : "Generate an address to receive LBTC"}</div>
+          <div className="row">
+            <button className="primary" onClick={async () => { setAddress(await run("Generate receive address", () => api().GetNewAddress())); await refresh(); }}>
+              Generate new address
+            </button>
+            <button disabled={!current} onClick={() => copy(current)}><Copy size={16} /> Copy address</button>
+            <button disabled={!current} onClick={async () => { await run("Set mining address", () => api().SetDefaultMiningAddress(current)); await refresh(); }}>Set as mining address</button>
+          </div>
+          {qrDataURL ? (
+            <div className="walletQR">
+              <img src={qrDataURL} alt="Receive address QR" />
+              <small>QR for current receive address</small>
+            </div>
+          ) : (
+            <p className="muted">QR preview unavailable in this environment.</p>
+          )}
+          <div className="splitLine topGap"><span>Default mining address</span><strong className="mono">{defaultMining ? <CopyableValue value={defaultMining} /> : "Not set"}</strong></div>
+        </section>
+        <section className="panel">
+          <h3>Wallet protection</h3>
           <div className="kv">
             <div><span>Status</span><strong>{encryptionState}</strong></div>
             <div><span>Classic key count</span><strong>{security.classic_key_count ?? "-"}</strong></div>
             <div><span>Hybrid key count</span><strong>{security.hybrid_key_count ?? "-"}</strong></div>
           </div>
-          {!security.encrypted && <Notice tone="warn" text="Encrypting protects wallet keys at rest. Back up first. If you forget the passphrase, funds cannot be recovered." />}
+          {!security.encrypted && <Notice tone="warn" title="Encryption" source="wallet" text="Encrypting protects wallet keys at rest. Store your passphrase safely." />}
           <Field label={security.encrypted ? "Current passphrase" : "Passphrase"}>
             <input type="password" value={passphrase} onChange={(e) => setPassphrase(e.target.value)} placeholder="Wallet passphrase" />
           </Field>
@@ -478,26 +742,36 @@ function WalletPage({ snap, run, refresh }: PageProps) {
             {security.encrypted && !security.locked && <button onClick={async () => { await run("Lock wallet", () => api().LockWallet()); await refresh(); }}>Lock</button>}
             {security.encrypted && <button disabled={!passphrase || !newPassphrase} onClick={async () => { await run("Change passphrase", () => api().ChangeWalletPassphrase(passphrase, newPassphrase)); setPassphrase(""); setNewPassphrase(""); await refresh(); }}>Change passphrase</button>}
           </div>
-        </section>
-        <section className="panel">
-          <h3>Current receive address</h3>
-          <div className="addressBox">{current ? <CopyableValue value={current} /> : "Generate an address to receive LBTC"}</div>
+          <Field label="Backup file path">
+            <input value={backupPath} onChange={(e) => setBackupPath(e.target.value)} placeholder="C:\\Backups\\legacy-wallet-backup.json" />
+          </Field>
           <div className="row">
-            <button className="primary" onClick={async () => { setAddress(await run("Create receive address", () => api().GetNewAddress())); await refresh(); }}>Generate new address</button>
-            <button disabled={!current} onClick={() => copy(current)}><Copy size={16} /> Copy address</button>
-            <button disabled={!current} onClick={async () => { await run("Set mining address", () => api().SetDefaultMiningAddress(current)); await refresh(); }}>Set as mining address</button>
+            <button className="primary" disabled={!backupPath.trim()} onClick={async () => setBackupResult(await run("Backup wallet", () => api().BackupWallet(backupPath.trim())))}>Backup wallet</button>
+            <button onClick={async () => setBackupResult(await api().OpenDataDir())}>Show data folder</button>
           </div>
-          <div className="splitLine topGap"><span>Default mining address</span><strong className="mono">{defaultMining ? <CopyableValue value={defaultMining} /> : "Not set"}</strong></div>
-          <Notice tone="warn" text="Back up your wallet before testing serious receive/send flows." />
+          {backupResult && <pre className="object-view small">{JSON.stringify(backupResult, null, 2)}</pre>}
         </section>
       </div>
-      {(w.locked_outputs || []).length > 0 && <section className="panel">
-        <h3>Locked / pending output details</h3>
-        <div className="table tableScroll">
-          <div className="tr head"><span>Outpoint</span><span>Amount</span><span>Reason</span><span>Depth</span><span>Safe</span></div>
-          {(w.locked_outputs || []).map((o: Dict) => <div className="tr" key={o.outpoint}><span className="mono"><CopyableValue value={o.outpoint} /></span><span>{o.amount_lbtc ? lbtc(o.amount_lbtc) : fmtAmount(o.amount)}</span><span>{o.reason}</span><span>{o.chain_depth ?? "-"}</span><span>{yesNo(o.safe_to_spend)}</span></div>)}
+      <section className="panel">
+        <h3>Recent wallet transactions</h3>
+        <Notice tone="info" text="This list includes received transactions, mined rewards (including immature coinbase), and pending transfers. Spendability depends on confirmations and coinbase maturity." />
+        {recentLoading && <p className="muted">Loading latest transactions...</p>}
+        {recentError && <Notice tone="warn" title="Wallet history" source="wallet" text={recentError} />}
+        {!recentLoading && !recentError && recent.length === 0 && <p className="muted">No recent wallet transactions yet.</p>}
+        <div className="table tableScroll smallScroll">
+          <div className="tr head"><span>Txid</span><span>Type</span><span>Amount</span><span>Status</span><span>Confirmations</span></div>
+          {recent.map((tx, idx) => (
+            <div className="tr" key={`${tx.txid || "tx"}-${idx}`}>
+              <span className="mono"><CopyableValue value={tx.txid || "-"} /></span>
+              <span>{directionLabel(tx.direction)}</span>
+              <span>{tx.amount_lbtc || fmtAmount(tx.amount)}</span>
+              <span>{tx.status_label || tx.status || "-"}</span>
+              <span>{tx.confirmations ?? 0}</span>
+            </div>
+          ))}
         </div>
-      </section>}
+        <p className="muted compactNote">Worker attribution note: the wallet can show incoming rewards/pool payouts, but it cannot reliably identify which external worker/device produced them unless each worker uses a separate labeled payout address.</p>
+      </section>
     </div>
   );
 }
@@ -508,6 +782,22 @@ function ReceivePage({ snap, run, refresh }: PageProps) {
   const addresses = snap.wallet?.receive_addresses || [];
   const current = address || addresses[addresses.length - 1] || "";
   const defaultMining = snap.wallet?.default_mining_address || snap.settings?.defaultMiningAddress || "";
+
+  function saveAddressLabel(addr: string, labelText: string) {
+    const cleanLabel = labelText.trim();
+    if (!cleanLabel || !addr) return;
+    const storageKey = "legacy-wallet-address-book-v1";
+    try {
+      const raw = localStorage.getItem(storageKey);
+      const parsed = raw ? JSON.parse(raw) : [];
+      const rows = Array.isArray(parsed) ? parsed : [];
+      const withoutDup = rows.filter((row: any) => String(row?.address || "") !== addr);
+      withoutDup.unshift({ label: cleanLabel, address: addr });
+      localStorage.setItem(storageKey, JSON.stringify(withoutDup.slice(0, 200)));
+    } catch {
+      // best-effort local label save only
+    }
+  }
 
   return (
     <div className="page twoCol">
@@ -525,7 +815,12 @@ function ReceivePage({ snap, run, refresh }: PageProps) {
         </div>
         <div className="addressBox">{current ? <CopyableValue value={current} /> : "No receive address selected"}</div>
         <div className="row">
-          <button className="primary" onClick={async () => { setAddress(await run("Generate address", () => api().GetNewAddress())); await refresh(); }}>
+          <button className="primary" onClick={async () => {
+            const generated = await run("Generate address", () => api().GetNewAddress());
+            setAddress(generated);
+            saveAddressLabel(generated, label);
+            await refresh();
+          }}>
             Generate new address
           </button>
           <button disabled={!current} onClick={() => copy(current)}><Copy size={16} /> Copy address</button>
@@ -533,6 +828,7 @@ function ReceivePage({ snap, run, refresh }: PageProps) {
         </div>
         <div className="splitLine topGap"><span>Current mining address</span><strong className="mono">{defaultMining ? <CopyableValue value={defaultMining} /> : "Not set"}</strong></div>
         <p className="muted">Addresses are only generated when you click create. Opening this page will not create extra addresses.</p>
+        <p className="muted compactNote">Label examples: Desktop miner, Phone miner 1, Phone miner 2, Pool payout.</p>
       </section>
       <section className="panel">
         <h3>Address book</h3>
@@ -822,40 +1118,264 @@ function ActivityPage({ snap, run, refresh }: PageProps) {
   );
 }
 
-function ExplorerPage({ snap, run }: PageProps) {
+function ExplorerPage({ snap }: PageProps) {
   const [blocks, setBlocks] = useState<Dict[]>([]);
   const [selectedBlock, setSelectedBlock] = useState<Dict | null>(null);
   const [selectedTx, setSelectedTx] = useState<Dict | null>(null);
+  const [addressResult, setAddressResult] = useState<Dict | null>(null);
   const [mempool, setMempool] = useState<Dict | null>(null);
   const [query, setQuery] = useState("");
   const [searchStatus, setSearchStatus] = useState("");
   const [searching, setSearching] = useState(false);
+  const [historyType, setHistoryType] = useState("all");
+  const [historyConfirmations, setHistoryConfirmations] = useState("all");
+  const [historyLimit, setHistoryLimit] = useState(25);
+  const [historyOffset, setHistoryOffset] = useState(0);
+  const [addressIndexHelp, setAddressIndexHelp] = useState<Dict | null>(null);
+  const [configPathStatus, setConfigPathStatus] = useState("");
+  const [lastResultCopy, setLastResultCopy] = useState("");
+  const searchToken = useRef(0);
+  const cacheRef = useRef<Map<string, Dict>>(new Map());
+
   const summary = snap.explorer || {};
   const supply = summary.supply || snap.supply || {};
 
+  async function rpcCall(command: string): Promise<any> {
+    const response = await api().RunRPCCommand(command);
+    return response?.result ?? response;
+  }
+
   async function loadBlocks() {
-    const rows = await run("Load blocks", () => api().GetRecentBlocks(30));
+    const rows = await api().GetRecentBlocks(10);
     setBlocks(rows || []);
-    if (!selectedBlock && rows?.[0]) setSelectedBlock(await api().GetBlockByHash(rows[0].hash));
-  }
-  async function loadMempool() {
-    setMempool(await run("Load mempool", () => api().GetMempool()));
-  }
-  async function search() {
-    setSearching(true);
-    setSearchStatus("");
-    try {
-      const res = await run("Explorer search", () => api().SearchExplorer(query));
-      if (res?.block) { setSelectedBlock(res.block); setSelectedTx(null); }
-      if (res?.transaction) setSelectedTx(res.transaction);
-      setSearchStatus(res?.message || (res?.type ? `Found ${res.type}` : ""));
-    } catch (e) {
-      setSearchStatus(cleanError(e) || "Local node RPC unavailable.");
-    } finally {
-      setSearching(false);
+    if (!selectedBlock && rows?.[0]?.hash) {
+      setSelectedBlock(await api().GetBlockByHash(rows[0].hash));
     }
   }
-  useEffect(() => { loadBlocks(); loadMempool(); }, []);
+
+  async function loadMempool() {
+    setMempool(await api().GetMempool());
+  }
+
+  function isAddressQuery(v: string) {
+    const q = v.trim();
+    return /^L[1-9A-HJ-NP-Za-km-z]{25,62}$/.test(q) || /^lhyb1[0-9a-z]{20,120}$/i.test(q);
+  }
+
+  function isAddressIndexDisabledError(msg: string) {
+    const lower = msg.toLowerCase();
+    return lower.includes("addressindex disabled") || lower.includes("address index is disabled") || lower.includes("addressindex=1");
+  }
+
+  async function copyConfigPath() {
+    try {
+      const out = await api().OpenConfigFile();
+      const configPath = String(out?.config_path || "");
+      if (!configPath) {
+        setConfigPathStatus("Config path is unavailable.");
+        return;
+      }
+      await copy(configPath);
+      setConfigPathStatus(`Copied config path: ${configPath}`);
+    } catch (e) {
+      setConfigPathStatus(cleanError(e));
+    }
+  }
+
+  async function openConfigFolder() {
+    try {
+      const out = await api().OpenConfigDir();
+      setConfigPathStatus(String(out?.message || "Config folder action completed."));
+    } catch (e) {
+      setConfigPathStatus(cleanError(e));
+    }
+  }
+
+  async function openConfigFile() {
+    try {
+      const out = await api().OpenConfigFile();
+      setConfigPathStatus(String(out?.message || "Config file action completed."));
+    } catch (e) {
+      setConfigPathStatus(cleanError(e));
+    }
+  }
+
+  async function openDataFolder() {
+    try {
+      const out = await api().OpenDataDir();
+      setConfigPathStatus(String(out?.message || "Data folder action completed."));
+    } catch (e) {
+      setConfigPathStatus(cleanError(e));
+    }
+  }
+
+  async function enableIndexConfigLines() {
+    const ok = window.confirm("Add addressindex=1 and txindex=1 to legacycoin.conf?\n\nYou still need restart + reindex after this change.");
+    if (!ok) return;
+    try {
+      const out = await api().EnableAddressAndTxIndexConfig();
+      setConfigPathStatus(String(out?.message || "Index config lines updated."));
+    } catch (e) {
+      setConfigPathStatus(cleanError(e));
+    }
+  }
+
+  async function loadAddress(addressText: string, token: number) {
+    try {
+      const addr = addressText.trim();
+      const [balanceRes, utxosRes, txidsRes, historyRes] = await Promise.allSettled([
+        rpcCall(`getaddressbalance ${addr}`),
+        rpcCall(`getaddressutxos ${addr}`),
+        rpcCall(`getaddresstxids ${addr}`),
+        rpcCall(`getaddresshistory ${addr} ${historyLimit} ${historyOffset} ${historyType} ${historyConfirmations}`),
+      ]);
+      if (token !== searchToken.current) return;
+      const failures = [balanceRes, utxosRes, txidsRes, historyRes]
+        .filter((x) => x.status === "rejected")
+        .map((x: any) => cleanError(x.reason));
+      if (failures.some(isAddressIndexDisabledError)) {
+        setAddressResult(null);
+        setAddressIndexHelp({
+          address: addr,
+          addressindex_enabled: Boolean(snap?.blockchain?.addressindex?.enabled),
+          txindex_enabled: Boolean(snap?.blockchain?.txindex?.enabled),
+          failures,
+        });
+        setSearchStatus("Address search needs indexes. Enable addressindex=1 and txindex=1, restart node, then reindex.");
+        return;
+      }
+      const balance = balanceRes.status === "fulfilled" ? balanceRes.value : null;
+      const utxos = utxosRes.status === "fulfilled" ? utxosRes.value : [];
+      const txids = txidsRes.status === "fulfilled" ? txidsRes.value : [];
+      const history = historyRes.status === "fulfilled" ? historyRes.value : [];
+      const historyEntries = Array.isArray(history) ? history : (history?.entries || history?.history || []);
+      setAddressIndexHelp(null);
+      setAddressResult({
+        address: addr,
+        balance,
+        utxos: Array.isArray(utxos) ? utxos : (utxos?.utxos || []),
+        txids: Array.isArray(txids) ? txids : (txids?.txids || []),
+        history: historyEntries,
+        total: Number(history?.total || historyEntries.length || 0),
+      });
+      setLastResultCopy(JSON.stringify({ address: addr, balance, history: historyEntries }, null, 2));
+      if (failures.length > 0) {
+        setSearchStatus(`Partial address results for ${addr}. ${failures[0]}`);
+      } else {
+        setSearchStatus(`Found address history for ${addr}`);
+      }
+    } catch (e) {
+      const msg = cleanError(e);
+      if (isAddressIndexDisabledError(msg)) {
+        setAddressIndexHelp({
+          address: addressText.trim(),
+          addressindex_enabled: Boolean(snap?.blockchain?.addressindex?.enabled),
+          txindex_enabled: Boolean(snap?.blockchain?.txindex?.enabled),
+          failures: [msg],
+        });
+        setSearchStatus("Address search needs indexes. Enable addressindex=1 and txindex=1, restart node, then reindex.");
+      } else {
+        setSearchStatus(msg);
+      }
+      setAddressResult(null);
+    }
+  }
+
+  async function search(forceQuery?: string) {
+    const raw = (forceQuery ?? query).trim();
+    if (!raw) {
+      setSearchStatus("Enter block height, block hash, txid, or address.");
+      return;
+    }
+    const cacheKey = `${raw}|${historyType}|${historyConfirmations}|${historyLimit}|${historyOffset}`;
+    const cached = cacheRef.current.get(cacheKey);
+    if (cached) {
+      applySearchResult(cached);
+      setSearchStatus("Loaded from local cache.");
+      return;
+    }
+    const token = ++searchToken.current;
+    setSearching(true);
+    setSearchStatus("Searching...");
+    try {
+      if (/^\d+$/.test(raw)) {
+        const block = await api().GetBlockByHeight(Number(raw));
+        if (token !== searchToken.current) return;
+        const payload = { kind: "block", block };
+        cacheRef.current.set(cacheKey, payload);
+        applySearchResult(payload);
+        setAddressIndexHelp(null);
+        setSearchStatus(`Found block height ${raw}`);
+        setLastResultCopy(JSON.stringify(block, null, 2));
+        return;
+      }
+      if (isAddressQuery(raw)) {
+        await loadAddress(raw, token);
+        return;
+      }
+      if (raw.length === 64) {
+        try {
+          const block = await api().GetBlockByHash(raw);
+          if (token !== searchToken.current) return;
+          const payload = { kind: "block", block };
+          cacheRef.current.set(cacheKey, payload);
+          applySearchResult(payload);
+          setAddressIndexHelp(null);
+          setSearchStatus("Found block hash.");
+          setLastResultCopy(JSON.stringify(block, null, 2));
+          return;
+        } catch {
+          const tx = await api().GetTransaction(raw);
+          if (token !== searchToken.current) return;
+          const payload = { kind: "tx", tx };
+          cacheRef.current.set(cacheKey, payload);
+          applySearchResult(payload);
+          setAddressIndexHelp(null);
+          setSearchStatus("Found transaction.");
+          setLastResultCopy(JSON.stringify(tx, null, 2));
+          return;
+        }
+      }
+      setSearchStatus("Enter a valid block height, block hash, txid, or LBTC address.");
+    } catch (e) {
+      const msg = cleanError(e);
+      if (msg.toLowerCase().includes("txindex")) {
+        setSearchStatus("Txindex is disabled. Enable txindex=1 and reindex for full historical transaction lookup.");
+      } else {
+        setSearchStatus(msg || "Local node RPC unavailable.");
+      }
+    } finally {
+      if (token === searchToken.current) {
+        setSearching(false);
+      }
+    }
+  }
+
+  function applySearchResult(result: Dict) {
+    if (result.kind === "block") {
+      setSelectedBlock(result.block || null);
+      setSelectedTx(null);
+      setAddressResult(null);
+      setAddressIndexHelp(null);
+      return;
+    }
+    if (result.kind === "tx") {
+      setSelectedTx(result.tx || null);
+      setAddressResult(null);
+      setAddressIndexHelp(null);
+      return;
+    }
+  }
+
+  useEffect(() => {
+    void loadBlocks();
+    void loadMempool();
+  }, []);
+
+  useEffect(() => {
+    if (!isAddressQuery(query.trim())) return;
+    void search(query.trim());
+  }, [historyType, historyConfirmations, historyLimit, historyOffset]);
 
   return (
     <div className="page explorerPage">
@@ -863,7 +1383,7 @@ function ExplorerPage({ snap, run }: PageProps) {
         <Metric label="Height" value={summary.height ?? snap.blockchain?.height ?? "-"} />
         <Metric label="Best hash" value={summary.bestblockhash || snap.blockchain?.bestblockhash || "-"} mono copyable />
         <Metric label="Bits" value={summary.current_bits || snap.blockchain?.current_bits || "-"} />
-        <Metric label="Mempool" value={summary.mempool_count ?? 0} />
+        <Metric label="Mempool" value={mempool?.count ?? summary.mempool_count ?? 0} />
         <Metric label="Avg block time" value={seconds(summary.average_block_time)} />
         <Metric label="Network KH/s" value={networkHashLabel(summary.network_hashps)} />
       </div>
@@ -871,13 +1391,49 @@ function ExplorerPage({ snap, run }: PageProps) {
         <section className="panel explorerSearch">
           <h3>Local Explorer</h3>
           <div className="row explorerSearchRow">
-            <input value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") search(); }} placeholder="Search height, block hash, or txid" />
-            <button className="primary" disabled={searching} onClick={search}>{searching ? "Searching..." : "Search"}</button>
-            <button onClick={loadBlocks}>Blocks</button>
-            <button onClick={loadMempool}>Mempool</button>
+            <input value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") void search(); }} placeholder="Search block height/hash, txid, or address" />
+            <button className="primary" disabled={searching} onClick={() => void search()}>{searching ? "Searching..." : "Search"}</button>
+            <button onClick={() => { setQuery(""); setSearchStatus(""); setAddressResult(null); setAddressIndexHelp(null); setConfigPathStatus(""); setSelectedTx(null); setSelectedBlock(null); }}>Clear</button>
+            <button onClick={async () => { if (lastResultCopy) await copy(lastResultCopy); }}>Copy result</button>
+            <button onClick={() => { void loadBlocks(); void loadMempool(); }}>Refresh</button>
           </div>
-          {searchStatus && <Notice tone={searchStatus.startsWith("Found") ? "success" : "info"} text={searchStatus} />}
-          <p className="muted">Address search requires address index support and is planned.</p>
+          <div className="row">
+            <label className="inline">Type
+              <select value={historyType} onChange={(e) => setHistoryType(e.target.value)}>
+                <option value="all">All</option>
+                <option value="received">Received</option>
+                <option value="spent">Spent</option>
+              </select>
+            </label>
+            <label className="inline">Confirmations
+              <select value={historyConfirmations} onChange={(e) => setHistoryConfirmations(e.target.value)}>
+                <option value="all">All</option>
+                <option value="confirmed">Confirmed</option>
+                <option value="unconfirmed">Unconfirmed</option>
+              </select>
+            </label>
+            <label className="inline">Limit
+              <input type="number" min={1} max={200} value={historyLimit} onChange={(e) => setHistoryLimit(Math.max(1, Math.min(200, Number(e.target.value) || 25)))} />
+            </label>
+            <label className="inline">Offset
+              <input type="number" min={0} value={historyOffset} onChange={(e) => setHistoryOffset(Math.max(0, Number(e.target.value) || 0))} />
+            </label>
+            <button onClick={() => setHistoryOffset((v) => Math.max(0, v - historyLimit))} disabled={historyOffset <= 0}>Previous</button>
+            <button
+              onClick={() => setHistoryOffset((v) => v + historyLimit)}
+              disabled={Boolean(addressResult && Number(addressResult.total || 0) > 0 && historyOffset + historyLimit >= Number(addressResult.total || 0))}
+            >
+              Next
+            </button>
+            <span className="pill">{searching ? "Loading..." : "Idle"}</span>
+          </div>
+          {searchStatus && (
+            <Notice
+              tone={addressIndexHelp ? "warn" : searchStatus.toLowerCase().includes("found") ? "success" : "info"}
+              text={searchStatus}
+              title="Explorer status"
+            />
+          )}
         </section>
         <section className="panel supplyPanel">
           <div className="supplyHead">
@@ -895,24 +1451,15 @@ function ExplorerPage({ snap, run }: PageProps) {
             <Metric label="Reward" value={lbtc(supply.current_reward_lbtc)} />
             <Metric label="Next Halving" value={supply.next_halving_height ?? "-"} />
           </div>
-          <div className="emissionBar" aria-label="Emission progress">
-            <i style={{ width: `${Math.min(100, Math.max(0, Number(supply.emission_progress_percent || 0)))}%` }} />
-          </div>
-          <div className="supplyFacts">
-            <span>Height: <strong>{supply.current_height ?? summary.height ?? "-"}</strong></span>
-            <span>Until halving: <strong>{supply.blocks_until_halving ?? "-"}</strong></span>
-            <span>Interval: <strong>{supply.halving_interval ?? "210000"}</strong></span>
-            <span>Maturity: <strong>{supply.coinbase_maturity ?? "100"}</strong></span>
-          </div>
         </section>
       </div>
       <div className="explorerWorkspace">
         <section className="panel scrollPanel explorerBlocks">
-          <h3>Recent blocks</h3>
+          <h3>Latest blocks</h3>
           <div className="table blockTable tableScroll">
             <div className="tr head"><span>Height</span><span>Hash</span><span>Time</span><span>Tx</span><span>Bits</span><span>Nonce</span></div>
             {blocks.map((b) => (
-              <div className="tr clickable" role="button" tabIndex={0} key={b.hash} onClick={async () => setSelectedBlock(await api().GetBlockByHash(b.hash))}>
+              <div className="tr clickable" role="button" tabIndex={0} key={b.hash} onClick={async () => { const block = await api().GetBlockByHash(b.hash); setSelectedBlock(block); setSelectedTx(null); setAddressResult(null); setLastResultCopy(JSON.stringify(block, null, 2)); }}>
                 <span>{b.height}</span><span className="mono"><CopyableValue value={b.hash} /></span><span>{dateTime(b.time)}</span><span>{b.tx_count}</span><span>{b.bits}</span><span>{b.nonce}</span>
               </div>
             ))}
@@ -926,14 +1473,17 @@ function ExplorerPage({ snap, run }: PageProps) {
                 <div><span>Height</span><strong>{selectedBlock.height}</strong></div>
                 <div><span>Hash</span><strong className="mono"><CopyableValue value={selectedBlock.hash} /></strong></div>
                 <div><span>Previous</span><strong className="mono"><CopyableValue value={selectedBlock.previous_hash} /></strong></div>
+                <div><span>Next</span><strong className="mono"><CopyableValue value={String(selectedBlock.next_hash || "-")} /></strong></div>
                 <div><span>Merkle root</span><strong className="mono"><CopyableValue value={selectedBlock.merkle_root} /></strong></div>
                 <div><span>Timestamp</span><strong>{dateTime(selectedBlock.timestamp)}</strong></div>
-                <div><span>Bits / nonce</span><strong>{selectedBlock.bits} / {selectedBlock.nonce}</strong></div>
+                <div><span>Bits</span><strong>{selectedBlock.bits}</strong></div>
+                <div><span>Nonce</span><strong>{selectedBlock.nonce}</strong></div>
+                <div><span>Confirmations</span><strong>{selectedBlock.confirmations ?? "-"}</strong></div>
               </div>
               <div className="table txTable tableScroll smallScroll">
                 <div className="tr head"><span>Txid</span><span>Outputs</span><span>Coinbase</span></div>
                 {(selectedBlock.transactions || []).map((tx: Dict) => (
-                  <div className="tr clickable" role="button" tabIndex={0} key={tx.txid} onClick={() => setSelectedTx(tx)}>
+                  <div className="tr clickable" role="button" tabIndex={0} key={tx.txid} onClick={async () => { const full = await api().GetTransaction(tx.txid); setSelectedTx(full); setAddressResult(null); setLastResultCopy(JSON.stringify(full, null, 2)); }}>
                     <span className="mono"><CopyableValue value={tx.txid} /></span><span>{tx.outputs?.length || 0}</span><span>{yesNo(tx.coinbase)}</span>
                   </div>
                 ))}
@@ -946,15 +1496,76 @@ function ExplorerPage({ snap, run }: PageProps) {
           {selectedTx ? <TransactionDetails tx={selectedTx} /> : <p className="muted">Select a transaction from a block or search by txid.</p>}
         </section>
         <section className="panel scrollPanel explorerMempool">
-          <h3>Mempool</h3>
-          <div className="splitLine"><span>Count</span><strong>{mempool?.count ?? 0}</strong></div>
-          <div className="mempoolList tableScroll smallScroll">
-            {(mempool?.txids || []).length === 0 && <p className="muted">No local mempool transactions.</p>}
-            {(mempool?.transactions || mempool?.txids || []).map((row: any) => {
-              const id = typeof row === "string" ? row : row.txid;
-              return <div key={id} className="mono clickable mempoolItem" role="button" tabIndex={0} onClick={async () => setSelectedTx(await api().GetTransaction(id))}><CopyableValue value={id} />{typeof row !== "string" && <small> fee {row.fee} size {row.size}</small>}</div>;
-            })}
-          </div>
+          <h3>Address / Mempool</h3>
+          {addressIndexHelp ? (
+            <div className="indexHelpPanel">
+              <InfoPanel
+                title="Address search needs indexes"
+                rows={[
+                  ["Address", addressIndexHelp.address || "-"],
+                  ["addressindex", addressIndexHelp.addressindex_enabled ? "enabled" : "disabled"],
+                  ["txindex", addressIndexHelp.txindex_enabled ? "enabled" : "disabled"],
+                ]}
+                flush
+              />
+              <p className="muted compactNote">To enable full address search, set <span className="mono">addressindex=1</span> and <span className="mono">txindex=1</span>, restart node, then run reindex.</p>
+              <div className="reindexHint">
+                <strong>Reindex commands (Windows)</strong>
+                <pre className="mono">.\\legacycoind.exe reindex -datadir \"%APPDATA%\\LegacyCoin\"{"\n"}.\\legacycoind.exe run -seed-peers</pre>
+                <small className="muted">Reindex can take time. Keep the node running until it finishes. Back up wallet files first.</small>
+              </div>
+              <div className="row">
+                <button onClick={() => void openConfigFile()}>Open Config File</button>
+                <button onClick={() => void openConfigFolder()}>Open Config Folder</button>
+                <button onClick={() => void openDataFolder()}>Open Data Folder</button>
+                <button onClick={() => copy("addressindex=1\ntxindex=1")}>Copy index config snippet</button>
+                <button onClick={() => void enableIndexConfigLines()}>Add index config lines</button>
+                <button onClick={() => void copyConfigPath()}>Copy Config Path</button>
+              </div>
+              {configPathStatus && <Notice tone="info" text={configPathStatus} />}
+              <p className="muted compactNote">Block height/hash and txid search still work while address index is disabled.</p>
+            </div>
+          ) : addressResult ? (
+            <>
+              <InfoPanel
+                title={`Address ${addressResult.address}`}
+                rows={[
+                  ["Confirmed balance", JSON.stringify(addressResult.balance)],
+                  ["UTXOs", (addressResult.utxos || []).length],
+                  ["TxIDs", (addressResult.txids || []).length],
+                  ["History total", addressResult.total ?? (addressResult.history || []).length],
+                ]}
+                flush
+              />
+              <div className="table tableScroll smallScroll addressHistoryTable">
+                <div className="tr head"><span>Txid</span><span>Type</span><span>Height</span><span>Amount</span><span>Confirmations</span><span>Spent</span><span>Spend txid</span><span>Coinbase</span><span>Mature</span></div>
+                {(addressResult.history || []).map((h: Dict, idx: number) => (
+                  <div className="tr" key={`${h.txid || "row"}-${idx}`}>
+                    <span className="mono"><CopyableValue value={h.txid || h.spend_txid || "-"} /></span>
+                    <span>{h.type || "-"}</span>
+                    <span>{h.height || h.block_height || "-"}</span>
+                    <span>{h.amount || h.amount_lbtc || h.value_lbtc || h.value || "-"}</span>
+                    <span>{h.confirmations ?? "-"}</span>
+                    <span>{yesNo(h.spent)}</span>
+                    <span className="mono"><CopyableValue value={h.spend_txid || "-"} /></span>
+                    <span>{yesNo(h.coinbase)}</span>
+                    <span>{h.mature === undefined ? "-" : yesNo(h.mature)}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="splitLine"><span>Mempool count</span><strong>{mempool?.count ?? 0}</strong></div>
+              <div className="mempoolList tableScroll smallScroll">
+                {(mempool?.txids || []).length === 0 && <p className="muted">No local mempool transactions.</p>}
+                {(mempool?.transactions || mempool?.txids || []).map((row: any) => {
+                  const id = typeof row === "string" ? row : row.txid;
+                  return <div key={id} className="mono clickable mempoolItem" role="button" tabIndex={0} onClick={async () => { const tx = await api().GetTransaction(id); setSelectedTx(tx); setLastResultCopy(JSON.stringify(tx, null, 2)); }}><CopyableValue value={id} />{typeof row !== "string" && <small> fee {row.fee} size {row.size}</small>}</div>;
+                })}
+              </div>
+            </>
+          )}
         </section>
       </div>
     </div>
@@ -994,7 +1605,7 @@ function BackupPage({ snap, run, refresh }: PageProps) {
           <button onClick={() => setDest(suggested)}>Use suggested path</button>
           <button className="primary" disabled={!dest.trim()} onClick={backup}><Download size={16} /> Create local backup</button>
         </div>
-        <button onClick={async () => setResult(await api().OpenDataDir())}>Show data folder path</button>
+        <button onClick={async () => setResult(await api().OpenDataDir())}>Open Data Folder</button>
       </section>
       <section className="panel">
         <h3>Restore Wallet</h3>
@@ -1020,15 +1631,28 @@ function BackupPage({ snap, run, refresh }: PageProps) {
 
 function MiningPage({ snap, run }: PageProps) {
   const mining = snap.mining || {};
+  const netHash = networkHashDiagnostics(mining.network_hashps);
+  const netSource = String(mining.network_hashps_source || "unavailable");
+  const avgBlockTimeSeconds = Number(snap.chain_timing?.average_block_time_seconds || 0);
   const [threads, setThreads] = useState<number>(mining.configured_threads || snap.settings?.defaultThreads || 1);
   const [selectedProfile, setSelectedProfile] = useState<string>(() => profileForThreads(mining.configured_threads || snap.settings?.defaultThreads || 1, snap.settings?.defaultThreads || 4));
   const [startError, setStartError] = useState("");
+  const [benchmark, setBenchmark] = useState<Dict | null>(null);
   const [startAttempted, setStartAttempted] = useState(false);
   const rpcOffline = Boolean(mining.rpc_offline);
   const activeMining = !rpcOffline && Boolean(mining.active_mining);
   const canStartMining = !rpcOffline && Boolean(mining.can_start ?? !activeMining);
   const blockedReason = mining.mining_paused_reason || mining.last_error || "";
   const emergencyStopEnabled = rpcOffline || activeMining || startAttempted || Number(mining.local_hashps || 0) > 0 || Number(mining.session_hashes || 0) > 0 || Boolean(mining.miner_loop_running);
+  const miningStatus =
+    rpcOffline ? "error"
+      : activeMining ? "running"
+      : (Boolean(mining.mining_enabled) && blockedReason) ? "paused"
+      : startAttempted && !activeMining ? "starting"
+      : "stopped";
+  const miningStatusLabel = miningStatus;
+  const miningSafetyLabel = rpcOffline ? "unknown (RPC offline)" : blockedReason ? `not safe (${blockedReason})` : "safe";
+  const networkRateLabel = netHash.primaryLabel === "Unavailable" ? `Unavailable - ${netHash.unavailableReason || "not enough safe data"}` : netHash.primaryLabel;
   const profiles = [
     { id: "eco", label: "Eco", threads: 1, note: "low heat" },
     { id: "balanced", label: "Balanced", threads: 4, note: "recommended" },
@@ -1082,11 +1706,12 @@ function MiningPage({ snap, run }: PageProps) {
   return (
     <div className="page miningPage">
       <div className="metricGrid miningMetrics">
-        <Metric label="Mining" value={rpcOffline ? "Unknown (RPC offline)" : mining.active_mining ? "Running" : mining.mining_enabled ? "Paused" : "Stopped"} />
-        <Metric label="Mining safety" value={rpcOffline ? "Unsafe: RPC offline" : mining.mining_paused_reason ? `Paused: ${mining.mining_paused_reason}` : "Safe"} />
+        <Metric label="Miner status" value={miningStatusLabel} />
+        <Metric label="Mining safety" value={miningSafetyLabel} />
         <Metric label="Threads" value={`${mining.active_threads || 0} active / ${mining.configured_threads || threads} set`} />
         <Metric label="Local KH/s" value={fmtNumber(mining.local_khps)} />
-        <Metric label="Network KH/s" value={networkHashLabel(mining.network_hashps)} />
+        <Metric label="Network KH/s" value={networkRateLabel} />
+        <Metric label="Source" value={friendlyNetworkSource(netSource)} />
         <Metric label="Accepted" value={mining.accepted_blocks || 0} />
         <Metric label="Stale" value={mining.stale_blocks || 0} />
         <Metric label="Rejected" value={mining.rejected_blocks || 0} />
@@ -1104,22 +1729,39 @@ function MiningPage({ snap, run }: PageProps) {
         <div className="row">
           <label className="inline">Threads<input type="number" min={1} value={threads} onChange={(e) => { setThreads(Number(e.target.value)); setSelectedProfile("custom"); }} /></label>
           <span className="pill">Configured profile: {title(selectedProfile)}</span>
-          <button onClick={() => run("Set threads", () => api().SetMinerThreads(threads))}>Set threads</button>
-          <button className="primary" onClick={() => void startMining()} disabled={activeMining || !canStartMining}>Start mining</button>
-          <button onClick={() => void stopMining()} disabled={!emergencyStopEnabled}>Stop mining</button>
-          <button className="warn" onClick={() => void forceStopMining()} disabled={!emergencyStopEnabled}>Force stop miner</button>
-        </div>
-      </section>
+            <button onClick={() => run("Set threads", () => api().SetMinerThreads(threads))}>Set threads</button>
+            <button className="primary" onClick={() => void startMining()} disabled={activeMining || !canStartMining}>Start mining</button>
+            <button onClick={() => void stopMining()} disabled={!emergencyStopEnabled}>Stop mining</button>
+            <button className="warn" onClick={() => void forceStopMining()} disabled={!emergencyStopEnabled}>Force stop miner</button>
+            <button onClick={async () => setBenchmark(await run("Benchmark miner", () => api().BenchmarkMiner(10, Math.max(1, threads))))}>Benchmark miner</button>
+          </div>
+          {benchmark && (
+            <InfoPanel
+              title="Benchmark result"
+              rows={[
+                ["Status", benchmark.status || "ok"],
+                ["Duration", `${benchmark.duration_seconds || 10}s`],
+                ["Threads", benchmark.threads || threads],
+                ["Hashrate", benchmark.hashrate_hps ? `${fmtNumber(benchmark.hashrate_hps)} H/s` : benchmark.hashrate_khps ? `${fmtNumber(benchmark.hashrate_khps)} KH/s` : "-"],
+                ["Bits", benchmark.benchmark_template_bits || "-"],
+                ["Note", benchmark.note || "Benchmark only; no block is connected."],
+              ]}
+              flush
+            />
+          )}
+        </section>
       <div className="miningLower">
         <InfoPanel title="Miner session" rows={[
-          ["Thread state", mining.thread_state || "stopped"],
-          ["Loop running", yesNo(mining.miner_loop_running)],
+          ["Mining status", miningStatusLabel],
+          ["Mining loop", mining.miner_loop_running ? "active" : "inactive"],
+          ["Reason", activeMining ? "-" : (blockedReason || mining.last_stop_reason || "miner is not running")],
+          ["Session mode", activeMining ? "running" : "ready to start"],
           ["Paused reason", mining.mining_paused_reason || "-"],
           ["Template height", mining.last_mined_template_height || "-"],
           ["Last template refresh", mining.last_template_refresh_time ? dateTime(mining.last_template_refresh_time) : "-"],
           ["Template age", seconds(mining.last_template_refresh_ago_seconds)],
           ["Watchdog action", mining.watchdog_last_recovery_action || "-"],
-          ["Active mining address", mining.active_mining_address || snap.wallet?.default_mining_address || "Set in Receive / Wallet Security tab"],
+          ["Active mining address", mining.active_mining_address || snap.wallet?.default_mining_address || "Set in Receive or Wallet tab"],
           ["Pubkey hash", mining.mining_pubkey_hash || "-"],
           ["Configured threads", mining.configured_threads || threads],
           ["Active threads", mining.active_threads || 0],
@@ -1127,6 +1769,14 @@ function MiningPage({ snap, run }: PageProps) {
           ["Hashes per thread", fmtNumber(mining.hashes_per_thread)],
           ["Session hashes", fmtNumber(mining.session_hashes)],
           ["Estimated time to block", seconds(mining.estimated_time_to_block_seconds)],
+          ["Network H/s", netHash.hpsLabel],
+          ["Network KH/s", netHash.khsLabel !== "-" ? netHash.khsLabel : `Unavailable - ${netHash.unavailableReason || "not enough safe data"}`],
+          ["Network MH/s", netHash.mhsLabel],
+          ["Network source", friendlyNetworkSource(netHash.sourceLabel || netSource)],
+          ["Network status", netHash.statusLabel],
+          ["Network note", netHash.note || netHash.unavailableReason || "-"],
+          ["Average block time", avgBlockTimeSeconds > 0 ? `${Math.round(avgBlockTimeSeconds)}s` : "-"],
+          ["Hashrate updated", netHash.updatedAt],
           ["Session blocks", mining.session_blocks || 0],
           ["Uptime", seconds(mining.uptime_seconds)],
         ["Last block", mining.last_block_hash || "-"],
@@ -1168,6 +1818,7 @@ function MiningPage({ snap, run }: PageProps) {
 
 function NetworkPage({ snap, run, refresh }: PageProps) {
   const peers = snap.peers || [];
+  const peerRows = peers.slice(0, 200);
   const chain = snap.blockchain || {};
   const sync = snap.sync || {};
   const health = sync.health || {};
@@ -1176,9 +1827,9 @@ function NetworkPage({ snap, run, refresh }: PageProps) {
   const [nodeInput, setNodeInput] = useState("");
   const outbound = Number(chain.outbound_peer_count ?? peers.filter((p: Dict) => p.outbound || p.direction === "outbound").length);
   const inbound = Number(chain.inbound_peer_count ?? Math.max(0, peers.length - outbound));
-  const bestPeerHeight = Math.max(...peers.map((p: Dict) => Number(p.expected_sync_height || p.synced_blocks || p.starting_height || 0)), Number(chain.height || 0));
   const wrongChain = peers.filter((p: Dict) => p.chain_id && p.chain_id !== snap.coin?.chain_id);
   const netHash = networkHashLabel(snap.chain_timing?.network_hashps);
+  const knownPeers = chain.known_peers_available ? Number(chain.known_peer_count || 0) : 0;
   const state = walletSyncState(snap);
   const networkSettings = snap.settings?.network || { mode: "automatic", nodes: [] };
   async function reconnect() {
@@ -1205,16 +1856,18 @@ function NetworkPage({ snap, run, refresh }: PageProps) {
   return (
     <div className="page networkPageRedesign">
       <div className="networkStatusStrip">
-        <Metric label="Direct P2P connections" value={peers.length} />
+        <Metric label="Connected peers" value={peers.length} />
+        <Metric label="DNS seeds configured" value={dnsSeeds.length} />
+        <Metric label="Known peers" value={chain.known_peers_available ? knownPeers : "Unavailable"} />
         <Metric label="Sync" value={state.label} />
         <Metric label="Height" value={chain.height ?? "-"} />
-        <Metric label="Estimated Network KH/s" value={netHash} />
+        <Metric label="Network KH/s" value={netHash} />
         <Metric label="Inbound / Outbound" value={`${inbound} / ${outbound}`} />
       </div>
 
       <section className="networkConfidence">
-        <span>This wallet is directly connected to {peers.length} node{peers.length === 1 ? "" : "s"}. This is not the total network size.</span>
-        <span>Network KH/s is estimated from recent blocks. Miners may exist beyond this wallet's direct connections.</span>
+        <span>This wallet is directly connected to {peers.length} node{peers.length === 1 ? "" : "s"}. DNS seeds are bootstrap domains, not live peers.</span>
+        <span>Connected peers come from getpeerinfo/getnetworkinfo. Global node counts require crawler infrastructure.</span>
       </section>
 
       <div className="networkActionRow">
@@ -1238,12 +1891,12 @@ function NetworkPage({ snap, run, refresh }: PageProps) {
       <section className="panel directPeerPanel">
         <div className="sectionHead">
           <h3>Direct connections</h3>
-          <small>Total network nodes: unavailable without crawler support</small>
+          <small>Source: getpeerinfo (live connections from your local node)</small>
         </div>
         <div className="table peerTableRedesign">
           <div className="tr head"><span>Address</span><span>Type</span><span>Direction</span><span>Ping</span><span>Height</span><span>Status</span><span>Connected</span></div>
           {peers.length === 0 && <p className="muted">No peers connected yet. The node is still usable locally while it looks for peers.</p>}
-          {peers.map((p: Dict, i: number) => (
+          {peerRows.map((p: Dict, i: number) => (
             <div className="tr" key={`${p.addr}-${i}`}>
               <span className="mono"><CopyableValue value={p.addr || "-"} /></span>
               <span>{peerType(p, dnsSeeds, addnodes)}</span>
@@ -1254,6 +1907,7 @@ function NetworkPage({ snap, run, refresh }: PageProps) {
               <span>{seconds(p.connected_for_seconds)}</span>
             </div>
           ))}
+          {peers.length > peerRows.length && <p className="muted">Showing {peerRows.length} of {peers.length} peers for UI performance.</p>}
         </div>
       </section>
 
@@ -1532,11 +2186,27 @@ function SettingsPage({ snap, run }: PageProps) {
   );
 }
 
-function NodePage({ snap, run }: PageProps) {
+function NodePage({
+  snap,
+  run,
+  busy,
+  lastUpdated,
+  refreshInterval,
+  setRefreshInterval,
+  forceRefresh,
+  startNodeWithProgress,
+  openDataFolder,
+  openConfigFolder,
+  openConfigFile,
+  copyDataPath,
+  copyConfigPath,
+  portConflict,
+}: PageProps & SurfaceControls) {
   const [storage, setStorage] = useState<Dict | null>(null);
   const [doctor, setDoctor] = useState<Dict | null>(null);
   const chain = snap.blockchain || {};
   const coin = snap.coin || {};
+  const running = Boolean(snap.node?.running);
 
   async function refreshStorage() {
     const res = await run("Check storage", () => api().CheckStorage());
@@ -1550,6 +2220,41 @@ function NodePage({ snap, run }: PageProps) {
 
   return (
     <div className="page">
+      <section className="panel">
+        <h3>Node Runtime Controls</h3>
+        <div className="row">
+          <button className="primary" onClick={startNodeWithProgress} disabled={busy || running || Boolean(snap?.node?.starting)}>
+            <Play size={16} /> Start node
+          </button>
+          <button onClick={() => run("Stop node", () => Promise.resolve(api().StopNode()))} disabled={busy || !running}>
+            <Square size={16} /> Stop node
+          </button>
+          <button onClick={() => run("Restart node", () => api().RestartInternalNode())} disabled={busy}>
+            <Rocket size={16} /> Restart node
+          </button>
+          <button onClick={forceRefresh} disabled={busy}><RefreshCw size={16} /> Refresh now</button>
+          <button onClick={() => void openDataFolder()}>Open Data Folder</button>
+          <button onClick={() => void openConfigFolder()}>Open Config Folder</button>
+          <button onClick={() => void openConfigFile()}>Open Config File</button>
+          <button onClick={() => void copyDataPath()}>Copy Data Path</button>
+          <button onClick={() => void copyConfigPath()}>Copy Config Path</button>
+        </div>
+        <div className="row">
+          <label className="inline refreshPicker">
+            Auto-refresh
+            <select value={refreshInterval} onChange={(e) => setRefreshInterval(Number(e.target.value))}>
+              <option value={0}>Off</option>
+              <option value={5}>5s</option>
+              <option value={10}>10s</option>
+              <option value={30}>30s</option>
+              <option value={60}>60s</option>
+            </select>
+          </label>
+          <span className="pill">Last updated: {lastUpdated ? new Date(lastUpdated).toLocaleTimeString() : "-"}</span>
+        </div>
+        {portConflict && !running && <Notice tone="warn" title="RPC port status" source="node-port" text={portConflict} />}
+        {snap?.node?.last_start_error && <Notice tone="warn" title="Last start error" source="node-start" text={snap.node.last_start_error} />}
+      </section>
       <div className="metricGrid">
         <Metric label="Node" value={snap.node?.running ? "Online" : "Offline"} />
         <Metric label="Height" value={chain.height ?? "-"} />
@@ -1561,14 +2266,22 @@ function NodePage({ snap, run }: PageProps) {
         <Metric label="Fork choice" value={chain.fork_choice || "-"} />
       </div>
       <InfoPanel title="Blockchain / Node" rows={[
+        ["RPC status", running ? "Online (local)" : "Offline"],
+        ["P2P status", Number(chain.peer_count ?? (snap.peers || []).length ?? 0) > 0 ? "Connected" : "No peers"],
         ["Best block", chain.bestblockhash || "-"],
+        ["Height", chain.height ?? "-"],
+        ["Chainwork", chain.chainwork || "-"],
         ["Genesis hash", coin.genesis_hash || "-"],
         ["Message start", "a4 ac c6 4d"],
         ["yespower personalization", coin.yespower_personalization || "LegacyCoinPoW"],
+        ["Current bits", chain.current_bits || "-"],
         ["P2P port", coin.p2p_port ?? 19555],
         ["RPC port", coin.rpc_port ?? 19556],
         ["DNS seeds", (coin.dns_seeds || []).join(", ") || "legacycoinseed.space, legacycoinseed2.space"],
         ["Data dir", snap.node?.data_dir || snap.settings?.dataDir || "-"],
+        ["Config path", snap.node?.config_path || "-"],
+        ["Expected daemon path", snap.node?.expected_daemon_path || "embedded/in-process Legacy Core engine"],
+        ["Node uptime", seconds(snap.node?.uptime_seconds)],
       ]} />
       <section className="panel">
         <h3>Node diagnostics</h3>
@@ -1579,65 +2292,6 @@ function NodePage({ snap, run }: PageProps) {
         </div>
         {storage && <pre>{JSON.stringify(storage, null, 2)}</pre>}
         {doctor && <pre>{JSON.stringify(doctor, null, 2)}</pre>}
-      </section>
-    </div>
-  );
-}
-
-function WalletSecurityPage({ snap, run, refresh }: PageProps) {
-  const wallet = snap.wallet || {};
-  const security = wallet.wallet || {};
-  const [passphrase, setPassphrase] = useState("");
-  const [newPassphrase, setNewPassphrase] = useState("");
-  const [unlockSeconds, setUnlockSeconds] = useState(900);
-  const [backupPath, setBackupPath] = useState(() => `${snap.settings?.dataDir || "."}\\backups\\legacy-wallet-backup-${new Date().toISOString().slice(0, 10)}.json`);
-  const [restorePath, setRestorePath] = useState("");
-  const [lastResult, setLastResult] = useState<Dict | null>(null);
-
-  return (
-    <div className="page">
-      <div className="metricGrid">
-        <Metric label="Encrypted" value={yesNo(security.encrypted)} icon={<Shield />} />
-        <Metric label="Locked" value={yesNo(security.locked)} icon={security.locked ? <Lock /> : <Unlock />} />
-        <Metric label="Spendable" value={wallet.spendable_lbtc ? lbtc(wallet.spendable_lbtc) : fmtAmount(wallet.spendable)} />
-        <Metric label="Immature" value={wallet.immature_lbtc ? lbtc(wallet.immature_lbtc) : fmtAmount(wallet.immature)} />
-      </div>
-      <section className="panel">
-        <h3>Wallet Security</h3>
-        <Notice tone="warn" text="Never share private keys, WIF keys, wallet passphrases, seed phrases, or RPC credentials." />
-        <div className="row">
-          <Field label="Passphrase">
-            <input type="password" value={passphrase} onChange={(e) => setPassphrase(e.target.value)} />
-          </Field>
-          <Field label="Unlock seconds">
-            <input type="number" min={60} value={unlockSeconds} onChange={(e) => setUnlockSeconds(Math.max(60, Number(e.target.value) || 900))} />
-          </Field>
-          <Field label="New passphrase">
-            <input type="password" value={newPassphrase} onChange={(e) => setNewPassphrase(e.target.value)} />
-          </Field>
-        </div>
-        <div className="row">
-          {!security.encrypted && <button className="primary" disabled={!passphrase} onClick={async () => { setLastResult(await run("Encrypt wallet", () => api().EncryptWallet(passphrase))); setPassphrase(""); await refresh(); }}>Encrypt wallet</button>}
-          {security.encrypted && security.locked && <button className="primary" disabled={!passphrase} onClick={async () => { setLastResult(await run("Unlock wallet", () => api().UnlockWallet(passphrase, unlockSeconds))); setPassphrase(""); await refresh(); }}>Unlock wallet</button>}
-          {security.encrypted && !security.locked && <button onClick={async () => { setLastResult(await run("Lock wallet", () => api().LockWallet())); await refresh(); }}>Lock wallet</button>}
-          {security.encrypted && <button disabled={!passphrase || !newPassphrase} onClick={async () => { setLastResult(await run("Change passphrase", () => api().ChangeWalletPassphrase(passphrase, newPassphrase))); setPassphrase(""); setNewPassphrase(""); await refresh(); }}>walletpassphrasechange</button>}
-        </div>
-      </section>
-      <section className="panel">
-        <h3>Wallet backups</h3>
-        <Field label="Backup destination">
-          <input value={backupPath} onChange={(e) => setBackupPath(e.target.value)} />
-        </Field>
-        <div className="row">
-          <button className="primary" onClick={async () => setLastResult(await run("Backup wallet", () => api().BackupWallet(backupPath)))}>backupwallet</button>
-        </div>
-        <Field label="Restore path">
-          <input value={restorePath} onChange={(e) => setRestorePath(e.target.value)} />
-        </Field>
-        <div className="row">
-          <button disabled={!restorePath.trim()} onClick={async () => setLastResult(await run("Restore wallet backup", () => api().RestoreWalletBackup(restorePath.trim())))}>restore wallet</button>
-        </div>
-        {lastResult && <pre>{JSON.stringify(lastResult, null, 2)}</pre>}
       </section>
     </div>
   );
@@ -1727,6 +2381,27 @@ function RPCConsolePage({ snap }: { snap: Dict }) {
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
   const [status, setStatus] = useState("");
   const [running, setRunning] = useState(false);
+  const [commandSearch, setCommandSearch] = useState("");
+
+  const commandCatalog = useMemo(() => ([
+    { category: "Wallet", commands: ["getwalletinfo", "getbalance", "getwalletsummary", "listtransactions", "listunspent", "getnewaddress", "gettransaction <txid>", "walletpassphrasechange <old> <new>"] },
+    { category: "Node", commands: ["getblockchaininfo", "getsyncstatus", "checkstorage", "reindex"] },
+    { category: "Mining", commands: ["getminerstatus", "setminerthreads <n>", "startminer <threads>", "stopminer", "benchmarkminer 10 4", "getblocktemplate"] },
+    { category: "Explorer", commands: ["getrawtransaction <txid> true", "getaddresstxids <address>", "getaddressutxos <address>", "getaddressbalance <address>", "getaddresshistory <address> 25 0 all all"] },
+    { category: "Network", commands: ["getpeerinfo", "getnetworkinfo", "getconnectioncount", "getrawmempool", "getmempoolinfo"] },
+    { category: "Advanced", commands: ["help", "submitblock <hex>", "decoderawtransaction <hex>"] },
+  ]), []);
+
+  const filteredCatalog = useMemo(() => {
+    const filter = commandSearch.trim().toLowerCase();
+    if (!filter) return commandCatalog;
+    return commandCatalog
+      .map((group) => ({
+        ...group,
+        commands: group.commands.filter((cmd) => cmd.toLowerCase().includes(filter) || group.category.toLowerCase().includes(filter)),
+      }))
+      .filter((group) => group.commands.length > 0);
+  }, [commandCatalog, commandSearch]);
 
   const runCommand = useCallback(async () => {
     const line = command.trim();
@@ -1747,14 +2422,14 @@ function RPCConsolePage({ snap }: { snap: Dict }) {
     try {
       const response = await api().RunRPCCommand(line);
       const clean = sanitizeConsoleResult(response?.result ?? response);
-      setOutputLines((prev) => [...prev, { command: line, result: JSON.stringify(clean, null, 2), error: false, ts: Date.now() }]);
+      setOutputLines((prev) => [...prev, { command: line, result: JSON.stringify(clean, null, 2), error: false, ts: Date.now() }].slice(-60));
       setHistory((prev) => [line, ...prev.filter((v) => v !== line)].slice(0, 50));
       setHistoryIndex(-1);
       setStatus("OK");
       setCommand("");
     } catch (e) {
       const errText = cleanError(e);
-      setOutputLines((prev) => [...prev, { command: line, result: errText, error: true, ts: Date.now() }]);
+      setOutputLines((prev) => [...prev, { command: line, result: errText, error: true, ts: Date.now() }].slice(-60));
       setHistory((prev) => [line, ...prev.filter((v) => v !== line)].slice(0, 50));
       setHistoryIndex(-1);
       setStatus(errText);
@@ -1805,6 +2480,35 @@ function RPCConsolePage({ snap }: { snap: Dict }) {
         </div>
         <small className="muted">Status: {status || "idle"}</small>
       </section>
+      <section className="panel rpcCommandsPanel">
+        <h3>Available Commands</h3>
+        <div className="row">
+          <input value={commandSearch} onChange={(e) => setCommandSearch(e.target.value)} placeholder="Search commands (wallet, mining, explorer, ...)" />
+          <button onClick={() => setCommand("help")}>Insert help</button>
+        </div>
+        <div className="rpcTips">
+          <span>Tip: type help to list available commands.</span>
+          <span>Tip: use getwalletinfo or getbalance to check wallet balance.</span>
+          <span>Tip: use getblockchaininfo to check sync.</span>
+          <span>Tip: use getpeerinfo to see peers.</span>
+          <span>Tip: use getminerstatus to check miner.</span>
+        </div>
+        <div className="rpcCommandGroups">
+          {filteredCatalog.map((group) => (
+            <div key={group.category} className="rpcCommandGroup">
+              <strong>{group.category}</strong>
+              <div className="rpcCommandButtons">
+                {group.commands.map((item) => (
+                  <button key={`${group.category}-${item}`} onClick={() => setCommand(item)}>
+                    {item}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+          {filteredCatalog.length === 0 && <p className="muted">No commands match this filter.</p>}
+        </div>
+      </section>
       <section className="panel consolePanel">
         <h3>Output</h3>
         <div className="consoleOutput">
@@ -1832,17 +2536,33 @@ function RPCConsolePage({ snap }: { snap: Dict }) {
   );
 }
 
+function resolveBuildInfo(snap: Dict | null) {
+  const markerRaw = String(snap?.lifecycle?.marker || "v1.0.4").trim();
+  const marker = markerRaw.toLowerCase().includes("debug") ? "v1.0.4" : (markerRaw || "v1.0.4");
+  const commitRaw = String(snap?.lifecycle?.commit_short || snap?.lifecycle?.commit || "").trim();
+  const commit = !commitRaw || commitRaw.toLowerCase() === "unknown" ? "local build" : commitRaw;
+  const buildTimeRaw = String(snap?.lifecycle?.build_time || "").trim();
+  const buildTimeLabel = buildTimeRaw ? new Date(buildTimeRaw).toLocaleString() : "local build time";
+  return { marker, commit, buildTimeLabel };
+}
+
 function AboutPage({ snap }: { snap: Dict }) {
+  const build = resolveBuildInfo(snap);
   return (
-    <div className="page">
+    <div className="page aboutPage">
       <InfoPanel title="About Legacy Wallet" rows={[
-        ["Product", "Legacy Wallet v1.0.4"],
+        ["Product", "Legacy Wallet"],
         ["Core", "Legacy Core v1.0.4"],
+        ["Build", build.marker],
+        ["Commit", build.commit],
+        ["Build time", build.buildTimeLabel],
         ["Coin", "Legacy Coin / LBTC"],
         ["Tagline", "Pure fair-launch Proof-of-Work"],
         ["Mining", "CPU-friendly yespower mining"],
-        ["Inspired by", "Early Bitcoin Core and One CPU, One Vote"],
+        ["Inspired by", "Early Bitcoin Core 0.3.19 and One CPU, One Vote"],
         ["GitHub", "https://github.com/legacybtc/LegacyCore"],
+        ["Releases", "https://github.com/legacybtc/LegacyCore/releases"],
+        ["License", "See LICENSE and NOTICE in this repository"],
       ]} />
       <InfoPanel title="Mainnet Identity" rows={[
         ["P2P port", snap.coin?.p2p_port ?? 19555],
@@ -1873,14 +2593,21 @@ function Loading() {
   return <div className="loading"><img src={legacyLogo} alt="" /><strong>Opening Legacy Wallet</strong><span>Starting the desktop backend...</span></div>;
 }
 
-function TitleBarClassic() {
+function TitleBarClassic({ snap }: { snap: Dict | null }) {
+  const build = resolveBuildInfo(snap);
+  const buildTooltip = `Build: ${build.marker}\nCommit: ${build.commit}\nBuild time: ${build.buildTimeLabel}`;
   return (
     <div className="titleBar">
-      <div className="titleIdentity"><img src={legacyLogo} alt="" /><strong>Legacy Wallet</strong><span>Mainnet</span></div>
+      <div className="titleIdentity">
+        <img src={legacyLogo} alt="" />
+        <strong>Legacy Wallet</strong>
+        <span>LBTC Build: {build.marker}</span>
+        <small className="buildBadge" title={buildTooltip}>Network: Mainnet</small>
+      </div>
       <div className="windowButtons">
-        <button aria-label="Minimize" title="Minimize" onClick={() => api().WindowMinimise()}><span>-</span></button>
-        <button aria-label="Maximize" title="Maximize / restore" onClick={() => api().WindowToggleMaximise()}><span>[]</span></button>
-        <button aria-label="Close" title="Close" className="close" onClick={() => api().Quit()}><span>X</span></button>
+        <button aria-label="Minimize" title="Minimize" className="min" onClick={() => api().WindowMinimise()}><span>-</span></button>
+        <button aria-label="Maximize" title="Maximize / restore" className="max" onClick={() => api().WindowToggleMaximise()}><span>[]</span></button>
+        <button aria-label="Close" title="Close" className="close" onClick={() => api().Quit()}><span>x</span></button>
       </div>
     </div>
   );
@@ -1888,51 +2615,23 @@ function TitleBarClassic() {
 
 function StatusBarClassic({ snap }: { snap: Dict | null }) {
   const peers = snap?.blockchain?.peer_count ?? (snap?.peers || []).length ?? 0;
+  const seeds = (snap?.coin?.dns_seeds || []).length ?? 0;
   const height = snap?.blockchain?.height ?? "-";
   const state = walletSyncState(snap);
   const mining = snap?.mining || {};
   const miningLabel = mining.active_mining ? "Mining: active" : mining.mining_paused_reason ? `Mining: paused (${mining.mining_paused_reason})` : "Mining: inactive";
   const nodeLabel = snap?.node?.running ? "Node: online" : "Node: offline";
   const walletLabel = snap?.wallet?.wallet?.locked ? "Wallet: locked" : "Wallet: unlocked";
+  const build = resolveBuildInfo(snap);
   return (
     <footer className={`statusBar ${state.tone}`}>
       <span>{nodeLabel}</span>
       <span>Height: {height}</span>
-      <span><StatusDot ok={state.tone === "good"} /> Peers: {peers}</span>
+      <span><StatusDot ok={state.tone === "good"} /> Peers: {peers} connected | Seeds: {seeds}</span>
       <span>{walletLabel}</span>
       <span>{miningLabel}</span>
       <span>Network: LBTC mainnet</span>
-      <span className="bars"><i /><i /><i /><i /></span>
-    </footer>
-  );
-}
-
-function TitleBar() {
-  return (
-    <div className="titleBar">
-      <div className="titleIdentity"><img src={legacyLogo} alt="" /><strong>Legacy Wallet</strong><span>Mainnet</span></div>
-      <div className="windowButtons">
-        <button aria-label="Minimize" title="Minimize" onClick={() => api().WindowMinimise()}><span>_</span></button>
-        <button aria-label="Maximize" title="Maximize / restore" onClick={() => api().WindowToggleMaximise()}><span>□</span></button>
-        <button aria-label="Close" title="Close" className="close" onClick={() => api().Quit()}><span>×</span></button>
-      </div>
-    </div>
-  );
-}
-
-function StatusBar({ snap }: { snap: Dict | null }) {
-  const peers = snap?.blockchain?.peer_count ?? (snap?.peers || []).length ?? 0;
-  const height = snap?.blockchain?.height ?? "-";
-  const state = walletSyncState(snap);
-  const mining = snap?.mining || {};
-  const miningLabel = mining.active_mining ? "Mining running" : mining.mining_paused_reason ? `Mining paused: ${mining.mining_paused_reason}` : mining.mining_enabled ? "Mining paused" : "Mining idle";
-  return (
-    <footer className={`statusBar ${state.tone}`}>
-      <span>Legacy Mainnet</span>
-      <span>Height: {height}</span>
-      <span><StatusDot ok={state.tone === "good"} /> {state.label}</span>
-      <span>{peers} direct peer{Number(peers) === 1 ? "" : "s"}</span>
-      <span>{miningLabel}</span>
+      <span className="buildTag" title={`Commit: ${build.commit} | Build time: ${build.buildTimeLabel}`}>LBTC Build: {build.marker}</span>
       <span className="bars"><i /><i /><i /><i /></span>
     </footer>
   );
@@ -1980,8 +2679,58 @@ function ResultCard({ title, rows }: { title: string; rows: [string, any][] }) {
   return <section className="panel result"><BadgeCheck /><InfoPanel title={title} rows={rows} flush /></section>;
 }
 
-function Notice({ text, tone }: { text: string; tone: "info" | "warn" | "danger" | "success" }) {
-  return <div className={`notice ${tone}`}><AlertTriangle size={18} />{text}</div>;
+function Notice({
+  text,
+  tone,
+  title,
+  source,
+  timestamp,
+  dismissible,
+  onClose,
+}: {
+  text: string;
+  tone: "info" | "warn" | "danger" | "success";
+  title?: string;
+  source?: string;
+  timestamp?: number | string;
+  dismissible?: boolean;
+  onClose?: () => void;
+}) {
+  const [closed, setClosed] = useState(false);
+  const canDismiss = dismissible ?? tone !== "danger";
+  if (closed) return null;
+  return (
+    <div className={`notice ${tone}`}>
+      <AlertTriangle size={18} />
+      <div className="noticeBody">
+        {(title || source || timestamp) && (
+          <div className="noticeHead">
+            {title && <strong>{title}</strong>}
+            <small>
+              {source ? `Source: ${source}` : ""}
+              {source && timestamp ? " | " : ""}
+              {timestamp ? `${typeof timestamp === "number" ? new Date(timestamp).toLocaleTimeString() : timestamp}` : ""}
+            </small>
+          </div>
+        )}
+        <span>{text}</span>
+      </div>
+      {canDismiss && (
+        <button
+          type="button"
+          className="noticeClose"
+          onClick={() => {
+            setClosed(true);
+            onClose?.();
+          }}
+          aria-label="Dismiss alert"
+          title="Dismiss alert"
+        >
+          X
+        </button>
+      )}
+    </div>
+  );
 }
 
 function StatusDot({ ok }: { ok: boolean }) {
@@ -2056,6 +2805,7 @@ function TransactionDetails({ tx }: { tx: Dict }) {
         {tx.block_hash && <div><span>Block hash</span><strong className="mono"><CopyableValue value={tx.block_hash} /></strong></div>}
         <div><span>Confirmations</span><strong>{tx.confirmations || 0}</strong></div>
         <div><span>Coinbase</span><strong>{yesNo(tx.coinbase)}</strong></div>
+        {tx.raw_hex && <div><span>Raw hex</span><strong className="mono"><CopyableValue value={tx.raw_hex} /></strong></div>}
         {tx.wallet && <div><span>Wallet view</span><strong>{directionLabel(tx.wallet.direction)} / {tx.wallet.status_label}</strong></div>}
       </div>
       <h3>Outputs</h3>
@@ -2164,10 +2914,47 @@ function fmtNumber(v: any) {
 }
 
 function networkHashLabel(v: any) {
-  if (!v || v.status === "estimating" || String(v.note || "").includes("not enough")) return "Estimating";
-  const n = Number(v.khps);
-  if (!Number.isFinite(n) || n <= 0) return "Not enough blocks";
-  return `${fmtNumber(n)} KH/s`;
+  const info = networkHashDiagnostics(v);
+  return info.primaryLabel;
+}
+
+function friendlyNetworkSource(source: string) {
+  const normalized = String(source || "").toLowerCase().trim();
+  if (normalized.includes("rpc_getnetworkhashps")) return "RPC";
+  if (normalized.includes("rpc_getmininginfo")) return "RPC (mining info)";
+  if (normalized.includes("estimated_from_chain_timing")) return "Estimated";
+  if (normalized.includes("unavailable") || normalized === "") return "Unavailable";
+  return title(normalized.replace(/_/g, " "));
+}
+
+function networkHashDiagnostics(v: any) {
+  const status = String(v?.status || "").toLowerCase();
+  const sourceLabel = String(v?.source || "");
+  const note = String(v?.note || "");
+  const hps = Number(v?.hps || 0);
+  const khs = Number(v?.khps || (hps > 0 ? hps / 1000 : 0));
+  const mhs = Number(v?.mhps || (hps > 0 ? hps / 1_000_000 : 0));
+  const updatedAt = Number(v?.updated_at || v?.updated || 0);
+  const unavailableReason =
+    note ||
+    (status === "unavailable" ? "node offline or unsupported RPC" : "") ||
+    (status === "estimated" && khs <= 0 ? "not enough blocks for estimate" : "");
+  const primaryLabel = khs > 0 ? (mhs >= 1 ? `${fmtNumber(mhs)} MH/s` : `${fmtNumber(khs)} KH/s`) : "Unavailable";
+  return {
+    status: status || (khs > 0 ? "estimated" : "unavailable"),
+    note,
+    unavailableReason,
+    primaryLabel,
+    sourceLabel,
+    hps,
+    khs,
+    mhs,
+    hpsLabel: Number.isFinite(hps) && hps > 0 ? fmtNumber(hps) : "-",
+    khsLabel: Number.isFinite(khs) && khs > 0 ? `${fmtNumber(khs)} KH/s` : "-",
+    mhsLabel: Number.isFinite(mhs) && mhs > 0 ? `${fmtNumber(mhs)} MH/s` : "-",
+    statusLabel: khs > 0 ? (status || "estimated") : "unavailable",
+    updatedAt: updatedAt > 0 ? new Date(updatedAt * 1000).toLocaleTimeString() : "-",
+  };
 }
 
 function lbtc(v: any) {

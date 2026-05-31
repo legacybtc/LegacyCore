@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -48,6 +49,7 @@ type Service struct {
 	started      time.Time
 	stopped      time.Time
 	stopping     bool
+	starting     bool
 	lastStartErr string
 	lastStopErr  string
 
@@ -92,6 +94,8 @@ type Status struct {
 	Starting       bool   `json:"starting"`
 	Error          string `json:"error,omitempty"`
 	DataDir        string `json:"data_dir"`
+	ConfigPath     string `json:"config_path"`
+	ExpectedDaemon string `json:"expected_daemon_path"`
 	UptimeSec      int64  `json:"uptime_seconds"`
 	Stopping       bool   `json:"stopping"`
 	PID            int    `json:"internal_node_pid,omitempty"`
@@ -496,10 +500,16 @@ func (s *Service) Start() error {
 		s.mu.Unlock()
 		return nil
 	}
+	if s.starting {
+		s.mu.Unlock()
+		return nil
+	}
+	s.starting = true
 	s.stopping = false
 	if err := requiredPortsAvailable(s.dataDir, false); err != nil {
 		s.err = err
 		s.lastStartErr = err.Error()
+		s.starting = false
 		s.mu.Unlock()
 		return err
 	}
@@ -507,6 +517,7 @@ func (s *Service) Start() error {
 	if err != nil {
 		s.err = err
 		s.lastStartErr = err.Error()
+		s.starting = false
 		s.mu.Unlock()
 		return err
 	}
@@ -535,6 +546,7 @@ func (s *Service) Start() error {
 		s.cancel = nil
 		s.ctx = nil
 		s.stopped = time.Now()
+		s.starting = false
 		s.stopping = false
 		if s.done != nil {
 			close(s.done)
@@ -551,9 +563,13 @@ func (s *Service) Start() error {
 		}
 		s.mu.Lock()
 		s.lastStartErr = err.Error()
+		s.starting = false
 		s.mu.Unlock()
 		return err
 	}
+	s.mu.Lock()
+	s.starting = false
+	s.mu.Unlock()
 	return nil
 }
 
@@ -650,9 +666,11 @@ func (s *Service) Status() Status {
 	s.mu.Lock()
 	st := Status{
 		Running:        s.node != nil,
-		Starting:       false,
+		Starting:       s.starting,
 		Stopping:       s.stopping,
 		DataDir:        s.dataDir,
+		ConfigPath:     filepath.Join(s.dataDir, config.ConfigFile),
+		ExpectedDaemon: expectedDaemonPath(),
 		WalletOwned:    s.node != nil,
 		LastStartError: s.lastStartErr,
 		LastStopError:  s.lastStopErr,
@@ -674,6 +692,12 @@ func (s *Service) Status() Status {
 	st.RPCPortChainID = rpcProbe.ChainID
 	st.RPCPortPID = rpcProbe.PID
 	st.RPCPortProcess = rpcProbe.Process
+	if !st.WalletOwned && rpcProbe.InUse && rpcProbe.State == "external_legacy_compatible" {
+		st.Running = true
+		if st.Error == "" {
+			st.Error = "using external compatible Legacy Core RPC on 127.0.0.1:19556"
+		}
+	}
 	if st.WalletOwned && st.Running {
 		if !(rpcProbe.InUse && rpcProbe.State == "wallet_internal") {
 			st.Running = false
@@ -738,6 +762,28 @@ func (s *Service) CoinInfo() map[string]any {
 func (s *Service) GetBlockchainInfo() (map[string]any, error) {
 	n, err := s.current()
 	if err != nil {
+		probe := s.cachedRPCProbe(s.dataDir, false)
+		if probe.InUse && probe.State == "external_legacy_compatible" {
+			rpcInfo, rpcErr := callLocalRPC(s.dataDir, "getblockchaininfo", []any{}, 2*time.Second)
+			if rpcErr == nil {
+				if out, ok := rpcInfo.(map[string]any); ok {
+					if _, ok := out["dns_seeds"]; !ok {
+						out["dns_seeds"] = chaincfg.MainNet.DNSSeeds
+					}
+					if _, ok := out["dns_seed_count"]; !ok {
+						out["dns_seed_count"] = len(chaincfg.MainNet.DNSSeeds)
+					}
+					if _, ok := out["manual_addnodes"]; !ok {
+						out["manual_addnodes"] = []string{}
+					}
+					out["known_peers_available"] = false
+					out["total_network_nodes"] = "unavailable"
+					out["total_network_note"] = "Total network nodes require crawler support. This wallet only knows active peer connections."
+					return out, nil
+				}
+			}
+			return nil, fmt.Errorf("external node detected but getblockchaininfo is unavailable: %v", rpcErr)
+		}
 		return nil, err
 	}
 	tip := n.Chain().Tip()
@@ -1291,6 +1337,17 @@ func (s *Service) ListPendingTransactions() ([]map[string]any, error) {
 func (s *Service) GetPeerInfo() ([]any, error) {
 	n, err := s.current()
 	if err != nil {
+		probe := s.cachedRPCProbe(s.dataDir, false)
+		if probe.InUse && probe.State == "external_legacy_compatible" {
+			result, rpcErr := callLocalRPC(s.dataDir, "getpeerinfo", []any{}, 2*time.Second)
+			if rpcErr != nil {
+				return nil, fmt.Errorf("external node peer info unavailable: %v", rpcErr)
+			}
+			if rows, ok := result.([]any); ok {
+				return rows, nil
+			}
+			return nil, fmt.Errorf("external node returned unexpected peer payload")
+		}
 		return nil, err
 	}
 	peers := n.P2P().PeerInfos()
@@ -1342,6 +1399,19 @@ func (s *Service) GetPeerInfo() ([]any, error) {
 func (s *Service) GetSyncStatus() (map[string]any, error) {
 	n, err := s.current()
 	if err != nil {
+		probe := s.cachedRPCProbe(s.dataDir, false)
+		if probe.InUse && probe.State == "external_legacy_compatible" {
+			result, rpcErr := callLocalRPC(s.dataDir, "getsyncstatus", []any{}, 2*time.Second)
+			if rpcErr != nil {
+				return map[string]any{
+					"status":  "external_node",
+					"message": "Connected to external node; detailed sync telemetry unavailable in wallet-managed mode.",
+				}, nil
+			}
+			if out, ok := result.(map[string]any); ok {
+				return out, nil
+			}
+		}
 		return nil, err
 	}
 	return n.P2P().SyncStatus(), nil
@@ -1360,9 +1430,26 @@ func (s *Service) GetChainTiming() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	networkHash, networkHashSource, networkHashErr := s.resolveNetworkHashPS()
+	if networkHashErr != nil && networkHash == nil {
+		networkHash = map[string]any{
+			"status": "unavailable",
+			"note":   networkHashErr.Error(),
+			"hps":    0.0,
+			"khps":   0.0,
+			"mhps":   0.0,
+		}
+		networkHashSource = "unavailable"
+	}
 	tip := n.Chain().Tip()
 	if tip == nil {
-		return map[string]any{"height": -1, "target_spacing_seconds": int64(chaincfg.TargetSpacing.Seconds()), "average_block_time_seconds": 0, "network_hashps": s.estimateNetworkHashPS(n, 20)}, nil
+		return map[string]any{
+			"height":                     -1,
+			"target_spacing_seconds":     int64(chaincfg.TargetSpacing.Seconds()),
+			"average_block_time_seconds": 0,
+			"network_hashps":             networkHash,
+			"network_hashps_source":      networkHashSource,
+		}, nil
 	}
 	window := int32(20)
 	start := tip.Height - window
@@ -1400,7 +1487,8 @@ func (s *Service) GetChainTiming() (map[string]any, error) {
 		"average_block_time_seconds": avg,
 		"last_block_age_seconds":     int64(time.Now().Unix()) - int64(tip.Time),
 		"difficulty_trend":           trend,
-		"network_hashps":             s.estimateNetworkHashPS(n, window),
+		"network_hashps":             networkHash,
+		"network_hashps_source":      networkHashSource,
 	}, nil
 }
 
@@ -1441,18 +1529,44 @@ func (s *Service) GetMinerStatus() (map[string]any, error) {
 	result, err := callLocalRPC(s.dataDir, "getminerstatus", []any{}, 1800*time.Millisecond)
 	if err == nil {
 		if out, ok := result.(map[string]any); ok {
+			nh, source, nhErr := s.resolveNetworkHashPS()
+			if nhErr != nil {
+				nh = map[string]any{
+					"status": "unavailable",
+					"note":   nhErr.Error(),
+					"hps":    0.0,
+					"khps":   0.0,
+					"mhps":   0.0,
+				}
+				source = "unavailable"
+			}
+			out["network_hashps"] = nh
+			out["network_hashps_source"] = source
 			out["status_source"] = "rpc"
+			out["miner_state"] = deriveMinerState(out, false)
+			out["status_text"] = friendlyMinerStateLabel(fmt.Sprint(out["miner_state"]))
 			return out, nil
 		}
+	}
+	nh, source, nhErr := s.resolveNetworkHashPS()
+	if nhErr != nil {
+		nh = map[string]any{
+			"status": "unavailable",
+			"note":   nhErr.Error(),
+			"hps":    0.0,
+			"khps":   0.0,
+			"mhps":   0.0,
+		}
+		source = "unavailable"
 	}
 	s.minerMu.Lock()
 	defer s.minerMu.Unlock()
 	miningNow := s.minerEnabled && s.minerLoopRunning
 	activeThreads := 0
-	threadState := "configured_only"
+	threadState := "stopped"
 	if miningNow {
 		activeThreads = s.minerThreads
-		threadState = "active"
+		threadState = "running"
 	}
 	return map[string]any{
 		"status_source":      "local_fallback",
@@ -1475,7 +1589,150 @@ func (s *Service) GetMinerStatus() (map[string]any, error) {
 			}
 			return "rpc offline"
 		}(),
+		"network_hashps":        nh,
+		"network_hashps_source": source,
+		"miner_state":           friendlyFallbackMinerState(miningNow, s.minerPausedReason),
+		"status_text":           friendlyMinerStateLabel(friendlyFallbackMinerState(miningNow, s.minerPausedReason)),
 	}, nil
+}
+
+func (s *Service) resolveNetworkHashPS() (map[string]any, string, error) {
+	now := time.Now().Unix()
+	rpcRaw, rpcErr := callLocalRPC(s.dataDir, "getnetworkhashps", []any{}, 1500*time.Millisecond)
+	if rpcErr == nil {
+		switch t := rpcRaw.(type) {
+		case map[string]any:
+			hps := asFloat(t["hps"])
+			if hps <= 0 {
+				hps = asFloat(t["networkhashps"])
+			}
+			if hps > 0 {
+				t["status"] = "estimated"
+				t["hps"] = hps
+				t["khps"] = hps / 1_000
+				t["mhps"] = hps / 1_000_000
+				t["source"] = "rpc_getnetworkhashps"
+				t["updated_at"] = now
+				return t, "rpc_getnetworkhashps", nil
+			}
+		case float64:
+			if t > 0 {
+				return map[string]any{
+					"status":     "estimated",
+					"hps":        t,
+					"khps":       t / 1_000,
+					"mhps":       t / 1_000_000,
+					"source":     "rpc_getnetworkhashps",
+					"updated_at": now,
+				}, "rpc_getnetworkhashps", nil
+			}
+		}
+	}
+
+	miningInfoRaw, miningInfoErr := callLocalRPC(s.dataDir, "getmininginfo", []any{}, 1500*time.Millisecond)
+	if miningInfoErr == nil {
+		if m, ok := miningInfoRaw.(map[string]any); ok {
+			hps := asFloat(m["networkhashps"])
+			if hps <= 0 {
+				hps = asFloat(m["network_hash_ps"])
+			}
+			if hps > 0 {
+				return map[string]any{
+					"status":     "estimated",
+					"hps":        hps,
+					"khps":       hps / 1_000,
+					"mhps":       hps / 1_000_000,
+					"source":     "rpc_getmininginfo",
+					"updated_at": now,
+				}, "rpc_getmininginfo", nil
+			}
+		}
+	}
+
+	n, curErr := s.current()
+	if curErr == nil {
+		estimated := s.estimateNetworkHashPS(n, 20)
+		hps := asFloat(estimated["hps"])
+		estimated["mhps"] = hps / 1_000_000
+		estimated["source"] = "estimated_from_chain_timing"
+		estimated["updated_at"] = now
+		if strings.EqualFold(fmt.Sprint(estimated["status"]), "estimating") || hps <= 0 {
+			estimated["status"] = "unavailable"
+			if strings.TrimSpace(fmt.Sprint(estimated["note"])) == "" {
+				estimated["note"] = "network hashrate unavailable: not enough blocks for estimate"
+			}
+		}
+		return estimated, "estimated_from_chain_timing", nil
+	}
+
+	reason := "network hashrate unavailable: node offline"
+	if rpcErr != nil {
+		lower := strings.ToLower(rpcErr.Error())
+		if strings.Contains(lower, "method not found") || strings.Contains(lower, "unknown method") {
+			reason = "network hashrate unavailable: getnetworkhashps not supported"
+		}
+	}
+	if miningInfoErr == nil {
+		reason = "network hashrate unavailable: getmininginfo did not include network hash"
+	}
+	return map[string]any{
+		"status":     "unavailable",
+		"note":       reason,
+		"hps":        0.0,
+		"khps":       0.0,
+		"mhps":       0.0,
+		"source":     "unavailable",
+		"updated_at": now,
+	}, "unavailable", fmt.Errorf("%s", reason)
+}
+
+func deriveMinerState(status map[string]any, rpcOffline bool) string {
+	if rpcOffline {
+		return "error"
+	}
+	active := false
+	if v, ok := status["active_mining"].(bool); ok {
+		active = v
+	}
+	if active {
+		return "running"
+	}
+	pausedReason := strings.TrimSpace(fmt.Sprint(status["mining_paused_reason"]))
+	if pausedReason != "" && pausedReason != "<nil>" && pausedReason != "-" {
+		return "paused"
+	}
+	if strings.TrimSpace(fmt.Sprint(status["last_error"])) != "" && strings.TrimSpace(fmt.Sprint(status["last_error"])) != "<nil>" {
+		return "error"
+	}
+	if enabled, ok := status["mining_enabled"].(bool); ok && enabled {
+		return "starting"
+	}
+	return "stopped"
+}
+
+func friendlyFallbackMinerState(active bool, pausedReason string) string {
+	if active {
+		return "running"
+	}
+	if strings.TrimSpace(pausedReason) != "" {
+		return "paused"
+	}
+	return "stopped"
+}
+
+func friendlyMinerStateLabel(state string) string {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "running":
+		return "Miner is running"
+	case "starting":
+		return "Miner is starting"
+	case "paused":
+		return "Miner is paused"
+	case "error":
+		return "Miner error"
+	default:
+		return "Miner is stopped"
+	}
 }
 
 func (s *Service) SetDefaultMiningAddress(addr string) (map[string]any, error) {
@@ -1558,15 +1815,23 @@ func (s *Service) StartMiner(threads int) (map[string]any, error) {
 	if threads <= 0 {
 		threads = 1
 	}
-	result, err := callLocalRPC(s.dataDir, "startminer", []any{threads}, 2500*time.Millisecond)
+	cfg, _ := config.LoadMiningConfig(config.DefaultConfigPath())
+	opts := map[string]any{
+		"threads":           threads,
+		"stop_after_blocks": 0,
+		"peer_required":     cfg.PeerRequired,
+	}
+	result, err := callLocalRPC(s.dataDir, "startminer", []any{opts}, 2500*time.Millisecond)
 	if err != nil {
 		return nil, fmt.Errorf("mining cannot start: %w", err)
 	}
 	if out, ok := result.(map[string]any); ok {
 		out["status_source"] = "rpc"
+		out["miner_state"] = "starting"
+		out["status_text"] = friendlyMinerStateLabel("starting")
 		return out, nil
 	}
-	return map[string]any{"active_mining": true, "threads": threads, "status_source": "rpc"}, nil
+	return map[string]any{"active_mining": true, "threads": threads, "status_source": "rpc", "miner_state": "starting", "status_text": friendlyMinerStateLabel("starting")}, nil
 }
 
 func (s *Service) StopMiner() (map[string]any, error) {
@@ -2381,6 +2646,11 @@ func blockDetails(idx *blockchain.BlockIndex, block *wire.MsgBlock) (map[string]
 }
 
 func txDetails(txid string, height int32, confirmations int64, blockHash string, tx *wire.MsgTx) map[string]any {
+	var rawHex string
+	var rawBuf bytes.Buffer
+	if err := tx.Serialize(&rawBuf); err == nil {
+		rawHex = hex.EncodeToString(rawBuf.Bytes())
+	}
 	inputs := make([]map[string]any, 0, len(tx.TxIn))
 	coinbase := len(tx.TxIn) == 1 && tx.TxIn[0].PreviousOutPoint.Hash.IsZero() && tx.TxIn[0].PreviousOutPoint.Index == ^uint32(0)
 	for _, in := range tx.TxIn {
@@ -2408,6 +2678,7 @@ func txDetails(txid string, height int32, confirmations int64, blockHash string,
 		"coinbase":      coinbase,
 		"inputs":        inputs,
 		"outputs":       outputs,
+		"raw_hex":       rawHex,
 	}
 }
 
@@ -2574,6 +2845,51 @@ func expectedHashesForBits(bits uint32) float64 {
 	return out
 }
 
+func asFloat(v any) float64 {
+	switch t := v.(type) {
+	case float64:
+		return t
+	case float32:
+		return float64(t)
+	case int:
+		return float64(t)
+	case int32:
+		return float64(t)
+	case int64:
+		return float64(t)
+	case uint32:
+		return float64(t)
+	case uint64:
+		return float64(t)
+	case json.Number:
+		f, _ := t.Float64()
+		return f
+	default:
+		return 0
+	}
+}
+
+func expectedDaemonPath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		if runtime.GOOS == "windows" {
+			return "legacycoind.exe (expected if using external daemon mode)"
+		}
+		return "legacycoind (expected if using external daemon mode)"
+	}
+	base := filepath.Dir(exe)
+	var candidate string
+	if runtime.GOOS == "windows" {
+		candidate = filepath.Join(base, "legacycoind.exe")
+	} else {
+		candidate = filepath.Join(base, "legacycoind")
+	}
+	if _, statErr := os.Stat(candidate); statErr == nil {
+		return candidate
+	}
+	return fmt.Sprintf("%s (not found; wallet-managed mode uses embedded Legacy Core engine)", candidate)
+}
+
 func (s *Service) BackupWallet(dest string) (map[string]any, error) {
 	dest = strings.TrimSpace(dest)
 	if dest == "" {
@@ -2624,7 +2940,189 @@ func (s *Service) RestoreWalletBackup(path string) (map[string]any, error) {
 }
 
 func (s *Service) OpenDataDir() map[string]any {
-	return map[string]any{"data_dir": s.dataDir, "message": "Open this folder in Explorer. Back up wallet files before deleting runtime data."}
+	path := filepath.Clean(strings.TrimSpace(s.dataDir))
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		return map[string]any{
+			"ok":       false,
+			"opened":   false,
+			"exists":   false,
+			"data_dir": path,
+			"message":  "Data directory does not exist yet. Start the node once, then open again.",
+		}
+	}
+	if err := openPath(path, false); err != nil {
+		return map[string]any{
+			"ok":       false,
+			"opened":   false,
+			"exists":   true,
+			"data_dir": path,
+			"message":  "Failed to open data directory: " + err.Error(),
+		}
+	}
+	return map[string]any{
+		"ok":       true,
+		"opened":   true,
+		"exists":   true,
+		"data_dir": path,
+		"message":  "Data directory opened.",
+	}
+}
+
+func (s *Service) OpenConfigDir() map[string]any {
+	configPath := filepath.Join(s.dataDir, config.ConfigFile)
+	configDir := filepath.Dir(configPath)
+	if info, err := os.Stat(configDir); err != nil || !info.IsDir() {
+		return map[string]any{
+			"ok":          false,
+			"opened":      false,
+			"exists":      false,
+			"data_dir":    s.dataDir,
+			"config_dir":  configDir,
+			"config_path": configPath,
+			"message":     "Config folder does not exist yet. Start the node once, then open again.",
+		}
+	}
+	if err := openPath(configDir, false); err != nil {
+		return map[string]any{
+			"ok":          false,
+			"opened":      false,
+			"exists":      true,
+			"data_dir":    s.dataDir,
+			"config_dir":  configDir,
+			"config_path": configPath,
+			"message":     "Failed to open config folder: " + err.Error(),
+		}
+	}
+	return map[string]any{
+		"ok":          true,
+		"opened":      true,
+		"exists":      true,
+		"data_dir":    s.dataDir,
+		"config_dir":  configDir,
+		"config_path": configPath,
+		"message":     "Config folder opened.",
+	}
+}
+
+func (s *Service) OpenConfigFile() map[string]any {
+	configPath := filepath.Join(s.dataDir, config.ConfigFile)
+	configDir := filepath.Dir(configPath)
+	info, err := os.Stat(configPath)
+	if err != nil || info.IsDir() {
+		return map[string]any{
+			"ok":          false,
+			"opened":      false,
+			"exists":      false,
+			"data_dir":    s.dataDir,
+			"config_dir":  configDir,
+			"config_path": configPath,
+			"message":     "Config file does not exist yet. Start the node once to generate it.",
+		}
+	}
+	if err := openPath(configPath, true); err != nil {
+		return map[string]any{
+			"ok":          false,
+			"opened":      false,
+			"exists":      true,
+			"data_dir":    s.dataDir,
+			"config_dir":  configDir,
+			"config_path": configPath,
+			"message":     "Failed to open config file: " + err.Error(),
+		}
+	}
+	return map[string]any{
+		"ok":          true,
+		"opened":      true,
+		"exists":      true,
+		"data_dir":    s.dataDir,
+		"config_dir":  configDir,
+		"config_path": configPath,
+		"message":     "Config file opened.",
+	}
+}
+
+func (s *Service) EnableAddressAndTxIndexConfig() map[string]any {
+	configPath := filepath.Join(s.dataDir, config.ConfigFile)
+	if err := os.MkdirAll(s.dataDir, 0700); err != nil {
+		return map[string]any{
+			"ok":          false,
+			"config_path": configPath,
+			"message":     "Failed to create data directory: " + err.Error(),
+		}
+	}
+	if err := ensureConfigKV(configPath, "addressindex", "1"); err != nil {
+		return map[string]any{
+			"ok":          false,
+			"config_path": configPath,
+			"message":     "Failed to set addressindex=1: " + err.Error(),
+		}
+	}
+	if err := ensureConfigKV(configPath, "txindex", "1"); err != nil {
+		return map[string]any{
+			"ok":          false,
+			"config_path": configPath,
+			"message":     "Failed to set txindex=1: " + err.Error(),
+		}
+	}
+	return map[string]any{
+		"ok":          true,
+		"config_path": configPath,
+		"message":     "Added/updated addressindex=1 and txindex=1. Restart node, then run reindex.",
+	}
+}
+
+func openPath(path string, selectFile bool) error {
+	path = filepath.Clean(strings.TrimSpace(path))
+	if path == "" {
+		return fmt.Errorf("empty path")
+	}
+	switch runtime.GOOS {
+	case "windows":
+		if selectFile {
+			return exec.Command("explorer.exe", "/select,", path).Start()
+		}
+		return exec.Command("explorer.exe", path).Start()
+	case "darwin":
+		if selectFile {
+			return exec.Command("open", "-R", path).Start()
+		}
+		return exec.Command("open", path).Start()
+	default:
+		return exec.Command("xdg-open", path).Start()
+	}
+}
+
+func ensureConfigKV(path, key, value string) error {
+	key = strings.TrimSpace(key)
+	value = strings.TrimSpace(value)
+	if key == "" {
+		return fmt.Errorf("empty key")
+	}
+	current := ""
+	if b, err := os.ReadFile(path); err == nil {
+		current = string(b)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	lines := strings.Split(strings.ReplaceAll(current, "\r\n", "\n"), "\n")
+	found := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if !strings.HasPrefix(trimmed, key+"=") {
+			continue
+		}
+		lines[i] = key + "=" + value
+		found = true
+	}
+	if !found {
+		lines = append(lines, key+"="+value)
+	}
+	next := strings.TrimRight(strings.Join(lines, "\n"), "\n") + "\n"
+	return os.WriteFile(path, []byte(next), 0600)
 }
 
 func (s *Service) minerLoop(ctx context.Context, n *node.Node, pubHash []byte, threads int) {

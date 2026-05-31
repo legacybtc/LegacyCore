@@ -14,12 +14,21 @@ A short path to start Legacy Core, verify identity, and check basic sync.
 Windows:
 
 1. Download and extract the official release ZIP.
-2. Run `START_HERE.bat`.
+2. Start `LegacyWallet.exe` (or `START_HERE.bat` if included in your package).
 3. Confirm node status with:
 
 ```powershell
 .\legacycoin-cli.exe getblockchaininfo
 .\legacycoin-cli.exe getpeerinfo
+```
+
+4. Confirm wallet visibility with:
+
+```powershell
+.\legacycoin-cli.exe getwalletinfo
+.\legacycoin-cli.exe getbalance
+.\legacycoin-cli.exe getwalletsummary
+.\legacycoin-cli.exe listtransactions
 ```
 
 Linux:
@@ -51,6 +60,13 @@ If RPC fails, verify daemon is running and check:
 ./legacycoin-cli getsyncstatus
 ./legacycoin-cli checkstorage
 ```
+
+If you moved wallet files to another Windows PC and balance is missing:
+
+1. Verify you copied wallet files into `%APPDATA%\LegacyCoin`.
+2. Check chain sync height (`getblockchaininfo`).
+3. Re-check wallet data (`getwalletinfo`, `getbalance`, `listtransactions`).
+4. If required, run `reindex` after backup.
 
 ## Known Limitations
 

@@ -38,8 +38,11 @@ Linux:
 
 ```bash
 ./legacycoin-cli getwalletinfo
+./legacycoin-cli getbalance
 ./legacycoin-cli listaddresses
 ./legacycoin-cli getwalletsummary
+./legacycoin-cli listtransactions
+./legacycoin-cli listunspent
 ```
 
 5. If chain data is missing/corrupt, use reindex flow (does not change consensus).
@@ -47,6 +50,9 @@ Linux:
 ## Troubleshooting
 
 - If balances look wrong right after restore, verify sync height first.
+- If you migrated to another Windows PC, verify wallet files are in:
+  `%APPDATA%\LegacyCoin`
+- If mining rewards are visible but not spendable, check coinbase maturity (100 confirmations).
 - If storage issues appear, run:
 
 ```bash
