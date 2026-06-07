@@ -7,6 +7,9 @@ dist/
 # Frontend generated output
 cmd/legacywallet/frontend/node_modules/
 cmd/legacywallet/frontend/dist/
+!cmd/legacywallet/frontend/dist/
+cmd/legacywallet/frontend/dist/*
+!cmd/legacywallet/frontend/dist/README.placeholder
 cmd/legacywallet/build/
 
 # Local build caches
