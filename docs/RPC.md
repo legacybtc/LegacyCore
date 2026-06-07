@@ -161,14 +161,20 @@ Never expose unauthenticated public RPC.
 - Parameters:
   - `getblocktemplate [request_object]`
   - `submitblock <block_hex>`
+  - `submitblockdebug <block_hex>`
+  - `validateblockproposal <block_hex>`
+  - `testblock <block_hex>`
 - CLI:
 
 ```bash
 ./legacycoin-cli getblocktemplate
 ./legacycoin-cli submitblock <block_hex>
+./legacycoin-cli submitblockdebug <block_hex>
+./legacycoin-cli validateblockproposal <block_hex>
 ```
 
-- Example response fields (`getblocktemplate`): `height`, `previousblockhash`, `transactions`, `coinbasevalue`, `bits`, `target`
+- Example response fields (`getblocktemplate`): `height`, `previousblockhash`, `transactions`, `coinbasevalue`, `bits`, `target`, `longpollid`, `submitold=false`, `expires=15`
+- Debug fields: `submitted_block_hash`, `submitted_prevhash`, `submitted_height`, `daemon_current_height`, `daemon_current_best_hash`, `submitted_prevhash_equals_tip`, `processblock_result`, `reject_code`, `reject_category`, `reject_reason`
 - Errors (`submitblock`): decode errors, reject codes (e.g. bad prev, bad bits, high hash)
 - Integration notes: use yespower with `LegacyCoinPoW` personalization
 

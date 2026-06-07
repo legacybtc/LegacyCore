@@ -44,9 +44,19 @@ Stop:
 
 - `getblocktemplate`: available
 - `submitblock`: available
+- `submitblockdebug`: available for detailed rejection diagnostics
+- `validateblockproposal` / `testblock`: available for non-mutating candidate preflight
 - `validateaddress`: available
 
 Legacy Core does not ship a built-in stratum server in v1.0.4.
+
+## Coinbase Split Policy
+
+- Consensus allows one or more coinbase outputs.
+- Built-in solo mining still creates a single-output coinbase by default.
+- `mining.NewCoinbaseTxWithOutputs` is available for official bridge/pool tooling that needs explicit reward splits.
+- Official operating policy can use 96% miner / 4% project for solo bridge blocks or 96% miner / 2% pool infrastructure / 2% project for pool blocks.
+- A block is valid only if total coinbase output value is within subsidy plus fees.
 
 ## Troubleshooting
 

@@ -17,26 +17,40 @@ Safety warning: keep RPC private; seed nodes should not expose wallet RPC public
 
 ```bash
 ./legacycoind params
-./legacycoind run -seed-peers
+./legacycoind run -seednode
 ```
 
 ## Recommended Config
 
 ```text
+node_role=seed
+seednode=true
 bind=0.0.0.0
 rpcbind=127.0.0.1
 seed_peers=true
 peer_safety=true
+peer_max_inbound=512
+peer_max_per_ip=32
+peer_max_per_subnet=128
 chain_id_enforce=true
 peer_ping_interval_seconds=30
 pretty_logs=true
 log_icons=true
 ```
 
+Seed mode behavior:
+
+- runs as a full-node public P2P relay
+- refuses non-local RPC binds
+- disables miner auto-start and rejects `startminer`
+- raises inbound peer caps while keeping per-IP, per-subnet, rate-limit, and ban-score controls
+- participates in DNS, addnode, and `addr/getaddr` peer discovery
+
 ## Monitoring Commands
 
 ```bash
 ./legacycoin-cli getnetworkinfo
+./legacycoin-cli getbootstrapinfo
 ./legacycoin-cli getpeerinfo
 ./legacycoin-cli getsyncstatus
 ./legacycoin-cli checkstorage

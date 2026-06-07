@@ -34,18 +34,31 @@ Verify:
 2. Build pool coinbase and merkle root.
 3. Mine candidate with yespower (`LegacyCoinPoW` personalization).
 4. Submit full block using `submitblock`.
-5. Confirm acceptance with `getblock`/`getblockhash`.
+5. If rejected, call `submitblockdebug` or `validateblockproposal` with the same block hex.
+6. Confirm acceptance with `getblock`/`getblockhash`.
+
+Pool-facing template details:
+
+- `submitold=false`
+- `expires=15`
+- `longpollid=<tiphash>:<mempoolcount>`
+- Tip changes update `previoushash`, `previousblockhash`, `height`, and `longpollid`.
 
 ## submitblock Behavior
 
 - Success: `null` result.
-- Rejections: structured reject strings or decode errors.
+- Rejections: BIP-style reject strings such as `bad-prevblk`, `bad-txnmrklroot`, `bad-diffbits`, `high-hash`, `duplicate`, or `inconclusive`.
+- `submitblockdebug <block_hex>` submits and returns diagnostics including submitted hash, prevhash, inferred height, daemon tip, `ProcessBlockWithResult`, exact reject reason, and reject category.
+- `validateblockproposal <block_hex>` and `testblock <block_hex>` preflight the block without storing it.
+- Use `submitted_prevhash_equals_tip=false` plus `reject_category=bad-prevblk` or `stale` to identify stale jobs.
 
 ## Reward and Maturity
 
 - Subsidy schedule remains chain consensus.
 - Coinbase maturity is 100 blocks.
 - Pool payout logic must account for maturity.
+- Consensus accepts multi-output coinbase transactions when the total output value is no more than subsidy plus included fees.
+- Official split policy is wallet/pool policy, not a consensus rule. Pools can construct 96/2/2 or 96/4 style coinbase outputs as long as total value and scripts are valid.
 
 ## RPC Private Warning
 
