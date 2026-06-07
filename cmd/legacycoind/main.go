@@ -61,7 +61,7 @@ func printUsage() {
 
 Usage:
   legacycoind help
-  legacycoind run [-addnode ip:port] [-connect ip:port] [-noseednode] [-seed-peers] [-datadir path] [-p2pport port] [-rpcport port]
+  legacycoind run [-seednode] [-addnode ip:port] [-connect ip:port] [-noseednode] [-seed-peers] [-datadir path] [-p2pport port] [-rpcport port]
   legacycoind params
   legacycoind genesis [threads]
   legacycoind reindex [-datadir path]
@@ -342,6 +342,19 @@ func applyRuntimeNodeFlags(args []string) error {
 			}
 		case "-seed-peers", "--seed-peers":
 			if err := config.AppendConfigLine(config.DefaultConfigPath(), "seed_peers", "true"); err != nil {
+				return err
+			}
+		case "-seednode", "--seednode":
+			if err := config.AppendConfigLine(config.DefaultConfigPath(), "node_role", "seed"); err != nil {
+				return err
+			}
+			if err := config.AppendConfigLine(config.DefaultConfigPath(), "seednode", "true"); err != nil {
+				return err
+			}
+			if err := config.AppendConfigLine(config.DefaultConfigPath(), "seed_peers", "true"); err != nil {
+				return err
+			}
+			if err := config.AppendConfigLine(config.DefaultConfigPath(), "rpcbind", "127.0.0.1"); err != nil {
 				return err
 			}
 		case "-p2pport", "--p2pport", "-port", "--port":

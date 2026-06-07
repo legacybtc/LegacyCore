@@ -2,13 +2,14 @@
 
 Purpose: describe network identity, peer liveness, and sync metadata behavior.  
 Audience: node operators, seed operators, integrators, and developers.  
-Status: active for v1.0.4.  
+Status: active for v1.0.5.
 Safety warning: P2P peers are untrusted; never bypass block/tx validation.
 
 ## Network Identity
 
 - Message start: `a4 ac c6 4d`
 - P2P port: `19555`
+- RPC port: `19556` (private/local by default)
 - Chain ID: `legacy-mainnet-1.0.0-rc2-5b4c78e4`
 
 ## Ping/Pong Behavior
@@ -40,10 +41,22 @@ Operational sync fields exposed through RPC include:
 
 Use with `getsyncstatus` for full sync diagnostics.
 
+## Peer Discovery
+
+- DNS seeds are only bootstrap sources.
+- Nodes also exchange optional `getaddr` / `addr` messages after handshake.
+- A node that reaches one healthy peer can learn additional public peer addresses from that peer.
+- Relayed peer addresses are held in an in-memory known-address manager only; they are not persisted to disk.
+- The known-address cache is capped at 2048 entries and trims oldest entries first.
+- Public relay filters reject unspecified, multicast, link-local, loopback, and private addresses unless the source peer is local/private for local test networks.
+- Inbound admission uses `peer_max_inbound`, `peer_max_per_ip`, `peer_max_per_subnet`, and rate limits instead of rejecting every duplicate inbound host.
+- Backward compatibility: `addr` / `getaddr` are post-handshake extensions. Older peers that ignore unknown commands can still sync through version/verack, headers, inv, getdata, and block messages.
+
 ## Troubleshooting
 
 - If a peer is connected but stale, inspect latency/missed pongs and local firewall/NAT.
 - If no peers connect, check seed/addnode configuration and outbound restrictions.
+- If DNS seeds are unavailable but one peer is reachable, verify `getbootstrapinfo.known_peer_count` grows after handshake.
 
 ## Known Limitations
 

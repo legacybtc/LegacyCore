@@ -120,6 +120,9 @@ var rpcHelpEntries = []rpcHelpEntry{
 	{Method: "gettxoutsetinfo", Usage: "gettxoutsetinfo", Category: "tx", Description: "Return UTXO set statistics."},
 	{Method: "getblocktemplate", Usage: "getblocktemplate [request_object]", Category: "mining", Description: "Return pool/miner template (BIP22/BIP23 style fields)."},
 	{Method: "submitblock", Usage: "submitblock <block_hex>", Category: "mining", Description: "Submit a candidate block; null on accepted, reject string otherwise."},
+	{Method: "submitblockdebug", Usage: "submitblockdebug <block_hex>", Category: "mining", Description: "Submit a candidate block and return detailed accept/reject diagnostics."},
+	{Method: "validateblockproposal", Usage: "validateblockproposal <block_hex>", Category: "mining", Description: "Preflight a candidate block without storing it."},
+	{Method: "testblock", Usage: "testblock <block_hex>", Category: "mining", Description: "Alias for validateblockproposal."},
 	{Method: "getminingaddress", Usage: "getminingaddress", Category: "mining", Description: "Return or create the wallet-owned mining reward address."},
 	{Method: "getminerstatus", Usage: "getminerstatus", Category: "mining", Description: "Return miner runtime status and counters."},
 	{Method: "startminer", Usage: "startminer", Category: "mining", Description: "Start local CPU mining."},
@@ -159,6 +162,23 @@ func (s *Server) rpcBindHost() string {
 		return s.bind.Host
 	}
 	return "127.0.0.1"
+}
+
+func (s *Server) nodeRole() string {
+	if s.policy.NodeRole != "" {
+		return s.policy.NodeRole
+	}
+	return "full"
+}
+
+func firstStrings(in []string, max int) []string {
+	if max <= 0 || len(in) == 0 {
+		return []string{}
+	}
+	if len(in) > max {
+		in = in[:max]
+	}
+	return append([]string(nil), in...)
 }
 
 func parsePassphraseArg(raw json.RawMessage) (string, error) {
@@ -312,7 +332,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		defer cancel()
 		_ = s.server.Shutdown(shutdownCtx)
 	}()
-	if cfg, err := config.LoadMiningConfig(config.DefaultConfigPath()); err == nil && (cfg.AutoStart || cfg.Enabled) {
+	if cfg, err := config.LoadMiningConfig(config.DefaultConfigPath()); err == nil && !s.policy.SeedNode && (cfg.AutoStart || cfg.Enabled) {
 		go func() {
 			time.Sleep(2 * time.Second)
 			_, _ = s.startMiner(ctx, json.RawMessage("[]"))
@@ -432,6 +452,8 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 			"blocks":         height,
 			"bestblockhash":  best,
 			"connections":    s.p2p.PeerCount(),
+			"node_role":      s.nodeRole(),
+			"seed_node":      s.policy.SeedNode,
 			"datadir":        config.DefaultDataDir(),
 			"genesislocked":  s.chain.Params().GenesisHash != "",
 		}, nil
@@ -461,6 +483,8 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 			"dns_seed_count":    len(p.DNSSeeds),
 			"bootstrap_addnode": manual,
 			"bootstrap_count":   len(manual),
+			"known_peers":       firstStrings(s.p2p.KnownAddresses(), 50),
+			"known_peer_count":  s.p2p.KnownAddressCount(),
 			"default_port":      p.DefaultPort,
 		}, nil
 	case "getnodeconfig":
@@ -493,9 +517,11 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 				"rpc": p.RPCPort,
 			},
 			"network": map[string]any{
-				"message_start": fmt.Sprintf("%x", p.MessageStart),
-				"dns_seeds":     p.DNSSeeds,
-				"addnodes":      s.p2p.BootstrapPeers(),
+				"message_start":      fmt.Sprintf("%x", p.MessageStart),
+				"dns_seeds":          p.DNSSeeds,
+				"addnodes":           s.p2p.BootstrapPeers(),
+				"known_peer_count":   s.p2p.KnownAddressCount(),
+				"known_peer_samples": firstStrings(s.p2p.KnownAddresses(), 20),
 			},
 			"bind": map[string]any{
 				"p2p": s.p2p.ListenHost(),
@@ -508,6 +534,12 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 			"auth": map[string]any{
 				"rpc_enabled": s.auth.Enabled,
 				"rpc_user":    s.auth.User,
+			},
+			"role": map[string]any{
+				"node_role":        s.nodeRole(),
+				"seed_node":        s.policy.SeedNode,
+				"mining_allowed":   !s.policy.SeedNode,
+				"rpc_private_only": s.policy.SeedNode,
 			},
 			"warnings": warnings,
 		}, nil
@@ -1130,6 +1162,10 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 			s.p2p.AnnounceBlock(hash)
 		}
 		return nil, nil
+	case "submitblockdebug":
+		return s.submitBlockDiagnostic(params, true)
+	case "validateblockproposal", "testblock":
+		return s.submitBlockDiagnostic(params, false)
 	case "disconnecttip":
 		if err := s.chain.DisconnectTip(); err != nil {
 			return nil, &rpcError{Code: -32603, Message: err.Error()}
@@ -2418,6 +2454,9 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 			"protocol":       70015,
 			"connections":    s.p2p.PeerCount(),
 			"outbound":       s.p2p.OutboundCount(),
+			"node_role":      s.nodeRole(),
+			"seed_node":      s.policy.SeedNode,
+			"known_peers":    s.p2p.KnownAddressCount(),
 			"mining_safe":    s.p2p.PeerCount() > 0 && storage.OK,
 			"active_mining":  activeMining,
 			"storage_ok":     storage.OK,
@@ -2628,6 +2667,26 @@ func submitBlockRejectCode(err error) string {
 		return "time-too-new"
 	case errors.Is(err, blockchain.ErrNoTransactions):
 		return "bad-blk-length"
+	case errors.Is(err, blockchain.ErrBadBlockSize):
+		return "bad-blk-length"
+	case errors.Is(err, blockchain.ErrBadCoinbase):
+		return "bad-cb"
+	case errors.Is(err, blockchain.ErrBadCoinbaseValue):
+		return "bad-cb-amount"
+	case errors.Is(err, blockchain.ErrMissingTxOut):
+		return "bad-txns-inputs-missingorspent"
+	case errors.Is(err, blockchain.ErrDuplicateSpend):
+		return "bad-txns-inputs-duplicate"
+	case errors.Is(err, blockchain.ErrBadTxValue):
+		return "bad-txns-vout"
+	case errors.Is(err, blockchain.ErrImmatureCoinbase):
+		return "bad-txns-premature-spend-of-coinbase"
+	case errors.Is(err, blockchain.ErrNonFinalTx):
+		return "bad-txns-nonfinal"
+	case errors.Is(err, blockchain.ErrDuplicateTxID):
+		return "bad-txns-duplicate"
+	case errors.Is(err, blockchain.ErrTooManySigOps):
+		return "bad-blk-sigops"
 	case errors.Is(err, consensus.ErrHighHash):
 		return "high-hash"
 	case errors.Is(err, consensus.ErrTargetTooHigh):
@@ -2635,6 +2694,172 @@ func submitBlockRejectCode(err error) string {
 	default:
 		return "rejected"
 	}
+}
+
+func submitBlockRejectCategory(code string, err error, result blockchain.BlockProcessResult) string {
+	switch {
+	case code == "":
+		return ""
+	case code == "duplicate":
+		return "duplicate"
+	case code == "bad-prevblk" && result.Orphan:
+		return "orphan"
+	case code == "bad-prevblk":
+		return "bad-prevblk"
+	case code == "inconclusive":
+		return "side-chain"
+	case code == "bad-txnmrklroot":
+		return "bad-merkle-root"
+	case code == "bad-cb-length" || errors.Is(err, blockchain.ErrBadCoinbase) || errors.Is(err, blockchain.ErrBadCoinbaseValue):
+		return "bad-coinbase"
+	case code == "bad-diffbits":
+		return "bad-bits"
+	case code == "high-hash":
+		return "high-hash"
+	case code == "time-too-old" || code == "time-too-new":
+		return "bad-timestamp"
+	case strings.HasPrefix(code, "bad-tx") || errors.Is(err, blockchain.ErrBadTxValue) || errors.Is(err, blockchain.ErrMissingTxOut) || errors.Is(err, blockchain.ErrDuplicateSpend):
+		return "invalid-transaction"
+	default:
+		return code
+	}
+}
+
+func (s *Server) submitBlockDiagnostic(params json.RawMessage, process bool) (any, *rpcError) {
+	var args []string
+	if err := json.Unmarshal(params, &args); err != nil || len(args) != 1 {
+		return nil, &rpcError{Code: -32602, Message: "block diagnostic expects block hex"}
+	}
+	raw, err := hex.DecodeString(args[0])
+	if err != nil {
+		return blockDecodeDiagnostic("bad-hex", err), nil
+	}
+	block, err := wire.ReadBlock(bytes.NewReader(raw))
+	if err != nil {
+		return blockDecodeDiagnostic("bad-serialization", err), nil
+	}
+	diagnostic := s.blockDiagnosticBase(block, process)
+	if !process {
+		result, err := s.chain.ValidateBlockProposal(block)
+		diagnostic["processblock_result"] = result
+		code, reason := blockResultRejectCode(result, err)
+		diagnostic["accepted"] = code == ""
+		diagnostic["would_accept"] = code == ""
+		diagnostic["reject_code"] = code
+		diagnostic["reject_category"] = submitBlockRejectCategory(code, err, result)
+		diagnostic["reject_reason"] = reason
+		return diagnostic, nil
+	}
+	result, err := s.chain.ProcessBlockWithResult(block)
+	diagnostic["processblock_result"] = result
+	code, reason := blockResultRejectCode(result, err)
+	accepted := err == nil && result.Status == blockchain.BlockStatusConnected && result.Connected && result.BestChanged
+	diagnostic["accepted"] = accepted
+	diagnostic["reject_code"] = code
+	diagnostic["reject_category"] = submitBlockRejectCategory(code, err, result)
+	diagnostic["reject_reason"] = reason
+	if accepted && s.p2p != nil {
+		if hash, hashErr := s.chain.BlockHash(block); hashErr == nil {
+			s.p2p.AnnounceBlock(hash)
+		}
+	}
+	if tip := s.chain.Tip(); tip != nil {
+		diagnostic["daemon_after_height"] = tip.Height
+		diagnostic["daemon_after_best_hash"] = tip.Hash
+	}
+	return diagnostic, nil
+}
+
+func blockResultRejectCode(result blockchain.BlockProcessResult, err error) (string, string) {
+	if err != nil {
+		return submitBlockRejectCode(err), err.Error()
+	}
+	switch result.Status {
+	case blockchain.BlockStatusDuplicate:
+		return "duplicate", result.Reason
+	case blockchain.BlockStatusOrphan:
+		return "bad-prevblk", result.Reason
+	case blockchain.BlockStatusSideChain:
+		return "inconclusive", result.Reason
+	case blockchain.BlockStatusConnected, blockchain.BlockStatusProposal:
+		return "", result.Reason
+	case blockchain.BlockStatusRejected:
+		if result.Reason != "" {
+			return "rejected", result.Reason
+		}
+		return "rejected", "block rejected"
+	default:
+		if !result.Connected || !result.BestChanged {
+			if result.Reason != "" {
+				return "rejected", result.Reason
+			}
+			return "rejected", "block rejected"
+		}
+		return "", result.Reason
+	}
+}
+
+func blockDecodeDiagnostic(code string, err error) map[string]any {
+	return map[string]any{
+		"accepted":        false,
+		"would_accept":    false,
+		"reject_code":     code,
+		"reject_category": "wrong-serialization",
+		"reject_reason":   err.Error(),
+	}
+}
+
+func (s *Server) blockDiagnosticBase(block *wire.MsgBlock, process bool) map[string]any {
+	hash := ""
+	hashErr := ""
+	if h, err := s.chain.BlockHash(block); err == nil {
+		hash = h.String()
+	} else {
+		hashErr = err.Error()
+	}
+	prevHash := block.Header.PrevBlock.String()
+	tipHeight := int32(-1)
+	tipHash := ""
+	if tip := s.chain.Tip(); tip != nil {
+		tipHeight = tip.Height
+		tipHash = tip.Hash
+	}
+	knownHeight := int32(-1)
+	if prevHash == tipHash && tipHeight >= 0 {
+		knownHeight = tipHeight + 1
+	} else if _, idx, err := s.chain.BlockByHash(prevHash); err == nil && idx != nil {
+		knownHeight = idx.Height + 1
+	}
+	out := map[string]any{
+		"processed":                     process,
+		"submitted_block_hash":          hash,
+		"submitted_block_hash_error":    hashErr,
+		"submitted_prevhash":            prevHash,
+		"submitted_height":              knownHeight,
+		"submitted_tx_count":            len(block.Transactions),
+		"submitted_bits":                fmt.Sprintf("%08x", block.Header.Bits),
+		"submitted_time":                block.Header.Timestamp,
+		"daemon_current_height":         tipHeight,
+		"daemon_current_best_hash":      tipHash,
+		"submitted_prevhash_equals_tip": prevHash == tipHash && tipHash != "",
+		"submitted_prevhash_known":      prevHash == tipHash && tipHash != "",
+		"processblock_result":           nil,
+	}
+	if _, idx, err := s.chain.BlockByHash(prevHash); err == nil && idx != nil {
+		out["submitted_prevhash_known"] = true
+		out["submitted_prevhash_height"] = idx.Height
+	}
+	root, err := block.BuildMerkleRoot()
+	if err == nil {
+		out["calculated_merkleroot"] = root.String()
+		out["submitted_merkleroot_matches"] = root == block.Header.MerkleRoot
+	}
+	return out
+}
+
+func (s *Server) validateBlockProposalCode(block *wire.MsgBlock) (string, string) {
+	result, err := s.chain.ValidateBlockProposal(block)
+	return blockResultRejectCode(result, err)
 }
 
 type txLookupResult struct {
@@ -2967,12 +3192,12 @@ func (s *Server) getBlockTemplate(ctx context.Context, params json.RawMessage) (
 		"mempoolsize":       mempoolCount,
 		"coinbasevalue":     coinbaseValue,
 		"mutable":           []string{"time", "transactions", "prevblock"},
-		"submitold":         true,
+		"submitold":         false,
 		"noncerange":        "00000000ffffffff",
 		"hex":               hex.EncodeToString(raw),
 		"longpollid":        longPollID,
 		"capabilities":      []string{"proposal", "longpoll", "coinbasetxn"},
-		"expires":           30,
+		"expires":           15,
 		"mintime":           block.Header.Timestamp,
 		"maxtime":           block.Header.Timestamp + uint32(chaincfg.MaxFutureDrift.Seconds()),
 		"sigoplimit":        80_000,
@@ -3046,47 +3271,9 @@ func (s *Server) getBlockTemplateProposal(blockHex string) (any, *rpcError) {
 	if err != nil {
 		return "rejected", nil
 	}
-	hash, err := s.chain.BlockHash(block)
-	if err == nil && s.chain.HasBlock(hash.String()) {
-		return "duplicate", nil
-	}
-	if len(block.Transactions) == 0 {
-		return "bad-txns", nil
-	}
-	if len(block.Transactions[0].TxIn) == 0 || len(block.Transactions[0].TxIn[0].SignatureScript) > 100 {
-		return "bad-cb-length", nil
-	}
-	root, err := block.BuildMerkleRoot()
-	if err != nil {
-		return "bad-txnmrklroot", nil
-	}
-	if root != block.Header.MerkleRoot {
-		return "bad-txnmrklroot", nil
-	}
-	if tip := s.chain.Tip(); tip != nil {
-		prev := block.Header.PrevBlock.String()
-		if prev != tip.Hash {
-			if !s.chain.HasBlock(prev) {
-				return "bad-prevblk", nil
-			}
-			return "inconclusive", nil
-		}
-		if block.Header.Timestamp <= tip.Time {
-			return "time-too-old", nil
-		}
-	}
-	maxFuture := uint32(time.Now().Unix()) + uint32(chaincfg.MaxFutureDrift.Seconds())
-	if block.Header.Timestamp > maxFuture {
-		return "time-too-new", nil
-	}
-	expectedBits, err := s.chain.NextRequiredBits()
-	if err == nil && block.Header.Bits != expectedBits {
-		return "bad-diffbits", nil
-	}
-	if hash, err := s.chain.BlockHash(block); err == nil {
-		if err := consensus.CheckProofOfWork(hash, block.Header.Bits); err != nil {
-			return "high-hash", nil
-		}
+	code, _ := s.validateBlockProposalCode(block)
+	if code != "" {
+		return code, nil
 	}
 	return nil, nil
 }
@@ -3921,6 +4108,9 @@ func (s *Server) parseMinerStartOptions(params json.RawMessage, cfg config.Minin
 }
 
 func (s *Server) startMiner(parent context.Context, params json.RawMessage) (any, *rpcError) {
+	if s.policy.SeedNode {
+		return nil, &rpcError{Code: -32603, Message: "mining disabled: node_role=seed runs full-node relay only"}
+	}
 	cfg, _ := config.LoadMiningConfig(config.DefaultConfigPath())
 	threads, stopAfter, peerRequired, err := s.parseMinerStartOptions(params, cfg)
 	if err != nil {

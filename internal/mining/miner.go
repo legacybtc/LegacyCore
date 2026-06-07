@@ -30,6 +30,11 @@ type Result struct {
 	Height int32
 }
 
+type CoinbaseOutput struct {
+	PubKeyHash []byte
+	Value      int64
+}
+
 func NewBlockTemplate(chain *blockchain.Chain, pool *mempool.Pool, pubKeyHash []byte) (*wire.MsgBlock, int32, error) {
 	if len(pubKeyHash) != 20 {
 		return nil, 0, fmt.Errorf("mining address hash must be 20 bytes")
@@ -87,13 +92,33 @@ func NewBlockTemplate(chain *blockchain.Chain, pool *mempool.Pool, pubKeyHash []
 }
 
 func NewCoinbaseTx(height int32, pubKeyHash []byte, value int64) (*wire.MsgTx, error) {
-	pkScript, err := script.PayToPubKeyHashScript(pubKeyHash)
-	if err != nil {
-		return nil, err
+	return NewCoinbaseTxWithOutputs(height, []CoinbaseOutput{{PubKeyHash: pubKeyHash, Value: value}})
+}
+
+func NewCoinbaseTxWithOutputs(height int32, outputs []CoinbaseOutput) (*wire.MsgTx, error) {
+	if len(outputs) == 0 {
+		return nil, fmt.Errorf("coinbase requires at least one output")
 	}
 	// Safe conversion: height is always >= 0 for valid blocks, fits in uint32
 	if height < 0 {
 		return nil, fmt.Errorf("invalid negative height")
+	}
+	txOut := make([]wire.TxOut, 0, len(outputs))
+	for _, output := range outputs {
+		if len(output.PubKeyHash) != 20 {
+			return nil, fmt.Errorf("coinbase output pubkey hash must be 20 bytes")
+		}
+		if output.Value < 0 {
+			return nil, fmt.Errorf("coinbase output value cannot be negative")
+		}
+		pkScript, err := script.PayToPubKeyHashScript(output.PubKeyHash)
+		if err != nil {
+			return nil, err
+		}
+		txOut = append(txOut, wire.TxOut{
+			Value:    output.Value,
+			PkScript: pkScript,
+		})
 	}
 	h := uint32(height)
 	heightScript := []byte{byte(h & 0xff), byte((h >> 8) & 0xff), byte((h >> 16) & 0xff), byte((h >> 24) & 0xff)}
@@ -106,10 +131,7 @@ func NewCoinbaseTx(height int32, pubKeyHash []byte, value int64) (*wire.MsgTx, e
 			SignatureScript:  sigScript,
 			Sequence:         math.MaxUint32,
 		}},
-		TxOut: []wire.TxOut{{
-			Value:    value,
-			PkScript: pkScript,
-		}},
+		TxOut: txOut,
 	}, nil
 }
 
