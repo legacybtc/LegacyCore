@@ -270,6 +270,12 @@ func NewWithOptions(opts Options) (*Node, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load peer policy config: %w", err)
 	}
+	if policy.SeedNode {
+		if !isLocalhostBind(rpcBind.Host) {
+			return nil, fmt.Errorf("unsafe seed-node configuration: rpcbind=%q must stay local", rpcBind.Host)
+		}
+		peerPol = applySeedNodePeerDefaults(peerPol)
+	}
 	chainID := peerPol.ChainID
 	if chainID == "" {
 		chainID = chaincfg.MainNet.ChainID
@@ -301,6 +307,9 @@ func NewWithOptions(opts Options) (*Node, error) {
 	if len(bootstrap) > 0 {
 		logger.Printf("configured bootstrap peers: %d", len(bootstrap))
 	}
+	if policy.SeedNode {
+		logger.Printf("node role seed active: rpc local, mining disabled, max inbound peers %d", peerPol.MaxInboundPeers)
+	}
 	if auth.Enabled {
 		logger.Printf("rpc auth enabled")
 	}
@@ -330,6 +339,28 @@ func NewWithOptions(opts Options) (*Node, error) {
 func isLocalhostBind(host string) bool {
 	h := strings.TrimSpace(strings.ToLower(host))
 	return h == "" || h == "127.0.0.1" || h == "localhost" || h == "::1"
+}
+
+func applySeedNodePeerDefaults(p config.PeerPolicy) config.PeerPolicy {
+	if p.MaxInboundPeers < 512 {
+		p.MaxInboundPeers = 512
+	}
+	if p.MaxPerIP < 32 {
+		p.MaxPerIP = 32
+	}
+	if p.MaxPerSubnet < 128 {
+		p.MaxPerSubnet = 128
+	}
+	if p.PeerRateLimit < 500 {
+		p.PeerRateLimit = 500
+	}
+	if p.GlobalRateLimit < 10_000 {
+		p.GlobalRateLimit = 10_000
+	}
+	p.PeerSafety = true
+	p.NoSeedNode = false
+	p.SeedPeers = true
+	return p
 }
 
 func validateInteropReference(params chaincfg.Params, ref config.InteropReference) error {

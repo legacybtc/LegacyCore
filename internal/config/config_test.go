@@ -178,6 +178,24 @@ interop_rpc_port=19556
 	}
 }
 
+func TestLoadLaunchPolicySeedNodeRole(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "legacycoin.conf")
+	content := `
+node_role=seed
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	pol, err := LoadLaunchPolicy(path)
+	if err != nil {
+		t.Fatalf("LoadLaunchPolicy: %v", err)
+	}
+	if !pol.SeedNode || pol.NodeRole != "seed" {
+		t.Fatalf("policy=%+v want seed node role", pol)
+	}
+}
+
 func TestLoadPeerPolicyAliases(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "legacycoin.conf")

@@ -88,6 +88,8 @@ type IndexConfig struct {
 
 type LaunchPolicy struct {
 	AllowScriptCoveragePending bool
+	NodeRole                   string
+	SeedNode                   bool
 }
 
 type InteropReference struct {
@@ -325,6 +327,13 @@ func LoadLaunchPolicy(path string) (LaunchPolicy, error) {
 	if vals := kv["allow_script_coverage_pending"]; len(vals) > 0 {
 		v := strings.ToLower(strings.TrimSpace(vals[len(vals)-1]))
 		p.AllowScriptCoveragePending = v == "1" || v == "true" || v == "yes" || v == "on"
+	}
+	if vals := kv["node_role"]; len(vals) > 0 {
+		p.NodeRole = strings.ToLower(strings.TrimSpace(vals[len(vals)-1]))
+	}
+	p.SeedNode = boolFromKV(kv, "seednode", p.NodeRole == "seed")
+	if p.SeedNode {
+		p.NodeRole = "seed"
 	}
 	return p, nil
 }
