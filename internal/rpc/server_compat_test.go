@@ -17,6 +17,9 @@ func TestSubmitBlockRejectCodeMapping(t *testing.T) {
 		{blockchain.ErrBadPrevBlock, "bad-prevblk"},
 		{blockchain.ErrBadMerkleRoot, "bad-txnmrklroot"},
 		{blockchain.ErrBadBits, "bad-diffbits"},
+		{blockchain.ErrBadCoinbase, "bad-cb"},
+		{blockchain.ErrBadCoinbaseValue, "bad-cb-amount"},
+		{blockchain.ErrDuplicateTxID, "bad-txns-duplicate"},
 		{blockchain.ErrTimeTooOld, "time-too-old"},
 		{blockchain.ErrTimeTooNew, "time-too-new"},
 		{consensus.ErrHighHash, "high-hash"},
@@ -28,6 +31,24 @@ func TestSubmitBlockRejectCodeMapping(t *testing.T) {
 	}
 	if got := submitBlockRejectCode(nil); got != "" {
 		t.Fatalf("nil error should map to empty code, got %q", got)
+	}
+}
+
+func TestSubmitBlockDiagnosticMalformedHex(t *testing.T) {
+	s := &Server{}
+	result, rpcErr := s.submitBlockDiagnostic(json.RawMessage(`["not-hex"]`), false)
+	if rpcErr != nil {
+		t.Fatalf("submitBlockDiagnostic rpc error: %v", rpcErr)
+	}
+	out, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("result type=%T", result)
+	}
+	if out["reject_code"] != "bad-hex" {
+		t.Fatalf("reject_code=%v want bad-hex", out["reject_code"])
+	}
+	if out["reject_category"] != "wrong-serialization" {
+		t.Fatalf("reject_category=%v", out["reject_category"])
 	}
 }
 

@@ -1,16 +1,20 @@
 package mining
 
 import (
+	"bytes"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 
 	"legacycoin/legacy-go/internal/blockchain"
 	"legacycoin/legacy-go/internal/chaincfg"
+	"legacycoin/legacy-go/internal/chainhash"
+	"legacycoin/legacy-go/internal/genesis"
 	"legacycoin/legacy-go/internal/mempool"
 	"legacycoin/legacy-go/internal/pow"
 	"legacycoin/legacy-go/internal/script"
 	"legacycoin/legacy-go/internal/storage"
+	"legacycoin/legacy-go/internal/wire"
 )
 
 func TestNewBlockTemplate(t *testing.T) {
@@ -42,5 +46,72 @@ func TestNewBlockTemplate(t *testing.T) {
 	}
 	if block.Header.Bits != chaincfg.MainNet.PostGenesisBits {
 		t.Fatalf("bits=%08x", block.Header.Bits)
+	}
+}
+
+type lowHashTestHasher struct{}
+
+func (lowHashTestHasher) HashHeader(header wire.BlockHeader) (chainhash.Hash, error) {
+	var h chainhash.Hash
+	h[0] = byte(header.Timestamp)
+	if h[0] == 0 {
+		h[0] = 1
+	}
+	return h, nil
+}
+
+func TestMultiOutputCoinbaseBlockAccepted(t *testing.T) {
+	params := chaincfg.MainNet
+	genesisBlock, err := genesis.NewBlock(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	genesisHash, err := lowHashTestHasher{}.HashHeader(genesisBlock.Header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params.GenesisHash = genesisHash.String()
+
+	chain, err := blockchain.New(params, lowHashTestHasher{}, storage.NewFileStore(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.EnsureGenesis(); err != nil {
+		t.Fatal(err)
+	}
+	tip := chain.Tip()
+	prev, err := chainhash.FromString(tip.Hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subsidy := chaincfg.BlockSubsidy(1)
+	minerValue := subsidy * 96 / 100
+	projectValue := subsidy - minerValue
+	coinbase, err := NewCoinbaseTxWithOutputs(1, []CoinbaseOutput{
+		{PubKeyHash: bytes.Repeat([]byte{0x11}, 20), Value: minerValue},
+		{PubKeyHash: bytes.Repeat([]byte{0x22}, 20), Value: projectValue},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := &wire.MsgBlock{
+		Header: wire.BlockHeader{
+			Version:   1,
+			PrevBlock: prev,
+			Timestamp: tip.Time + 1,
+			Bits:      params.PostGenesisBits,
+		},
+		Transactions: []*wire.MsgTx{coinbase},
+	}
+	root, err := block.BuildMerkleRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	block.Header.MerkleRoot = root
+	if err := chain.ConnectBlock(block); err != nil {
+		t.Fatalf("multi-output coinbase block rejected: %v", err)
+	}
+	if len(coinbase.TxOut) != 2 {
+		t.Fatalf("coinbase outputs=%d want 2", len(coinbase.TxOut))
 	}
 }
