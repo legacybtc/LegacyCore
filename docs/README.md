@@ -2,7 +2,7 @@
 
 Purpose: provide a clean map of public Legacy Core documentation by audience.  
 Audience: users, operators, integrators, and developers.  
-Status: v1.0.4 documentation index.  
+Status: v1.0.5 documentation index.
 Safety warning: keep RPC (`19556`) private unless you have strict network controls.
 
 ## For Normal Users
