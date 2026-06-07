@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,13 +25,16 @@ import (
 )
 
 const (
-	protocolVersion  int32  = 70015
-	nodeNetwork      uint64 = 1
-	userAgent               = "/Legacy-GO:0.1.0/"
-	maxPeers                = 125
-	maxOutboundPeers        = 8
-	maxGetDataItems         = 2048
-	maxServeInvItems        = 2048
+	protocolVersion   int32  = 70015
+	nodeNetwork       uint64 = 1
+	userAgent                = "/Legacy-GO:0.1.0/"
+	maxPeers                 = 125
+	maxOutboundPeers         = 8
+	maxGetDataItems          = 2048
+	maxServeInvItems         = 2048
+	maxAddrRelayItems        = 10
+	maxAddrDialItems         = 8
+	addrMaxAge               = 7 * 24 * time.Hour
 )
 
 var (
@@ -87,6 +91,12 @@ type peer struct {
 	rateWindowCount   int
 }
 
+type knownPeerAddress struct {
+	Addr     string
+	Source   string
+	LastSeen time.Time
+}
+
 type Server struct {
 	params            chaincfg.Params
 	chain             *blockchain.Chain
@@ -123,6 +133,7 @@ type Server struct {
 	outbound            atomic.Int32
 	knownMu             sync.Mutex
 	knownOutbound       map[string]struct{}
+	knownAddresses      map[string]knownPeerAddress
 	bootstrap           []string
 	listenHost          string
 	activeMu            sync.Mutex
@@ -169,6 +180,7 @@ func New(params chaincfg.Params, chain *blockchain.Chain, pool *mempool.Pool, lo
 		pool:                pool,
 		log:                 logger,
 		knownOutbound:       make(map[string]struct{}),
+		knownAddresses:      make(map[string]knownPeerAddress),
 		activePeers:         make(map[*peer]struct{}),
 		bannedUntil:         make(map[string]time.Time),
 		seedFailures:        make(map[string]int),
@@ -288,6 +300,55 @@ func splitHost(addr string) string {
 	return addr
 }
 
+func normalizePeerAddress(addr string, defaultPort uint16) (string, error) {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return "", fmt.Errorf("empty peer address")
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+		port = strconv.Itoa(int(defaultPort))
+	}
+	host = strings.TrimSpace(strings.Trim(host, "[]"))
+	port = strings.TrimSpace(port)
+	if host == "" || port == "" {
+		return "", fmt.Errorf("invalid peer address %q", addr)
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil || n <= 0 || n > 65535 {
+		return "", fmt.Errorf("invalid peer port %q", port)
+	}
+	return net.JoinHostPort(host, strconv.Itoa(n)), nil
+}
+
+func relayableIP(ip net.IP, allowLocal bool) bool {
+	if ip == nil {
+		return false
+	}
+	ip = ip.To16()
+	if ip == nil || ip.IsUnspecified() || ip.IsMulticast() || ip.IsLinkLocalMulticast() || ip.IsLinkLocalUnicast() {
+		return false
+	}
+	if ip.IsLoopback() || ip.IsPrivate() {
+		return allowLocal
+	}
+	return true
+}
+
+func relayableHost(host string, allowLocal bool) bool {
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return relayableIP(ip, allowLocal)
+}
+
+func localOrPrivateHost(host string) bool {
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	if ip == nil {
+		return false
+	}
+	return ip.IsLoopback() || ip.IsPrivate()
+}
+
 func subnetKey(host string) string {
 	ip := net.ParseIP(host)
 	if ip == nil {
@@ -297,6 +358,61 @@ func subnetKey(host string) string {
 		return fmt.Sprintf("%d.%d.%d.0/24", v4[0], v4[1], v4[2])
 	}
 	return ""
+}
+
+func (s *Server) rememberPeerAddress(addr string, source string) bool {
+	normalized, err := normalizePeerAddress(addr, s.params.DefaultPort)
+	if err != nil {
+		return false
+	}
+	s.knownMu.Lock()
+	defer s.knownMu.Unlock()
+	return s.rememberAddressLocked(normalized, source, time.Now())
+}
+
+func (s *Server) rememberAddressLocked(addr string, source string, seen time.Time) bool {
+	if s.knownAddresses == nil {
+		s.knownAddresses = make(map[string]knownPeerAddress)
+	}
+	if seen.IsZero() {
+		seen = time.Now()
+	}
+	if existing, ok := s.knownAddresses[addr]; ok {
+		existing.Source = source
+		existing.LastSeen = seen
+		s.knownAddresses[addr] = existing
+		return false
+	}
+	s.knownAddresses[addr] = knownPeerAddress{Addr: addr, Source: source, LastSeen: seen}
+	return true
+}
+
+func (s *Server) knownAddressInfos() []knownPeerAddress {
+	s.knownMu.Lock()
+	defer s.knownMu.Unlock()
+	out := make([]knownPeerAddress, 0, len(s.knownAddresses))
+	for _, addr := range s.knownAddresses {
+		out = append(out, addr)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].LastSeen.After(out[j].LastSeen)
+	})
+	return out
+}
+
+func (s *Server) KnownAddressCount() int {
+	s.knownMu.Lock()
+	defer s.knownMu.Unlock()
+	return len(s.knownAddresses)
+}
+
+func (s *Server) KnownAddresses() []string {
+	infos := s.knownAddressInfos()
+	out := make([]string, 0, len(infos))
+	for _, info := range infos {
+		out = append(out, info.Addr)
+	}
+	return out
 }
 
 func (s *Server) inboundPeerCount() int {
@@ -906,7 +1022,15 @@ func secondsSince(t time.Time) float64 {
 func (s *Server) SetBootstrapPeers(peers []string) {
 	s.knownMu.Lock()
 	defer s.knownMu.Unlock()
-	s.bootstrap = append([]string(nil), peers...)
+	s.bootstrap = s.bootstrap[:0]
+	for _, peer := range peers {
+		addr, err := normalizePeerAddress(peer, s.params.DefaultPort)
+		if err != nil {
+			continue
+		}
+		s.bootstrap = append(s.bootstrap, addr)
+		s.rememberAddressLocked(addr, "bootstrap", time.Now())
+	}
 }
 
 func (s *Server) BootstrapPeers() []string {
@@ -914,14 +1038,20 @@ func (s *Server) BootstrapPeers() []string {
 }
 
 func (s *Server) addBootstrapPeer(addr string) {
+	addr, err := normalizePeerAddress(addr, s.params.DefaultPort)
+	if err != nil {
+		return
+	}
 	s.knownMu.Lock()
 	defer s.knownMu.Unlock()
 	for _, existing := range s.bootstrap {
 		if existing == addr {
+			s.rememberAddressLocked(addr, "bootstrap", time.Now())
 			return
 		}
 	}
 	s.bootstrap = append(s.bootstrap, addr)
+	s.rememberAddressLocked(addr, "bootstrap", time.Now())
 }
 
 func (s *Server) SetListenHost(host string) {
@@ -1273,6 +1403,14 @@ func (s *Server) connectSeeds(ctx context.Context) {
 			s.log.Printf("p2p add bootstrap peer %s: %v", peer, err)
 		}
 	}
+	for _, peer := range s.KnownAddresses() {
+		if s.outbound.Load() >= maxOutboundPeers || s.peers.Load() >= maxPeers {
+			return
+		}
+		if err := s.AddNode(ctx, peer); err != nil {
+			s.log.Printf("p2p add known peer %s: %v", peer, err)
+		}
+	}
 	if !s.seedPeers || len(s.connectOnly) > 0 {
 		return
 	}
@@ -1287,6 +1425,7 @@ func (s *Server) connectSeeds(ctx context.Context) {
 				return
 			}
 			addr := net.JoinHostPort(host, strconv.Itoa(int(s.params.DefaultPort)))
+			s.rememberPeerAddress(addr, "dns:"+seed)
 			if err := s.AddNode(ctx, addr); err != nil {
 				s.log.Printf("p2p add seed peer %s: %v", addr, err)
 			}
@@ -1315,6 +1454,160 @@ func (s *Server) logSeedError(seed string, err error) {
 		return
 	}
 	s.seedMu.Unlock()
+}
+
+func (s *Server) knownNetAddresses(limit int, includeLocal bool) []wire.NetAddress {
+	if limit <= 0 || limit > wire.MaxAddrPerMessage {
+		limit = wire.MaxAddrPerMessage
+	}
+	infos := s.knownAddressInfos()
+	out := make([]wire.NetAddress, 0, minInt(limit, len(infos)))
+	for _, info := range infos {
+		host, port, err := net.SplitHostPort(info.Addr)
+		if err != nil {
+			continue
+		}
+		ip := net.ParseIP(strings.Trim(host, "[]"))
+		if !relayableIP(ip, includeLocal) {
+			continue
+		}
+		n, err := strconv.Atoi(port)
+		if err != nil || n <= 0 || n > 65535 {
+			continue
+		}
+		seen := info.LastSeen
+		if seen.IsZero() {
+			seen = time.Now()
+		}
+		out = append(out, wire.NetAddress{
+			Timestamp: uint32(seen.Unix()),
+			Services:  nodeNetwork,
+			IP:        ip,
+			Port:      uint16(n),
+		})
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func (s *Server) sendKnownAddresses(p *peer, limit int) error {
+	if p == nil {
+		return nil
+	}
+	includeLocal := localOrPrivateHost(splitHost(p.remote))
+	addrs := s.knownNetAddresses(limit, includeLocal)
+	payload, err := wire.AddrPayload(addrs)
+	if err != nil {
+		return err
+	}
+	if err := s.writePeerMessage(p, wire.CommandAddr, payload); err != nil {
+		return err
+	}
+	s.log.Printf("p2p sent %d known address(es) to %s", len(addrs), p.remote)
+	return nil
+}
+
+func (s *Server) requestKnownAddresses(p *peer) error {
+	if p == nil {
+		return nil
+	}
+	return s.writePeerMessage(p, wire.CommandGetAddr, nil)
+}
+
+func (s *Server) addressString(addr wire.NetAddress, allowLocal bool) (string, bool) {
+	if addr.Port == 0 || !relayableIP(addr.IP, allowLocal) {
+		return "", false
+	}
+	now := time.Now()
+	seen := time.Unix(int64(addr.Timestamp), 0)
+	if addr.Timestamp != 0 && now.Sub(seen) > addrMaxAge {
+		return "", false
+	}
+	if addr.Timestamp != 0 && seen.After(now.Add(10*time.Minute)) {
+		return "", false
+	}
+	normalized, err := normalizePeerAddress(net.JoinHostPort(addr.IP.String(), strconv.Itoa(int(addr.Port))), s.params.DefaultPort)
+	if err != nil {
+		return "", false
+	}
+	return normalized, true
+}
+
+func (s *Server) handleAddrPayload(ctx context.Context, p *peer, payload []byte) error {
+	addrs, err := wire.ReadAddrPayload(bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	allowLocal := localOrPrivateHost(splitHost(p.remote))
+	added := 0
+	dialed := 0
+	relay := make([]wire.NetAddress, 0, minInt(maxAddrRelayItems, len(addrs)))
+	for _, netAddr := range addrs {
+		addr, ok := s.addressString(netAddr, allowLocal)
+		if !ok {
+			continue
+		}
+		if s.rememberPeerAddress(addr, "addr:"+p.remote) {
+			added++
+			if relayableHost(splitHost(addr), false) && len(relay) < maxAddrRelayItems {
+				relay = append(relay, netAddr)
+			}
+		}
+		if dialed < maxAddrDialItems && !s.peerAddressActive(addr) {
+			if err := s.AddNode(ctx, addr); err != nil {
+				s.log.Printf("p2p discovered peer %s from %s not dialed: %v", addr, p.remote, err)
+			} else {
+				dialed++
+			}
+		}
+	}
+	if len(relay) > 0 {
+		s.relayKnownAddresses(relay, p)
+	}
+	if added > 0 {
+		s.log.Printf("p2p learned %d peer address(es) from %s; dialed %d", added, p.remote, dialed)
+	}
+	return nil
+}
+
+func (s *Server) relayKnownAddresses(addrs []wire.NetAddress, skip *peer) {
+	if len(addrs) == 0 {
+		return
+	}
+	payload, err := wire.AddrPayload(addrs)
+	if err != nil {
+		s.log.Printf("p2p build addr relay: %v", err)
+		return
+	}
+	sent := 0
+	for _, p := range s.snapshotPeers() {
+		if p == nil || p == skip || localOrPrivateHost(splitHost(p.remote)) {
+			continue
+		}
+		if err := s.writePeerMessage(p, wire.CommandAddr, payload); err != nil {
+			s.log.Printf("p2p relay addr to %s: %v", p.remote, err)
+			continue
+		}
+		sent++
+	}
+	if sent > 0 {
+		s.log.Printf("p2p relayed %d peer address(es) to %d peer(s)", len(addrs), sent)
+	}
+}
+
+func (s *Server) peerAddressActive(addr string) bool {
+	normalized, err := normalizePeerAddress(addr, s.params.DefaultPort)
+	if err != nil {
+		return false
+	}
+	for _, p := range s.snapshotPeers() {
+		if p.remote == normalized {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) logConnectOnlyReject(addr string) {
@@ -1380,10 +1673,6 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 	if !outbound {
 		if s.maxInboundPeers > 0 && s.inboundPeerCount() >= s.maxInboundPeers {
 			s.log.Printf("p2p rejected inbound peer %s (max inbound reached: %d)", conn.RemoteAddr(), s.maxInboundPeers)
-			return
-		}
-		if s.duplicateInboundHost(host) {
-			s.log.Printf("p2p rejected duplicate inbound peer host %s", host)
 			return
 		}
 		if s.maxPerIP > 0 && s.inboundHostCount(host) >= s.maxPerIP {
@@ -1589,6 +1878,16 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 				s.log.Printf("p2p serve getdata to %s: %v", conn.RemoteAddr(), err)
 				return
 			}
+		case wire.CommandGetAddr:
+			if err := s.sendKnownAddresses(p, wire.MaxAddrPerMessage); err != nil {
+				s.log.Printf("p2p serve getaddr to %s: %v", conn.RemoteAddr(), err)
+				return
+			}
+		case wire.CommandAddr:
+			if err := s.handleAddrPayload(ctx, p, msg.Payload); err != nil {
+				s.log.Printf("p2p parse addr from %s: %v", conn.RemoteAddr(), err)
+				return
+			}
 		case wire.CommandGetBlocks:
 			req, err := wire.ReadGetBlocks(bytes.NewReader(msg.Payload))
 			if err != nil {
@@ -1637,6 +1936,15 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 			}
 			if err := s.requestBlocks(p); err != nil {
 				s.log.Printf("p2p request blocks from %s: %v", conn.RemoteAddr(), err)
+			}
+			if outbound {
+				s.rememberPeerAddress(p.remote, "outbound-handshake")
+			}
+			if err := s.sendKnownAddresses(p, 32); err != nil {
+				s.log.Printf("p2p send addr to %s: %v", conn.RemoteAddr(), err)
+			}
+			if err := s.requestKnownAddresses(p); err != nil {
+				s.log.Printf("p2p request addr from %s: %v", conn.RemoteAddr(), err)
 			}
 		}
 	}
@@ -2184,6 +2492,13 @@ func max32(a int32, b int32) int32 {
 
 func maxFloat(a float64, b float64) float64 {
 	if a > b {
+		return a
+	}
+	return b
+}
+
+func minInt(a int, b int) int {
+	if a < b {
 		return a
 	}
 	return b

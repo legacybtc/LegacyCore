@@ -36,16 +36,38 @@ func TestLimitInv(t *testing.T) {
 }
 
 func TestBootstrapPeersSetGet(t *testing.T) {
-	s := &Server{}
+	s := New(chaincfg.MainNet, nil, nil, log.New(io.Discard, "", 0))
 	in := []string{"127.0.0.1:19555", "legacycoinseed.space"}
 	s.SetBootstrapPeers(in)
+	want := []string{"127.0.0.1:19555", "legacycoinseed.space:19555"}
 	got := s.BootstrapPeers()
-	if !reflect.DeepEqual(got, in) {
-		t.Fatalf("bootstrap=%v want=%v", got, in)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("bootstrap=%v want=%v", got, want)
 	}
 	in[0] = "changed"
 	if got2 := s.BootstrapPeers(); got2[0] != "127.0.0.1:19555" {
 		t.Fatalf("bootstrap slice was not copied")
+	}
+}
+
+func TestHandleAddrPayloadCachesDiscoveredPeer(t *testing.T) {
+	s := New(chaincfg.MainNet, nil, nil, log.New(io.Discard, "", 0))
+	s.SetPeerPolicy(chaincfg.MainNet.ChainID, false, true, 100, true, []string{"127.0.0.1:65535"})
+	payload, err := wire.AddrPayload([]wire.NetAddress{{
+		Timestamp: uint32(time.Now().Unix()),
+		Services:  1,
+		IP:        net.ParseIP("127.0.0.1"),
+		Port:      19555,
+	}})
+	if err != nil {
+		t.Fatalf("AddrPayload: %v", err)
+	}
+	p := &peer{remote: "127.0.0.1:20000", lastSeen: time.Now(), lastPong: time.Now()}
+	if err := s.handleAddrPayload(context.Background(), p, payload); err != nil {
+		t.Fatalf("handleAddrPayload: %v", err)
+	}
+	if got := s.KnownAddresses(); len(got) != 1 || got[0] != "127.0.0.1:19555" {
+		t.Fatalf("known addresses=%v", got)
 	}
 }
 
@@ -94,13 +116,20 @@ func TestPostHandshakeIdlePeerIsDisconnected(t *testing.T) {
 	if err := wire.WriteMessage(clientConn, chaincfg.MainNet.MessageStart, wire.CommandVerAck, nil); err != nil {
 		t.Fatalf("write client verack: %v", err)
 	}
-	_ = clientConn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-	if msg, err := wire.ReadMessage(clientConn, chaincfg.MainNet.MessageStart); err != nil {
-		if err != io.EOF {
-			t.Fatalf("read optional sync getheaders: msg=%v err=%v", msg, err)
+	for i := 0; i < 4; i++ {
+		_ = clientConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		msg, err := wire.ReadMessage(clientConn, chaincfg.MainNet.MessageStart)
+		if err != nil {
+			if err != io.EOF {
+				if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+					t.Fatalf("read optional post-handshake message: msg=%v err=%v", msg, err)
+				}
+			}
+			break
 		}
-	} else if msg.Command != wire.CommandGetHeaders {
-		t.Fatalf("read sync getheaders: msg=%v err=%v", msg, err)
+		if msg.Command != wire.CommandGetHeaders && msg.Command != wire.CommandGetBlocks && msg.Command != wire.CommandAddr && msg.Command != wire.CommandGetAddr {
+			t.Fatalf("read post-handshake maintenance message: msg=%v err=%v", msg, err)
+		}
 	}
 	_ = clientConn.SetReadDeadline(time.Time{})
 

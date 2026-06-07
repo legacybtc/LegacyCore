@@ -20,6 +20,8 @@ const (
 	CommandTx         = "tx"
 	CommandInv        = "inv"
 	CommandGetData    = "getdata"
+	CommandAddr       = "addr"
+	CommandGetAddr    = "getaddr"
 	CommandGetBlocks  = "getblocks"
 	CommandGetHeaders = "getheaders"
 	CommandHeaders    = "headers"
