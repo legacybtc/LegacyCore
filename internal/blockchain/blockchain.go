@@ -169,6 +169,8 @@ const (
 	BlockStatusDuplicate BlockProcessStatus = "duplicate"
 	BlockStatusSideChain BlockProcessStatus = "side-chain"
 	BlockStatusOrphan    BlockProcessStatus = "orphan"
+	BlockStatusRejected  BlockProcessStatus = "rejected"
+	BlockStatusProposal  BlockProcessStatus = "valid-proposal"
 )
 
 type BlockProcessResult struct {
@@ -384,6 +386,25 @@ func (c *Chain) ProcessBlockWithResult(block *wire.MsgBlock) (BlockProcessResult
 	return c.processBlockLocked(block)
 }
 
+func (c *Chain) ValidateBlockProposal(block *wire.MsgBlock) (BlockProcessResult, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	result, err := c.blockProcessPreviewLocked(block, false)
+	if err != nil || result.Status != "" {
+		return result, err
+	}
+	idx, _, _, _, _, err := c.validateActiveBlockLocked(block)
+	if err != nil {
+		result.Status = BlockStatusRejected
+		result.Reason = err.Error()
+		return result, err
+	}
+	result.CalculatedHeight = idx.Height
+	result.Status = BlockStatusProposal
+	result.Reason = "proposal would extend active best chain"
+	return result, nil
+}
+
 func (c *Chain) EnsureGenesis() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -432,52 +453,67 @@ func (c *Chain) ConnectBlock(block *wire.MsgBlock) error {
 }
 
 func (c *Chain) connectBlockLocked(block *wire.MsgBlock) error {
-	if len(block.Transactions) == 0 {
-		return ErrNoTransactions
-	}
-	root, err := block.BuildMerkleRoot()
+	idx, chainwork, adds, spendKeys, spentEntries, err := c.validateActiveBlockLocked(block)
 	if err != nil {
 		return err
 	}
+	if err := c.store.SaveBlock(block, idx, adds, spendKeys, spentEntries); err != nil {
+		return err
+	}
+	c.workByHash[idx.Hash] = cloneBig(chainwork)
+	c.parentByHash[idx.Hash] = idx.Parent
+	c.tip = &idx
+	return nil
+}
+
+func (c *Chain) validateActiveBlockLocked(block *wire.MsgBlock) (BlockIndex, *big.Int, []UTXOEntry, []string, []UTXOEntry, error) {
+	var idx BlockIndex
+	if len(block.Transactions) == 0 {
+		return idx, nil, nil, nil, nil, ErrNoTransactions
+	}
+	root, err := block.BuildMerkleRoot()
+	if err != nil {
+		return idx, nil, nil, nil, nil, err
+	}
 	if root != block.Header.MerkleRoot {
-		return ErrBadMerkleRoot
+		return idx, nil, nil, nil, nil, ErrBadMerkleRoot
 	}
 	if c.tip != nil {
 		if c.tip.Hash == "" {
-			return ErrGenesisPending
+			return idx, nil, nil, nil, nil, ErrGenesisPending
 		}
 		prev, err := chainhash.FromString(c.tip.Hash)
 		if err != nil {
-			return err
+			return idx, nil, nil, nil, nil, err
 		}
 		if block.Header.PrevBlock != prev {
-			return ErrBadPrevBlock
+			return idx, nil, nil, nil, nil, ErrBadPrevBlock
 		}
 		mtp, err := c.medianTimePastLocked(c.tip.Hash)
 		if err != nil {
-			return err
+			return idx, nil, nil, nil, nil, err
 		}
 		if block.Header.Timestamp <= mtp {
-			return ErrTimeTooOld
+			return idx, nil, nil, nil, nil, ErrTimeTooOld
 		}
 	}
 	maxFuture := nowUnix() + uint32(chaincfg.MaxFutureDrift.Seconds())
 	if block.Header.Timestamp > maxFuture {
-		return ErrTimeTooNew
+		return idx, nil, nil, nil, nil, ErrTimeTooNew
 	}
 	expectedBits, err := c.nextRequiredBitsLocked()
 	if err != nil {
-		return err
+		return idx, nil, nil, nil, nil, err
 	}
 	if block.Header.Bits != expectedBits {
-		return fmt.Errorf("%w: got %08x, want %08x", ErrBadBits, block.Header.Bits, expectedBits)
+		return idx, nil, nil, nil, nil, fmt.Errorf("%w: got %08x, want %08x", ErrBadBits, block.Header.Bits, expectedBits)
 	}
 	hash, err := c.hasher.HashHeader(block.Header)
 	if err != nil {
-		return err
+		return idx, nil, nil, nil, nil, err
 	}
 	if err := consensus.CheckProofOfWork(hash, block.Header.Bits); err != nil {
-		return err
+		return idx, nil, nil, nil, nil, err
 	}
 	height := int32(0)
 	parentHash := ""
@@ -487,9 +523,9 @@ func (c *Chain) connectBlockLocked(block *wire.MsgBlock) error {
 	}
 	chainwork, err := c.computeChildChainworkLocked(parentHash, block.Header.Bits)
 	if err != nil {
-		return err
+		return idx, nil, nil, nil, nil, err
 	}
-	idx := BlockIndex{
+	idx = BlockIndex{
 		Height:    height,
 		Hash:      hash.String(),
 		Time:      block.Header.Timestamp,
@@ -500,18 +536,31 @@ func (c *Chain) connectBlockLocked(block *wire.MsgBlock) error {
 	}
 	adds, spendKeys, spentEntries, err := c.validateBlockTransactions(block, idx.Height)
 	if err != nil {
-		return err
+		return idx, nil, nil, nil, nil, err
 	}
-	if err := c.store.SaveBlock(block, idx, adds, spendKeys, spentEntries); err != nil {
-		return err
-	}
-	c.workByHash[idx.Hash] = cloneBig(chainwork)
-	c.parentByHash[idx.Hash] = parentHash
-	c.tip = &idx
-	return nil
+	return idx, chainwork, adds, spendKeys, spentEntries, nil
 }
 
 func (c *Chain) processBlockLocked(block *wire.MsgBlock) (BlockProcessResult, error) {
+	result, err := c.blockProcessPreviewLocked(block, true)
+	if err != nil || result.Status != "" {
+		return result, err
+	}
+	hashStr := result.Hash
+	if err := c.connectBlockLocked(block); err != nil {
+		result.Status = BlockStatusRejected
+		result.Reason = err.Error()
+		return result, err
+	}
+	c.acceptOrphanChildrenLocked(hashStr)
+	result.Connected = true
+	result.Status = BlockStatusConnected
+	result.Reason = "extends active best chain"
+	result.finish(c.tip)
+	return result, nil
+}
+
+func (c *Chain) blockProcessPreviewLocked(block *wire.MsgBlock, mutate bool) (BlockProcessResult, error) {
 	result := BlockProcessResult{
 		CalculatedHeight: -1,
 		OldBestHeight:    -1,
@@ -559,6 +608,12 @@ func (c *Chain) processBlockLocked(block *wire.MsgBlock) (BlockProcessResult, er
 				result.ParentActive = true
 				result.SideChain = true
 				result.CalculatedHeight = parentHeight + 1
+				if !mutate {
+					result.finish(c.tip)
+					result.Status = BlockStatusSideChain
+					result.Reason = "would be side-chain block; active best chain not updated"
+					return result, nil
+				}
 				sideNode, err := c.buildSideNodeLocked(hashStr, parent, parentHeight+1, block)
 				if err != nil {
 					return result, err
@@ -582,6 +637,12 @@ func (c *Chain) processBlockLocked(block *wire.MsgBlock) (BlockProcessResult, er
 				result.ParentKnown = true
 				result.SideChain = true
 				result.CalculatedHeight = parentHeight + 1
+				if !mutate {
+					result.finish(c.tip)
+					result.Status = BlockStatusSideChain
+					result.Reason = "would be side-chain block; active best chain not updated"
+					return result, nil
+				}
 				sideNode, err := c.buildSideNodeLocked(hashStr, parent, parentHeight+1, block)
 				if err != nil {
 					return result, err
@@ -605,6 +666,12 @@ func (c *Chain) processBlockLocked(block *wire.MsgBlock) (BlockProcessResult, er
 				result.ParentKnown = true
 				result.SideChain = true
 				result.CalculatedHeight = parentNode.height + 1
+				if !mutate {
+					result.finish(c.tip)
+					result.Status = BlockStatusSideChain
+					result.Reason = "would extend known side branch; active best chain not updated"
+					return result, nil
+				}
 				sideNode, err := c.buildSideNodeLocked(hashStr, parent, parentNode.height+1, block)
 				if err != nil {
 					return result, err
@@ -627,6 +694,10 @@ func (c *Chain) processBlockLocked(block *wire.MsgBlock) (BlockProcessResult, er
 			result.Orphan = true
 			result.Status = BlockStatusOrphan
 			result.Reason = "parent unknown"
+			if !mutate {
+				result.finish(c.tip)
+				return result, nil
+			}
 			c.addOrphanLocked(hashStr, parent, block)
 			result.finish(c.tip)
 			return result, nil
@@ -638,14 +709,6 @@ func (c *Chain) processBlockLocked(block *wire.MsgBlock) (BlockProcessResult, er
 	} else {
 		result.CalculatedHeight = 0
 	}
-	if err := c.connectBlockLocked(block); err != nil {
-		return result, err
-	}
-	c.acceptOrphanChildrenLocked(hashStr)
-	result.Connected = true
-	result.Status = BlockStatusConnected
-	result.Reason = "extends active best chain"
-	result.finish(c.tip)
 	return result, nil
 }
 

@@ -2,7 +2,7 @@
 
 Purpose: solo mining and mining RPC usage guide.  
 Audience: miners and node operators.  
-Status: active for v1.0.4.  
+Status: active for v1.0.5.
 Safety warning: back up wallet before mining with real funds.
 
 ## Mainnet Mining Identity
@@ -48,7 +48,21 @@ Stop:
 - `validateblockproposal` / `testblock`: available for non-mutating candidate preflight
 - `validateaddress`: available
 
-Legacy Core does not ship a built-in stratum server in v1.0.4.
+Examples:
+
+```bash
+./legacycoin-cli getblocktemplate
+./legacycoin-cli validateblockproposal <block_hex>
+./legacycoin-cli submitblockdebug <block_hex>
+```
+
+```powershell
+.\legacycoin-cli.exe getblocktemplate
+.\legacycoin-cli.exe validateblockproposal <block_hex>
+.\legacycoin-cli.exe submitblockdebug <block_hex>
+```
+
+Legacy Core does not ship a built-in stratum server in v1.0.5.
 
 ## Coinbase Split Policy
 

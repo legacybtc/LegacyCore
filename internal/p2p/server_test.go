@@ -3,6 +3,7 @@ package p2p
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -68,6 +69,37 @@ func TestHandleAddrPayloadCachesDiscoveredPeer(t *testing.T) {
 	}
 	if got := s.KnownAddresses(); len(got) != 1 || got[0] != "127.0.0.1:19555" {
 		t.Fatalf("known addresses=%v", got)
+	}
+}
+
+func TestKnownAddressCacheCapAndPublicFiltering(t *testing.T) {
+	s := New(chaincfg.MainNet, nil, nil, log.New(io.Discard, "", 0))
+	for i := 0; i < maxKnownPeerAddresses+25; i++ {
+		if !s.rememberPeerAddress(fmt.Sprintf("198.51.100.10:%d", 10_000+i), "test") {
+			t.Fatalf("expected new address at %d", i)
+		}
+	}
+	if got := s.KnownAddressCount(); got != maxKnownPeerAddresses {
+		t.Fatalf("known address count=%d want %d", got, maxKnownPeerAddresses)
+	}
+
+	privatePayload, err := wire.AddrPayload([]wire.NetAddress{{
+		Timestamp: uint32(time.Now().Unix()),
+		Services:  1,
+		IP:        net.ParseIP("10.1.2.3"),
+		Port:      19555,
+	}})
+	if err != nil {
+		t.Fatalf("AddrPayload: %v", err)
+	}
+	publicPeer := &peer{remote: "203.0.113.7:19555", lastSeen: time.Now(), lastPong: time.Now()}
+	if err := s.handleAddrPayload(context.Background(), publicPeer, privatePayload); err != nil {
+		t.Fatalf("handleAddrPayload: %v", err)
+	}
+	for _, addr := range s.KnownAddresses() {
+		if strings.HasPrefix(addr, "10.1.2.3:") {
+			t.Fatalf("private address from public peer was cached: %s", addr)
+		}
 	}
 }
 

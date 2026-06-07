@@ -2740,37 +2740,19 @@ func (s *Server) submitBlockDiagnostic(params json.RawMessage, process bool) (an
 	}
 	diagnostic := s.blockDiagnosticBase(block, process)
 	if !process {
-		code, reason := s.validateBlockProposalCode(block)
+		result, err := s.chain.ValidateBlockProposal(block)
+		diagnostic["processblock_result"] = result
+		code, reason := blockResultRejectCode(result, err)
 		diagnostic["accepted"] = code == ""
 		diagnostic["would_accept"] = code == ""
 		diagnostic["reject_code"] = code
-		diagnostic["reject_category"] = submitBlockRejectCategory(code, nil, blockchain.BlockProcessResult{})
+		diagnostic["reject_category"] = submitBlockRejectCategory(code, err, result)
 		diagnostic["reject_reason"] = reason
 		return diagnostic, nil
 	}
 	result, err := s.chain.ProcessBlockWithResult(block)
 	diagnostic["processblock_result"] = result
-	code := ""
-	reason := result.Reason
-	if err != nil {
-		code = submitBlockRejectCode(err)
-		reason = err.Error()
-	} else {
-		switch result.Status {
-		case blockchain.BlockStatusDuplicate:
-			code = "duplicate"
-		case blockchain.BlockStatusOrphan:
-			code = "bad-prevblk"
-		case blockchain.BlockStatusSideChain:
-			code = "inconclusive"
-		case blockchain.BlockStatusConnected:
-			code = ""
-		default:
-			if !result.Connected || !result.BestChanged {
-				code = "rejected"
-			}
-		}
-	}
+	code, reason := blockResultRejectCode(result, err)
 	accepted := err == nil && result.Status == blockchain.BlockStatusConnected && result.Connected && result.BestChanged
 	diagnostic["accepted"] = accepted
 	diagnostic["reject_code"] = code
@@ -2786,6 +2768,35 @@ func (s *Server) submitBlockDiagnostic(params json.RawMessage, process bool) (an
 		diagnostic["daemon_after_best_hash"] = tip.Hash
 	}
 	return diagnostic, nil
+}
+
+func blockResultRejectCode(result blockchain.BlockProcessResult, err error) (string, string) {
+	if err != nil {
+		return submitBlockRejectCode(err), err.Error()
+	}
+	switch result.Status {
+	case blockchain.BlockStatusDuplicate:
+		return "duplicate", result.Reason
+	case blockchain.BlockStatusOrphan:
+		return "bad-prevblk", result.Reason
+	case blockchain.BlockStatusSideChain:
+		return "inconclusive", result.Reason
+	case blockchain.BlockStatusConnected, blockchain.BlockStatusProposal:
+		return "", result.Reason
+	case blockchain.BlockStatusRejected:
+		if result.Reason != "" {
+			return "rejected", result.Reason
+		}
+		return "rejected", "block rejected"
+	default:
+		if !result.Connected || !result.BestChanged {
+			if result.Reason != "" {
+				return "rejected", result.Reason
+			}
+			return "rejected", "block rejected"
+		}
+		return "", result.Reason
+	}
 }
 
 func blockDecodeDiagnostic(code string, err error) map[string]any {
@@ -2847,50 +2858,8 @@ func (s *Server) blockDiagnosticBase(block *wire.MsgBlock, process bool) map[str
 }
 
 func (s *Server) validateBlockProposalCode(block *wire.MsgBlock) (string, string) {
-	if len(block.Transactions) == 0 {
-		return "bad-blk-length", blockchain.ErrNoTransactions.Error()
-	}
-	hash, err := s.chain.BlockHash(block)
-	if err != nil {
-		return "rejected", err.Error()
-	}
-	if s.chain.HasBlock(hash.String()) {
-		return "duplicate", "block already stored"
-	}
-	if len(block.Transactions[0].TxIn) == 0 || len(block.Transactions[0].TxIn[0].SignatureScript) > 100 {
-		return "bad-cb-length", "coinbase input missing or script too long"
-	}
-	root, err := block.BuildMerkleRoot()
-	if err != nil {
-		return "bad-txnmrklroot", err.Error()
-	}
-	if root != block.Header.MerkleRoot {
-		return "bad-txnmrklroot", blockchain.ErrBadMerkleRoot.Error()
-	}
-	if tip := s.chain.Tip(); tip != nil {
-		prev := block.Header.PrevBlock.String()
-		if prev != tip.Hash {
-			if !s.chain.HasBlock(prev) {
-				return "bad-prevblk", "previous block is unknown"
-			}
-			return "stale", "previous block is known but is not the current best tip"
-		}
-		if block.Header.Timestamp <= tip.Time {
-			return "time-too-old", blockchain.ErrTimeTooOld.Error()
-		}
-	}
-	maxFuture := uint32(time.Now().Unix()) + uint32(chaincfg.MaxFutureDrift.Seconds())
-	if block.Header.Timestamp > maxFuture {
-		return "time-too-new", blockchain.ErrTimeTooNew.Error()
-	}
-	expectedBits, err := s.chain.NextRequiredBits()
-	if err == nil && block.Header.Bits != expectedBits {
-		return "bad-diffbits", fmt.Sprintf("%s: got %08x, want %08x", blockchain.ErrBadBits, block.Header.Bits, expectedBits)
-	}
-	if err := consensus.CheckProofOfWork(hash, block.Header.Bits); err != nil {
-		return submitBlockRejectCode(err), err.Error()
-	}
-	return "", ""
+	result, err := s.chain.ValidateBlockProposal(block)
+	return blockResultRejectCode(result, err)
 }
 
 type txLookupResult struct {

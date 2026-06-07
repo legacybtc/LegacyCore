@@ -20,6 +20,7 @@ cmd/legacywallet/build/
 .gotmp-wails/
 .tmp-multinode-smoke/
 release-assets/
+testdata/
 
 
 # Local temporary Linux build folder

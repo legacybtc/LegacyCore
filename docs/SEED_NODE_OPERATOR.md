@@ -2,7 +2,7 @@
 
 Purpose: run a stable public P2P node for network connectivity.  
 Audience: seed-node and infrastructure operators.  
-Status: active for v1.0.4.  
+Status: active for v1.0.5.
 Safety warning: keep RPC private; seed nodes should not expose wallet RPC publicly.
 
 ## Mainnet Values
@@ -18,6 +18,13 @@ Safety warning: keep RPC private; seed nodes should not expose wallet RPC public
 ```bash
 ./legacycoind params
 ./legacycoind run -seednode
+```
+
+Windows:
+
+```powershell
+.\legacycoind.exe params
+.\legacycoind.exe run -seednode
 ```
 
 ## Recommended Config
@@ -45,6 +52,7 @@ Seed mode behavior:
 - disables miner auto-start and rejects `startminer`
 - raises inbound peer caps while keeping per-IP, per-subnet, rate-limit, and ban-score controls
 - participates in DNS, addnode, and `addr/getaddr` peer discovery
+- keeps discovered peer addresses in memory only; cache entries are not persisted across restarts
 
 ## Monitoring Commands
 

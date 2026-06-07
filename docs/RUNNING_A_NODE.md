@@ -2,7 +2,7 @@
 
 Purpose: run and monitor a standalone Legacy Core node.  
 Audience: node operators and infrastructure users.  
-Status: active for v1.0.4.  
+Status: active for v1.0.5.
 Safety warning: keep RPC (`19556`) private.
 
 ## What This Is
@@ -13,6 +13,12 @@ Basic operational guide for a headless Legacy Core node.
 
 ```bash
 ./legacycoind run -seed-peers
+```
+
+Windows:
+
+```powershell
+.\legacycoind.exe run -seed-peers
 ```
 
 Check health:
@@ -28,6 +34,7 @@ Check health:
 
 - P2P port `19555` can be public.
 - RPC port `19556` should be local/private only.
+- `-seed-peers` enables DNS/bootstrap peer use and post-handshake peer-address discovery.
 
 ## Useful Operational Commands
 

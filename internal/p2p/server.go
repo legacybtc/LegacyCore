@@ -25,16 +25,17 @@ import (
 )
 
 const (
-	protocolVersion   int32  = 70015
-	nodeNetwork       uint64 = 1
-	userAgent                = "/Legacy-GO:0.1.0/"
-	maxPeers                 = 125
-	maxOutboundPeers         = 8
-	maxGetDataItems          = 2048
-	maxServeInvItems         = 2048
-	maxAddrRelayItems        = 10
-	maxAddrDialItems         = 8
-	addrMaxAge               = 7 * 24 * time.Hour
+	protocolVersion       int32  = 70015
+	nodeNetwork           uint64 = 1
+	userAgent                    = "/Legacy-GO:0.1.0/"
+	maxPeers                     = 125
+	maxOutboundPeers             = 8
+	maxGetDataItems              = 2048
+	maxServeInvItems             = 2048
+	maxAddrRelayItems            = 10
+	maxAddrDialItems             = 8
+	maxKnownPeerAddresses        = 2048
+	addrMaxAge                   = 7 * 24 * time.Hour
 )
 
 var (
@@ -384,7 +385,28 @@ func (s *Server) rememberAddressLocked(addr string, source string, seen time.Tim
 		return false
 	}
 	s.knownAddresses[addr] = knownPeerAddress{Addr: addr, Source: source, LastSeen: seen}
+	s.trimKnownAddressesLocked(addr)
 	return true
+}
+
+func (s *Server) trimKnownAddressesLocked(protected string) {
+	for len(s.knownAddresses) > maxKnownPeerAddresses {
+		oldestAddr := ""
+		oldestSeen := time.Time{}
+		for addr, info := range s.knownAddresses {
+			if addr == protected {
+				continue
+			}
+			if oldestAddr == "" || info.LastSeen.Before(oldestSeen) {
+				oldestAddr = addr
+				oldestSeen = info.LastSeen
+			}
+		}
+		if oldestAddr == "" {
+			return
+		}
+		delete(s.knownAddresses, oldestAddr)
+	}
 }
 
 func (s *Server) knownAddressInfos() []knownPeerAddress {
@@ -1549,13 +1571,17 @@ func (s *Server) handleAddrPayload(ctx context.Context, p *peer, payload []byte)
 		if !ok {
 			continue
 		}
-		if s.rememberPeerAddress(addr, "addr:"+p.remote) {
+		if s.isSelfAddress(addr) {
+			continue
+		}
+		fresh := s.rememberPeerAddress(addr, "addr:"+p.remote)
+		if fresh {
 			added++
 			if relayableHost(splitHost(addr), false) && len(relay) < maxAddrRelayItems {
 				relay = append(relay, netAddr)
 			}
 		}
-		if dialed < maxAddrDialItems && !s.peerAddressActive(addr) {
+		if fresh && dialed < maxAddrDialItems && !s.peerAddressActive(addr) {
 			if err := s.AddNode(ctx, addr); err != nil {
 				s.log.Printf("p2p discovered peer %s from %s not dialed: %v", addr, p.remote, err)
 			} else {
@@ -1570,6 +1596,22 @@ func (s *Server) handleAddrPayload(ctx context.Context, p *peer, payload []byte)
 		s.log.Printf("p2p learned %d peer address(es) from %s; dialed %d", added, p.remote, dialed)
 	}
 	return nil
+}
+
+func (s *Server) isSelfAddress(addr string) bool {
+	normalized, err := normalizePeerAddress(addr, s.params.DefaultPort)
+	if err != nil {
+		return false
+	}
+	listen := s.ListenAddr()
+	if listen == "" {
+		return false
+	}
+	listenNormalized, err := normalizePeerAddress(listen, s.params.DefaultPort)
+	if err == nil && listenNormalized == normalized {
+		return true
+	}
+	return false
 }
 
 func (s *Server) relayKnownAddresses(addrs []wire.NetAddress, skip *peer) {

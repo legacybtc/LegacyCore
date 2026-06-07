@@ -1,8 +1,8 @@
 # RPC Guide
 
-Purpose: public RPC reference for Legacy Core v1.0.4 integrations.  
+Purpose: public RPC reference for Legacy Core v1.0.5 integrations.
 Audience: wallet integrators, pools, exchanges, explorers, and operators.  
-Status: active for v1.0.4.  
+Status: active for v1.0.5.
 Safety warning: RPC (`19556`) should be private (localhost/private network only).
 
 ## What This Is
@@ -176,7 +176,7 @@ Never expose unauthenticated public RPC.
 - Example response fields (`getblocktemplate`): `height`, `previousblockhash`, `transactions`, `coinbasevalue`, `bits`, `target`, `longpollid`, `submitold=false`, `expires=15`
 - Debug fields: `submitted_block_hash`, `submitted_prevhash`, `submitted_height`, `daemon_current_height`, `daemon_current_best_hash`, `submitted_prevhash_equals_tip`, `processblock_result`, `reject_code`, `reject_category`, `reject_reason`
 - Errors (`submitblock`): decode errors, reject codes (e.g. bad prev, bad bits, high hash)
-- Integration notes: use yespower with `LegacyCoinPoW` personalization
+- Integration notes: use yespower with `LegacyCoinPoW` personalization; `validateblockproposal` / `testblock` are non-mutating dry runs, while `submitblockdebug` actually submits the block and returns diagnostics
 
 ## Wallet RPC Surfaces
 
@@ -252,5 +252,5 @@ Notes:
 
 ## Known Limitations
 
-- Address index is a foundation feature in v1.0.4.
+- Address index is a foundation feature in v1.0.5.
 - Full rich historical address analytics typically still needs explorer-side indexing.
