@@ -28,6 +28,12 @@ import {
   Wallet,
 } from "lucide-react";
 import "./styles/app.css";
+import {
+  buildImmatureRewardSummary,
+  buildMinerDashboardState,
+  formatBaseUnitsLBTC,
+  formatHumanLBTC as formatDashboardHumanLBTC,
+} from "./dashboardLogic";
 
 const legacyLogo = "/legacy-logo.jpg";
 
@@ -131,7 +137,7 @@ const tabs = [
   ["receive", Coins, "Receive"],
   ["transactions", History, "Transactions"],
   ["mining", Pickaxe, "Mining"],
-  ["network", Network, "Network / Seeds & Peers"],
+  ["network", Network, "Network"],
   ["blockchain", Database, "Blockchain / Node"],
   ["explorer", Globe2, "Explorer"],
   ["address-book", Archive, "Address Book"],
@@ -492,12 +498,15 @@ function Overview({
 }: PageProps & SurfaceControls) {
   const chain = snap.blockchain || {};
   const wallet = snap.wallet || {};
+  const walletDataAvailable = Boolean(snap.wallet);
   const mining = snap.mining || {};
   const sync = snap.sync || {};
   const running = Boolean(snap.node?.running);
   const connectedPeers = Number(chain.peer_count ?? (snap.peers || []).length ?? 0);
   const dnsSeeds = Number((chain.dns_seeds || snap.coin?.dns_seeds || []).length || 0);
   const knownPeers = chain.known_peers_available ? Number(chain.known_peer_count || 0) : "Unavailable";
+  const immatureSummary = buildImmatureRewardSummary(wallet, chain.height ?? wallet.height);
+  const acceptedBlocks = Number(mining.accepted_blocks || 0);
   return (
     <div className="page">
       <div className="heroPanel compactHero">
@@ -519,6 +528,9 @@ function Overview({
         <Metric label="Best block" value={chain.bestblockhash || "-"} mono copyable />
         <Metric label="Chain ID" value={snap.coin?.chain_id} mono copyable />
         <Metric label="Version" value={snap.coin?.version} />
+        <Metric label="Available balance" value={walletDataAvailable ? (wallet.available_lbtc ? lbtc(wallet.available_lbtc) : fmtAmount(wallet.available ?? wallet.spendable)) : "Data unavailable"} />
+        <Metric label="Immature mining rewards" value={walletDataAvailable ? immatureSummary.totalLabel : "Data unavailable"} />
+        <Metric label="Next reward maturity" value={immatureSummary.nextMaturityHeight ? `height ${immatureSummary.nextMaturityHeight}` : "-"} />
       </div>
       <section className="panel lifecyclePanel">
         <div className="lifecycleIcon"><Database size={38} /></div>
@@ -590,7 +602,14 @@ function Overview({
             <div><BadgeCheck size={18} /><span>Node status: {snap.node?.running ? "running" : "stopped"}</span><small>{seconds(snap.node?.uptime_seconds)}</small></div>
             <div><Network size={18} /><span>Connected peers: {connectedPeers}</span><small>live</small></div>
             <div><Globe2 size={18} /><span>DNS seeds configured: {dnsSeeds}</span><small>bootstrap</small></div>
-            <div><Wallet size={18} /><span>Wallet balance: {wallet.total_lbtc ? lbtc(wallet.total_lbtc) : fmtAmount(wallet.total)}</span><small>local</small></div>
+            <div><Wallet size={18} /><span>Wallet balance: {walletDataAvailable ? (wallet.total_lbtc ? lbtc(wallet.total_lbtc) : fmtAmount(wallet.total)) : "Data unavailable"}</span><small>local</small></div>
+            {(acceptedBlocks > 0 || immatureSummary.totalBaseUnits > 0) && (
+              <div>
+                <Coins size={18} />
+                <span>{acceptedBlocks || immatureSummary.outputs.length} accepted blocks found. {immatureSummary.totalLabel} is immature and will become spendable after 100 confirmations.</span>
+                <small>{immatureSummary.nextMaturityHeight ? `next maturity height ${immatureSummary.nextMaturityHeight}${immatureSummary.blocksRemaining !== null ? ` / ${immatureSummary.blocksRemaining} blocks remaining` : ""}` : "coinbase maturity"}</small>
+              </div>
+            )}
             <div><Shield size={18} /><span>Storage health monitored</span><small>doctor</small></div>
           </div>
         </section>
@@ -611,6 +630,7 @@ function Overview({
 
 function WalletPage({ snap, run, refresh }: PageProps) {
   const w = snap.wallet || {};
+  const walletDataAvailable = Boolean(snap.wallet);
   const security = w.wallet || {};
   const [address, setAddress] = useState("");
   const [passphrase, setPassphrase] = useState("");
@@ -633,6 +653,14 @@ function WalletPage({ snap, run, refresh }: PageProps) {
     Number(w.safe_pending_change || 0) +
     Number(w.pending_external_incoming || 0);
   const encryptionState = security.encrypted ? (security.locked ? "Encrypted + locked" : "Encrypted + unlocked") : "Unencrypted";
+  const chainHeight = Number(snap.blockchain?.height ?? w.height ?? 0);
+  const immatureSummary = buildImmatureRewardSummary(w, chainHeight);
+  const maturityText = [
+    `Current height: ${immatureSummary.currentHeight ?? "-"}`,
+    immatureSummary.nextMaturityHeight ? `next reward matures at height ${immatureSummary.nextMaturityHeight}` : "no immature reward maturity pending",
+    immatureSummary.blocksRemaining !== null ? `${immatureSummary.blocksRemaining} blocks remaining` : "",
+    "coinbase rewards require 100 confirmations before spending",
+  ].filter(Boolean).join(". ");
 
   useEffect(() => {
     if (!Number.isFinite(unlockSeconds) || unlockSeconds < 60) return;
@@ -691,13 +719,15 @@ function WalletPage({ snap, run, refresh }: PageProps) {
   return (
     <div className="page">
       <div className="metricGrid">
-        <Metric label="Total balance" value={w.total_lbtc ? lbtc(w.total_lbtc) : fmtAmount(w.total)} />
-        <Metric label="Available / Matured" value={w.available_lbtc ? lbtc(w.available_lbtc) : fmtAmount(w.available)} />
-        <Metric label="Immature mining rewards" value={w.immature_lbtc ? lbtc(w.immature_lbtc) : fmtAmount(w.immature)} />
+        <Metric label="Total balance" value={walletDataAvailable ? (w.total_lbtc ? lbtc(w.total_lbtc) : fmtAmount(w.total)) : "Data unavailable"} />
+        <Metric label="Available / Matured" value={walletDataAvailable ? (w.available_lbtc ? lbtc(w.available_lbtc) : fmtAmount(w.available)) : "Data unavailable"} />
+        <Metric label="Immature mining rewards" value={walletDataAvailable ? immatureSummary.totalLabel : "Data unavailable"} />
+        <Metric label="Next reward maturity" value={immatureSummary.nextMaturityHeight ? `height ${immatureSummary.nextMaturityHeight}` : "-"} />
         <Metric label="Pending / Unconfirmed" value={formatHumanLBTC(pendingTotal / 1e8)} />
         <Metric label="Encryption" value={encryptionState} icon={security.locked ? <Lock /> : <Unlock />} />
       </div>
-      <Notice tone="info" title="Wallet summary" source="wallet" text="Available balance is spendable now. Immature mining rewards need 100 confirmations before spending." />
+      <Notice tone="info" title="Wallet summary" source="wallet" text={`Available balance is spendable now. Immature mining rewards appear first, then mature into available balance. ${maturityText}.`} />
+      {!walletDataAvailable && <Notice tone="warn" title="Wallet data unavailable" source="wallet-rpc" text="Wallet balances are unavailable because RPC did not return a fresh wallet summary. The GUI will retry instead of showing fake zero balances." />}
       <div className="twoCol">
         <section className="panel">
           <h3>Receive address</h3>
@@ -719,6 +749,24 @@ function WalletPage({ snap, run, refresh }: PageProps) {
           )}
           <div className="splitLine topGap"><span>Default mining address</span><strong className="mono">{defaultMining ? <CopyableValue value={defaultMining} /> : "Not set"}</strong></div>
         </section>
+        {immatureSummary.outputs.length > 0 && (
+          <section className="panel">
+            <h3>Immature mining rewards</h3>
+            <p className="muted">{immatureSummary.totalLabel} is waiting for coinbase maturity.</p>
+            <div className="kv">
+              <div><span>Current height</span><strong>{immatureSummary.currentHeight ?? "-"}</strong></div>
+              <div><span>Next reward matures</span><strong>{immatureSummary.nextMaturityHeight ? `height ${immatureSummary.nextMaturityHeight}` : "-"}</strong></div>
+              <div><span>Blocks remaining</span><strong>{immatureSummary.blocksRemaining ?? "-"}</strong></div>
+              {immatureSummary.outputs.map((reward, idx) => (
+                <div key={`${reward.txid}-${idx}`}>
+                  <span>{reward.valueLabel} at height {reward.height ?? "-"}</span>
+                  <strong>{reward.maturesAt ? `matures at ${reward.maturesAt}${reward.blocksRemaining !== null ? ` (${reward.blocksRemaining} blocks remaining)` : ""}` : "maturity pending"}</strong>
+                  <small className="mono">{reward.address || reward.pubkeyHash || reward.txid}</small>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
         <section className="panel">
           <h3>Wallet protection</h3>
           <div className="kv">
@@ -782,6 +830,13 @@ function ReceivePage({ snap, run, refresh }: PageProps) {
   const addresses = snap.wallet?.receive_addresses || [];
   const current = address || addresses[addresses.length - 1] || "";
   const defaultMining = snap.wallet?.default_mining_address || snap.settings?.defaultMiningAddress || "";
+  const initialReceive = addresses[0] || "";
+  const miningMatchesCurrent = Boolean(current && defaultMining && current === defaultMining);
+  const activeRewardHash = snap.mining?.active_reward_hash || snap.mining?.mining_pubkey_hash || "";
+  const miningOwned = Boolean(snap.mining?.mining_address_wallet_owned ?? snap.mining?.owned_by_wallet ?? snap.wallet?.default_mining_wallet_owned);
+  const externalPayout = Boolean(snap.mining?.external_payout_mode ?? snap.wallet?.external_payout_mode);
+  const miningDestinationError = String(snap.mining?.mining_destination_error || snap.wallet?.mining_destination_error || "").trim();
+  const ownershipLabel = defaultMining || activeRewardHash ? (externalPayout ? "external payout mode" : miningOwned ? "wallet-owned" : "not owned by this wallet") : "not configured";
 
   function saveAddressLabel(addr: string, labelText: string) {
     const cleanLabel = labelText.trim();
@@ -810,7 +865,7 @@ function ReceivePage({ snap, run, refresh }: PageProps) {
           <Coins size={34} />
           <div>
             <strong>{current ? "Current receive address" : "No receive address yet"}</strong>
-            <p>{current ? "Use copy or generate a fresh local wallet address." : "Generate an address before requesting LBTC."}</p>
+            <p>{current ? "Use copy or generate a fresh local wallet address only when you want a new one." : "Generate an address before requesting LBTC."}</p>
           </div>
         </div>
         <div className="addressBox">{current ? <CopyableValue value={current} /> : "No receive address selected"}</div>
@@ -824,9 +879,19 @@ function ReceivePage({ snap, run, refresh }: PageProps) {
             Generate new address
           </button>
           <button disabled={!current} onClick={() => copy(current)}><Copy size={16} /> Copy address</button>
-          <button disabled={!current} onClick={async () => { await run("Set mining address", () => api().SetDefaultMiningAddress(current)); await refresh(); }}>Set as mining address</button>
+          <button disabled={!current} onClick={async () => { await run("Set mining address", () => api().SetDefaultMiningAddress(current)); await refresh(); }}>Set this address as mining address</button>
         </div>
-        <div className="splitLine topGap"><span>Current mining address</span><strong className="mono">{defaultMining ? <CopyableValue value={defaultMining} /> : "Not set"}</strong></div>
+        <div className="kv topGap">
+          <div><span>Current receive address</span><strong className="mono">{current ? <CopyableValue value={current} /> : "-"}</strong></div>
+          <div><span>Current mining address</span><strong className="mono">{defaultMining ? <CopyableValue value={defaultMining} /> : "Not set yet"}</strong></div>
+          <div><span>Receive/mining match</span><strong>{defaultMining ? (miningMatchesCurrent ? "same address" : "different addresses") : "mining address not set"}</strong></div>
+          <div><span>Mining ownership</span><strong>{ownershipLabel}</strong></div>
+          <div><span>Initial wallet address</span><strong className="mono">{initialReceive ? <CopyableValue value={initialReceive} /> : "-"}</strong></div>
+          <div><span>Active reward hash</span><strong className="mono">{activeRewardHash || "-"}</strong></div>
+        </div>
+        {miningDestinationError && <Notice tone="danger" text={miningDestinationError} />}
+        {externalPayout && !miningDestinationError && <Notice tone="warn" text="External payout mode: rewards will not appear in this wallet unless you own or import that address." />}
+        {!defaultMining && current && <Notice tone="info" text="No mining address is set yet. Click Set this address as mining address before mining." />}
         <p className="muted">Addresses are only generated when you click create. Opening this page will not create extra addresses.</p>
         <p className="muted compactNote">Label examples: Desktop miner, Phone miner 1, Phone miner 2, Pool payout.</p>
       </section>
@@ -1118,7 +1183,7 @@ function ActivityPage({ snap, run, refresh }: PageProps) {
   );
 }
 
-function ExplorerPage({ snap }: PageProps) {
+function ExplorerPage({ snap, run, refresh }: PageProps) {
   const [blocks, setBlocks] = useState<Dict[]>([]);
   const [selectedBlock, setSelectedBlock] = useState<Dict | null>(null);
   const [selectedTx, setSelectedTx] = useState<Dict | null>(null);
@@ -1217,6 +1282,27 @@ function ExplorerPage({ snap }: PageProps) {
       setConfigPathStatus(String(out?.message || "Index config lines updated."));
     } catch (e) {
       setConfigPathStatus(cleanError(e));
+    }
+  }
+
+  async function enableIndexesRestartReindex() {
+    const ok = window.confirm("Enable Local Explorer indexes now?\n\nThis writes addressindex=1 and txindex=1, restarts the internal node, then runs reindex. Reindex can take time.");
+    if (!ok) return;
+    try {
+      setSearching(true);
+      setConfigPathStatus("Enabling Local Explorer indexes...");
+      const configOut = await run("Enable explorer indexes", () => Promise.resolve(api().EnableAddressAndTxIndexConfig()));
+      setConfigPathStatus(String(configOut?.message || "Index config lines updated."));
+      await run("Restart node for indexes", () => api().RestartInternalNode());
+      setConfigPathStatus("Node restarted with index settings. Reindexing local chain...");
+      await run("Reindex local explorer data", () => api().RunRPCCommand("reindex"));
+      setConfigPathStatus("Local Explorer indexes enabled and reindex completed. Address search is ready.");
+      setAddressIndexHelp(null);
+      await refresh();
+    } catch (e) {
+      setConfigPathStatus(`Index enable/reindex did not complete: ${cleanError(e)}`);
+    } finally {
+      setSearching(false);
     }
   }
 
@@ -1386,6 +1472,8 @@ function ExplorerPage({ snap }: PageProps) {
         <Metric label="Mempool" value={mempool?.count ?? summary.mempool_count ?? 0} />
         <Metric label="Avg block time" value={seconds(summary.average_block_time)} />
         <Metric label="Network KH/s" value={networkHashLabel(summary.network_hashps)} />
+        <Metric label="Tx index" value={snap.blockchain?.txindex?.enabled ? "Enabled" : "Disabled"} />
+        <Metric label="Address index" value={snap.blockchain?.addressindex?.enabled ? "Enabled" : "Disabled"} />
       </div>
       <div className="explorerTopGrid">
         <section className="panel explorerSearch">
@@ -1508,7 +1596,7 @@ function ExplorerPage({ snap }: PageProps) {
                 ]}
                 flush
               />
-              <p className="muted compactNote">To enable full address search, set <span className="mono">addressindex=1</span> and <span className="mono">txindex=1</span>, restart node, then run reindex.</p>
+              <p className="muted compactNote">Address search supports classic <span className="mono">L...</span> and hybrid <span className="mono">lhyb1...</span> addresses after local indexes are enabled and rebuilt.</p>
               <div className="reindexHint">
                 <strong>Reindex commands (Windows)</strong>
                 <pre className="mono">.\\legacycoind.exe reindex -datadir \"%APPDATA%\\LegacyCoin\"{"\n"}.\\legacycoind.exe run -seed-peers</pre>
@@ -1520,6 +1608,7 @@ function ExplorerPage({ snap }: PageProps) {
                 <button onClick={() => void openDataFolder()}>Open Data Folder</button>
                 <button onClick={() => copy("addressindex=1\ntxindex=1")}>Copy index config snippet</button>
                 <button onClick={() => void enableIndexConfigLines()}>Add index config lines</button>
+                <button className="primary" onClick={() => void enableIndexesRestartReindex()}>Enable Local Explorer Indexes</button>
                 <button onClick={() => void copyConfigPath()}>Copy Config Path</button>
               </div>
               {configPathStatus && <Notice tone="info" text={configPathStatus} />}
@@ -1639,19 +1728,18 @@ function MiningPage({ snap, run }: PageProps) {
   const [startError, setStartError] = useState("");
   const [benchmark, setBenchmark] = useState<Dict | null>(null);
   const [startAttempted, setStartAttempted] = useState(false);
+  const minerView = buildMinerDashboardState(mining, snap.wallet || {});
+  const immatureSummary = buildImmatureRewardSummary(snap.wallet || {}, snap.blockchain?.height ?? snap.wallet?.height);
   const rpcOffline = Boolean(mining.rpc_offline);
-  const activeMining = !rpcOffline && Boolean(mining.active_mining);
-  const canStartMining = !rpcOffline && Boolean(mining.can_start ?? !activeMining);
-  const blockedReason = mining.mining_paused_reason || mining.last_error || "";
+  const activeMining = minerView.activeMining;
+  const unownedPayoutBlocksMining = Boolean((minerView.activeRewardHash || minerView.resolvedRewardAddress) && !minerView.rewardOwnedByWallet && !minerView.externalPayoutMode);
+  const canStartMining = !rpcOffline && Boolean(mining.can_start ?? !activeMining) && !unownedPayoutBlocksMining;
+  const blockedReason = minerView.payoutWarning || minerView.displayLastError || mining.mining_paused_reason || "";
   const emergencyStopEnabled = rpcOffline || activeMining || startAttempted || Number(mining.local_hashps || 0) > 0 || Number(mining.session_hashes || 0) > 0 || Boolean(mining.miner_loop_running);
-  const miningStatus =
-    rpcOffline ? "error"
-      : activeMining ? "running"
-      : (Boolean(mining.mining_enabled) && blockedReason) ? "paused"
-      : startAttempted && !activeMining ? "starting"
-      : "stopped";
-  const miningStatusLabel = miningStatus;
-  const miningSafetyLabel = rpcOffline ? "unknown (RPC offline)" : blockedReason ? `not safe (${blockedReason})` : "safe";
+  const miningStatusLabel = startAttempted && !activeMining && minerView.status === "stopped" ? "starting" : minerView.statusLabel;
+  const miningSafetyLabel = minerView.safetyLabel;
+  const cpuThreads = Math.max(1, Number(navigator.hardwareConcurrency || snap.settings?.defaultThreads || 1));
+  const usesAllThreads = threads >= cpuThreads && cpuThreads > 1;
   const networkRateLabel = netHash.primaryLabel === "Unavailable" ? `Unavailable - ${netHash.unavailableReason || "not enough safe data"}` : netHash.primaryLabel;
   const profiles = [
     { id: "eco", label: "Eco", threads: 1, note: "low heat" },
@@ -1708,21 +1796,27 @@ function MiningPage({ snap, run }: PageProps) {
       <div className="metricGrid miningMetrics">
         <Metric label="Miner status" value={miningStatusLabel} />
         <Metric label="Mining safety" value={miningSafetyLabel} />
-        <Metric label="Threads" value={`${mining.active_threads || 0} active / ${mining.configured_threads || threads} set`} />
-        <Metric label="Local KH/s" value={fmtNumber(mining.local_khps)} />
+        <Metric label="Threads" value={minerView.threadMetricLabel} />
+        <Metric label="Local KH/s" value={minerView.hashrateMetricLabel} />
+        <Metric label="Mining to" value={minerView.miningToLabel} />
+        <Metric label="Owned by wallet" value={minerView.payoutOwnershipLabel} />
         <Metric label="Network KH/s" value={networkRateLabel} />
         <Metric label="Source" value={friendlyNetworkSource(netSource)} />
-        <Metric label="Accepted" value={mining.accepted_blocks || 0} />
-        <Metric label="Stale" value={mining.stale_blocks || 0} />
-        <Metric label="Rejected" value={mining.rejected_blocks || 0} />
+        <Metric label={minerView.acceptedLabel} value={mining.accepted_blocks || 0} />
+        <Metric label={minerView.staleLabel} value={mining.stale_blocks || 0} />
+        <Metric label={minerView.rejectedLabel} value={mining.rejected_blocks || 0} />
         <Metric label="Difficulty bits" value={mining.current_bits || snap.blockchain?.current_bits || "-"} />
       </div>
       <section className="panel minerControls">
         <h3>Miner controls</h3>
-        {mining.rpc_offline && <Notice tone="danger" text={`Wallet state mismatch detected: GUI/internal node is up but RPC is offline (${mining.rpc_error || "no RPC response"}). Use Restart Internal Node and Force stop miner.`} />}
+        {mining.rpc_offline && <Notice tone="warn" text={`Miner data unavailable / RPC timeout (${mining.rpc_error || "no RPC response"}). The node process may still be running; the wallet will retry and clear this when RPC responds.`} />}
+        {minerView.payoutWarning && <Notice tone={minerView.externalPayoutMode ? "warn" : "danger"} text={minerView.payoutWarning} />}
         {startError && <Notice tone="danger" text={startError} />}
-        {!startError && !activeMining && !canStartMining && <Notice tone="warn" text={`Mining is blocked: ${blockedReason || "safety checks are preventing miner start"}`} />}
-        {!startError && mining.last_error && <Notice tone="warn" text={`Last miner error: ${mining.last_error}`} />}
+        {!startError && !rpcOffline && !activeMining && !canStartMining && <Notice tone="warn" text={`Mining is blocked: ${blockedReason || "safety checks are preventing miner start"}`} />}
+        {!startError && minerView.displayLastError && <Notice tone="warn" text={`Last miner error: ${minerView.displayLastError}`} />}
+        {!startError && !minerView.displayLastError && minerView.lastActionLabel !== "-" && <Notice tone="info" text={`Last action: ${minerView.lastActionLabel}`} />}
+        {usesAllThreads && <Notice tone="warn" text="Using all CPU threads may make the wallet/RPC less responsive. For desktop wallet mining, leave 1-2 threads free for Windows, the GUI, and RPC." />}
+        {!usesAllThreads && <Notice tone="info" text="For desktop wallet mining, leave CPU headroom for Windows, the GUI, and RPC. You can override threads manually." />}
         <div className="profileGrid">
           {profiles.map((profile) => <button key={profile.id} onClick={() => chooseProfile(profile)} className={selectedProfile === profile.id ? "active profileCard" : "profileCard"}><strong>{profile.label}</strong><span>{profile.threads} threads</span><small>{profile.note}</small></button>)}
         </div>
@@ -1753,19 +1847,25 @@ function MiningPage({ snap, run }: PageProps) {
       <div className="miningLower">
         <InfoPanel title="Miner session" rows={[
           ["Mining status", miningStatusLabel],
-          ["Mining loop", mining.miner_loop_running ? "active" : "inactive"],
-          ["Reason", activeMining ? "-" : (blockedReason || mining.last_stop_reason || "miner is not running")],
-          ["Session mode", activeMining ? "running" : "ready to start"],
-          ["Paused reason", mining.mining_paused_reason || "-"],
-          ["Template height", mining.last_mined_template_height || "-"],
-          ["Last template refresh", mining.last_template_refresh_time ? dateTime(mining.last_template_refresh_time) : "-"],
-          ["Template age", seconds(mining.last_template_refresh_ago_seconds)],
-          ["Watchdog action", mining.watchdog_last_recovery_action || "-"],
-          ["Active mining address", mining.active_mining_address || snap.wallet?.default_mining_address || "Set in Receive or Wallet tab"],
-          ["Pubkey hash", mining.mining_pubkey_hash || "-"],
+          ["Mining loop", minerView.miningLoopLabel],
+          ["Reason", minerView.reasonLabel],
+          ["Session mode", minerView.sessionModeLabel],
+          ["Paused reason", minerView.pausedReasonLabel],
+          ["Template height", minerView.templateHeightLabel],
+          ["Last template refresh", activeMining && mining.last_template_refresh_time ? dateTime(mining.last_template_refresh_time) : minerView.templateRefreshLabel],
+          ["Template age", activeMining ? seconds(mining.last_template_refresh_ago_seconds) : minerView.templateAgeLabel],
+          ["Watchdog action", minerView.watchdogLabel],
+          ["Active reward hash used by miner", minerView.activeRewardHash || "-"],
+          ["Mining to", minerView.miningToLabel],
+          ["Resolved reward address", minerView.resolvedRewardAddress || "not resolved from wallet address book"],
+          ["Owned by this wallet", minerView.payoutOwnershipLabel],
+          ["Payout warning", minerView.payoutWarning || "-"],
+          ["Current default mining address", minerView.currentDefaultMiningAddress || "-"],
+          ["Current default mining hash", minerView.currentDefaultMiningHash || "-"],
+          ["Last accepted blocks were paid to", minerView.lastAcceptedPaidToLabel],
           ["Configured threads", mining.configured_threads || threads],
-          ["Active threads", mining.active_threads || 0],
-          ["Effective threads", mining.effective_threads || mining.active_threads || 0],
+          ["Active threads", minerView.liveActiveThreads],
+          ["Effective threads", minerView.effectiveThreadsLabel],
           ["Hashes per thread", fmtNumber(mining.hashes_per_thread)],
           ["Session hashes", fmtNumber(mining.session_hashes)],
           ["Estimated time to block", seconds(mining.estimated_time_to_block_seconds)],
@@ -1780,29 +1880,34 @@ function MiningPage({ snap, run }: PageProps) {
           ["Session blocks", mining.session_blocks || 0],
           ["Uptime", seconds(mining.uptime_seconds)],
         ["Last block", mining.last_block_hash || "-"],
-        ["Last error", mining.last_error || "-"],
+        ["Last action", minerView.lastActionLabel],
+        ["Last historical event", minerView.historicalEventLabel || "-"],
+        ["Last error", minerView.displayLastError || "-"],
         ["Last stop reason", mining.last_stop_reason || "-"],
         ]} />
         <section className="panel miningActivity">
           <h3>Mining Activity</h3>
-          {mining.mining_paused_reason && <Notice tone="warn" text={`Mining is paused because ${mining.mining_paused_reason}. It will resume automatically when safe.`} />}
+          {activeMining && mining.mining_paused_reason && <Notice tone="warn" text={`Mining is paused because ${mining.mining_paused_reason}. It will resume automatically when safe.`} />}
+          {Number(mining.accepted_blocks || 0) > 0 && immatureSummary.totalBaseUnits > 0 && (
+            <Notice tone="info" text={`${mining.accepted_blocks} accepted blocks found. ${immatureSummary.totalLabel} is immature and will become spendable after 100 confirmations.`} />
+          )}
           <div className="activityTicker">
             <StatusDot ok={!rpcOffline && Boolean(mining.active_mining)} />
-            <strong>{rpcOffline ? "Miner status unavailable (RPC offline)" : mining.active_mining ? "Mining active..." : mining.mining_enabled ? "Mining paused" : "Miner idle"}</strong>
-            <span>{mining.active_threads || 0} active thread workers</span>
+            <strong>{minerView.activityStatusLabel}</strong>
+            <span>{minerView.activityThreadsLabel}</span>
           </div>
           <div className="activityStats">
             <div><span>Hash attempts</span><strong>{fmtNumber(mining.session_hashes)}</strong></div>
             <div><span>Last nonce</span><strong className="mono">{mining.last_nonce ?? "-"}</strong></div>
-            <div><span>Local H/s</span><strong>{fmtNumber(mining.local_hashps)}</strong></div>
+            <div><span>Local H/s</span><strong>{minerView.hashrateFeedLabel}</strong></div>
             <div><span>Hashes / thread</span><strong>{fmtNumber(mining.hashes_per_thread)}</strong></div>
             <div><span>Accepted blocks</span><strong>{mining.accepted_blocks || 0}</strong></div>
             <div><span>Rejected blocks</span><strong>{mining.rejected_blocks || 0}</strong></div>
           </div>
           <div className="activityFeed">
-          <div><span>{rpcOffline ? `Mining state unknown: RPC offline (${mining.rpc_error || "no RPC response"})` : mining.active_mining ? "Mining active..." : `Mining stopped: ${mining.last_stop_reason || "idle"}`}</span><small>{seconds(mining.uptime_seconds)}</small></div>
-            <div><span>Thread workers: {mining.active_threads || 0}</span><small>{mining.thread_state || "stopped"}</small></div>
-            <div><span>Hashrate: {fmtNumber(mining.local_hashps)} H/s ({fmtNumber(mining.local_khps)} KH/s)</span><small>live</small></div>
+          <div><span>{minerView.activityStatusLabel}</span><small>{seconds(mining.uptime_seconds)}</small></div>
+            <div><span>{minerView.activityThreadsLabel}</span><small>{mining.thread_state || minerView.status}</small></div>
+            <div><span>Hashrate: {minerView.hashrateFeedLabel}</span><small>{minerView.hashrateFeedMode}</small></div>
             <div><span>Profile selected: {title(selectedProfile)}</span><small>{threads} threads</small></div>
             <div><span>Last nonce: {mining.last_nonce ?? "-"}</span><small>local miner</small></div>
             <div><span>Session hashes: {fmtNumber(mining.session_hashes)}</span><small>hash attempts</small></div>
@@ -2619,7 +2724,8 @@ function StatusBarClassic({ snap }: { snap: Dict | null }) {
   const height = snap?.blockchain?.height ?? "-";
   const state = walletSyncState(snap);
   const mining = snap?.mining || {};
-  const miningLabel = mining.active_mining ? "Mining: active" : mining.mining_paused_reason ? `Mining: paused (${mining.mining_paused_reason})` : "Mining: inactive";
+  const minerView = buildMinerDashboardState(mining, snap?.wallet || {});
+  const miningLabel = `Mining: ${minerView.statusLabel}`;
   const nodeLabel = snap?.node?.running ? "Node: online" : "Node: offline";
   const walletLabel = snap?.wallet?.wallet?.locked ? "Wallet: locked" : "Wallet: unlocked";
   const build = resolveBuildInfo(snap);
@@ -2902,8 +3008,8 @@ function portConflictMessage(node: Dict | undefined) {
 }
 
 function fmtAmount(v: any) {
-  const n = Number(v || 0);
-  return Number.isFinite(n) ? formatHumanLBTC(n / 1e8) : String(v ?? "-");
+  if (v === undefined || v === null || v === "") return "-";
+  return formatBaseUnitsLBTC(v);
 }
 
 function fmtNumber(v: any) {
@@ -2964,13 +3070,7 @@ function lbtc(v: any) {
 }
 
 function formatHumanLBTC(v: any) {
-  const raw = String(v ?? "0").replace(/,/g, "").replace(/\s*LBTC$/i, "").trim();
-  const n = Number(raw || 0);
-  if (!Number.isFinite(n)) return String(v ?? "-");
-  const fixed = n.toFixed(8).replace(/\.?0+$/, "");
-  const [whole, frac] = fixed.split(".");
-  const grouped = Number(whole || 0).toLocaleString(undefined, { maximumFractionDigits: 0 });
-  return `${grouped}${frac ? `.${frac}` : ""} LBTC`;
+  return formatDashboardHumanLBTC(v);
 }
 
 function profileForThreads(threads: number, fallback: number) {

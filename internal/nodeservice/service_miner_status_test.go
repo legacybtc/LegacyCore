@@ -53,3 +53,55 @@ func TestStopMinerFallsBackWhenRPCOffline(t *testing.T) {
 		t.Fatalf("expected active_mining false, got %v", out["active_mining"])
 	}
 }
+
+func TestNormalizeMinerStatusTreatsStopAsAction(t *testing.T) {
+	status := map[string]any{
+		"active_mining":      false,
+		"mining_enabled":     false,
+		"active_threads":     12,
+		"local_hashps":       973.8,
+		"local_khps":         0.9738,
+		"last_error":         "rpc stopminer",
+		"configured_threads": 12,
+	}
+	normalizeMinerStatusForDashboard(status)
+	if status["last_error"] != "" {
+		t.Fatalf("expected last_error to be cleared, got %v", status["last_error"])
+	}
+	if status["last_action"] != "stopped by user/RPC" {
+		t.Fatalf("expected normal stop action, got %v", status["last_action"])
+	}
+	if status["active_threads"] != 0 {
+		t.Fatalf("expected active_threads to be zero while stopped, got %v", status["active_threads"])
+	}
+	if status["last_session_active_threads"] != 12 {
+		t.Fatalf("expected last session threads to be preserved, got %v", status["last_session_active_threads"])
+	}
+	if status["local_khps_live"] != 0.0 {
+		t.Fatalf("expected live hashrate to be zero while stopped, got %v", status["local_khps_live"])
+	}
+	if status["local_khps"] != 0.0 {
+		t.Fatalf("expected local_khps to be live-zero while stopped, got %v", status["local_khps"])
+	}
+}
+
+func TestNormalizeMinerStatusTreatsStoppedRetryAsHistorical(t *testing.T) {
+	status := map[string]any{
+		"active_mining":  false,
+		"mining_enabled": false,
+		"active_threads": 4,
+		"local_hashps":   100,
+		"local_khps":     0.1,
+		"last_error":     "stale tip retry",
+	}
+	normalizeMinerStatusForDashboard(status)
+	if status["last_error"] != "" {
+		t.Fatalf("expected retry last_error to be cleared while stopped, got %v", status["last_error"])
+	}
+	if status["last_historical_event"] != "stale tip retry" {
+		t.Fatalf("expected historical retry event, got %v", status["last_historical_event"])
+	}
+	if status["active_threads"] != 0 {
+		t.Fatalf("expected active_threads to be zero while stopped, got %v", status["active_threads"])
+	}
+}

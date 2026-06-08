@@ -45,8 +45,8 @@ Release assets are published on GitHub Releases:
 
 Current release naming includes:
 
-- `LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.4.zip`
-- `LegacyCore-LBTC-mainnet-linux-amd64-v1.0.4.tar.gz`
+- `LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.5.zip`
+- `LegacyCore-LBTC-mainnet-linux-amd64-v1.0.5.tar.gz`
 
 Always verify SHA256 checksums before use.
 
