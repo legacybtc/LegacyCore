@@ -84,6 +84,12 @@ type peer struct {
 	lastBlockHeight   int32
 	lastBestUpdate    string
 	lastBlockReason   string
+	lastHeaderRecv    time.Time
+	lastBlockRecv     time.Time
+	blocksRequested   int
+	blocksServed      int
+	syncFailures      int
+	syncSuccesses     int
 	lastPenaltyAt     time.Time
 	lastPenaltyReason string
 	rateLimited       bool
@@ -93,9 +99,14 @@ type peer struct {
 }
 
 type knownPeerAddress struct {
-	Addr     string
-	Source   string
-	LastSeen time.Time
+	Addr          string
+	Source        string
+	LastSeen      time.Time
+	LastConnected time.Time
+	LastFailure   time.Time
+	Successes     int
+	Failures      int
+	LastDirection string
 }
 
 type Server struct {
@@ -168,6 +179,15 @@ type Server struct {
 	wdReconnects        int64
 	lastBlockConn       time.Time
 	lastHeightChg       time.Time
+	lastSyncPeer        string
+	syncRetryCount      int64
+	syncPeerRotations   int64
+	blocksAnnounced     int64
+	blockInvsReceived   int64
+	getDataBlocksRecv   int64
+	blocksServed        int64
+	blocksRequested     int64
+	blockReqTimeouts    int64
 	wg                  sync.WaitGroup
 }
 
@@ -379,7 +399,9 @@ func (s *Server) rememberAddressLocked(addr string, source string, seen time.Tim
 		seen = time.Now()
 	}
 	if existing, ok := s.knownAddresses[addr]; ok {
-		existing.Source = source
+		if source != "" {
+			existing.Source = source
+		}
 		existing.LastSeen = seen
 		s.knownAddresses[addr] = existing
 		return false
@@ -435,6 +457,80 @@ func (s *Server) KnownAddresses() []string {
 		out = append(out, info.Addr)
 	}
 	return out
+}
+
+func (s *Server) KnownPeerInfos() []map[string]any {
+	infos := s.knownAddressInfos()
+	out := make([]map[string]any, 0, len(infos))
+	now := time.Now()
+	for _, info := range infos {
+		row := map[string]any{
+			"addr":                           info.Addr,
+			"source":                         info.Source,
+			"last_seen_time":                 unixOrZero(info.LastSeen),
+			"last_seen_ago_seconds":          secondsSince(info.LastSeen),
+			"last_connected_time":            unixOrZero(info.LastConnected),
+			"last_connected_ago_seconds":     secondsSince(info.LastConnected),
+			"last_failure_time":              unixOrZero(info.LastFailure),
+			"last_failure_ago_seconds":       secondsSince(info.LastFailure),
+			"success_count":                  info.Successes,
+			"failure_count":                  info.Failures,
+			"last_direction":                 info.LastDirection,
+			"active":                         s.peerAddressActive(info.Addr),
+			"serviceable":                    info.Failures == 0 || info.LastConnected.After(info.LastFailure) || (!info.LastFailure.IsZero() && now.Sub(info.LastFailure) > 30*time.Minute),
+			"known_peer_cache_entry_version": 1,
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
+func (s *Server) markKnownPeerConnected(addr string, outbound bool) {
+	normalized, err := normalizePeerAddress(addr, s.params.DefaultPort)
+	if err != nil {
+		return
+	}
+	direction := "inbound"
+	if outbound {
+		direction = "outbound"
+	}
+	now := time.Now()
+	s.knownMu.Lock()
+	defer s.knownMu.Unlock()
+	if s.knownAddresses == nil {
+		s.knownAddresses = make(map[string]knownPeerAddress)
+	}
+	info := s.knownAddresses[normalized]
+	if info.Addr == "" {
+		info.Addr = normalized
+		info.Source = direction + "-handshake"
+	}
+	info.LastSeen = now
+	info.LastConnected = now
+	info.Successes++
+	info.LastDirection = direction
+	s.knownAddresses[normalized] = info
+}
+
+func (s *Server) markKnownPeerFailure(addr string) {
+	normalized, err := normalizePeerAddress(addr, s.params.DefaultPort)
+	if err != nil {
+		return
+	}
+	now := time.Now()
+	s.knownMu.Lock()
+	defer s.knownMu.Unlock()
+	if s.knownAddresses == nil {
+		s.knownAddresses = make(map[string]knownPeerAddress)
+	}
+	info := s.knownAddresses[normalized]
+	if info.Addr == "" {
+		info.Addr = normalized
+		info.Source = "dial-failure"
+	}
+	info.LastFailure = now
+	info.Failures++
+	s.knownAddresses[normalized] = info
 }
 
 func (s *Server) inboundPeerCount() int {
@@ -594,11 +690,19 @@ type PeerInfo struct {
 	LastReceivedBlockHeight          int32   `json:"last_received_block_height,omitempty"`
 	LastBestChainUpdate              string  `json:"last_best_chain_update,omitempty"`
 	LastBlockReason                  string  `json:"last_block_reason,omitempty"`
+	LastHeaderReceivedAgoSeconds     float64 `json:"last_header_received_ago_seconds"`
+	LastBlockReceivedAgoSeconds      float64 `json:"last_block_received_ago_seconds"`
+	BlocksRequested                  int     `json:"blocks_requested"`
+	BlocksServed                     int     `json:"blocks_served"`
+	SyncFailures                     int     `json:"sync_failures"`
+	SyncSuccesses                    int     `json:"sync_successes"`
+	BestSyncCandidate                bool    `json:"best_sync_candidate"`
 }
 
 func (s *Server) PeerInfos() []PeerInfo {
 	now := time.Now()
 	peers := s.snapshotPeers()
+	bestPeer := s.bestSyncPeer()
 	localHeight := int32(-1)
 	if tip := s.chain.Tip(); tip != nil {
 		localHeight = tip.Height
@@ -633,6 +737,12 @@ func (s *Server) PeerInfos() []PeerInfo {
 		lastBlockHeight := p.lastBlockHeight
 		lastBestUpdate := p.lastBestUpdate
 		lastBlockReason := p.lastBlockReason
+		lastHeaderRecv := p.lastHeaderRecv
+		lastBlockRecv := p.lastBlockRecv
+		blocksRequested := p.blocksRequested
+		blocksServed := p.blocksServed
+		syncFailures := p.syncFailures
+		syncSuccesses := p.syncSuccesses
 		p.lastMu.Unlock()
 		lastSyncAgo := float64(-1)
 		if !lastSyncRequest.IsZero() {
@@ -699,6 +809,13 @@ func (s *Server) PeerInfos() []PeerInfo {
 			LastReceivedBlockHeight:          lastBlockHeight,
 			LastBestChainUpdate:              lastBestUpdate,
 			LastBlockReason:                  lastBlockReason,
+			LastHeaderReceivedAgoSeconds:     secondsSince(lastHeaderRecv),
+			LastBlockReceivedAgoSeconds:      secondsSince(lastBlockRecv),
+			BlocksRequested:                  blocksRequested,
+			BlocksServed:                     blocksServed,
+			SyncFailures:                     syncFailures,
+			SyncSuccesses:                    syncSuccesses,
+			BestSyncCandidate:                p == bestPeer,
 		})
 	}
 	return out
@@ -787,36 +904,59 @@ func (s *Server) SyncStatus() map[string]any {
 	}
 	health := s.healthSnapshot()
 	syncStalled := false
+	possiblyStalled := false
 	peerCount := len(peers)
 	lastHeightChangeAge, _ := health["last_height_change_ago_seconds"].(float64)
 	lastSyncReqAge, _ := health["last_p2p_sync_request_ago_seconds"].(float64)
 	lastHeaderAge, _ := health["last_header_received_ago_seconds"].(float64)
 	lastBlockAge, _ := health["last_block_received_ago_seconds"].(float64)
 	lastPeerMsgAge, _ := health["last_peer_message_ago_seconds"].(float64)
+	bestPeer := s.bestSyncPeer()
+	syncPeer := ""
+	syncPeerHeight := int32(-1)
+	if bestPeer != nil {
+		bestPeer.lastMu.Lock()
+		syncPeer = bestPeer.remote
+		syncPeerHeight = bestPeer.height
+		bestPeer.lastMu.Unlock()
+	}
+	blocksBehind := max32(0, bestPeerHeight-localHeight)
+	targetSeconds := chaincfg.TargetSpacing.Seconds()
+	possiblyStalledAfter := 2 * targetSeconds
+	stalledAfter := 3 * targetSeconds
+	recentSyncRequest := lastSyncReqAge >= 0 && lastSyncReqAge < 2*targetSeconds
 	noUsefulChainData := peerCount > 0 &&
-		lastHeaderAge > syncStaleThreshold.Seconds() &&
-		lastBlockAge > syncStaleThreshold.Seconds() &&
+		lastHeaderAge > possiblyStalledAfter &&
+		lastBlockAge > possiblyStalledAfter &&
 		(behind || syncingPeerCount > 0 || stalePeerCount > 0)
 	if behind {
-		if lastHeightChangeAge > 90 {
-			syncStalled = true
+		status = "catching_up"
+		message = fmt.Sprintf("Catching up to peers. Behind by %d block(s).", blocksBehind)
+		if recentSyncRequest || syncingPeerCount > 0 {
+			status = "requesting_blocks"
+			message = fmt.Sprintf("Requesting latest blocks from peers. Behind by %d block(s).", blocksBehind)
 		}
-		if lastSyncReqAge > 45 {
+		if blocksBehind <= 1 {
+			status = "current"
+			message = "Local node is at or within one block of connected peers."
+		} else if lastHeightChangeAge > possiblyStalledAfter {
+			possiblyStalled = true
+			status = "possibly_stalled"
+			message = "Still catching up, but no height progress for more than two target block intervals."
+		}
+		if lastHeightChangeAge > stalledAfter && (blocksBehind > 5 || noUsefulChainData || lastError != "") {
 			syncStalled = true
 		}
 	}
 	if noUsefulChainData {
-		syncStalled = true
+		possiblyStalled = true
 	}
 	if peerCount == 0 {
 		status = "no_peers"
 		message = "No peers connected. Reconnecting seeds / addnodes."
 	} else if syncStalled {
 		status = "stalled"
-		message = "Node appears stalled. Reconnecting peers / requesting blocks."
-	}
-	if syncStalled {
-		message = "Node appears stalled. Reconnecting peers / requesting blocks."
+		message = "No height progress for more than three target block intervals while peers are ahead."
 	}
 	return map[string]any{
 		"status":                          status,
@@ -828,7 +968,14 @@ func (s *Server) SyncStatus() map[string]any {
 		"behind":                          behind,
 		"catch_up_pending":                behind || syncingPeerCount > 0,
 		"sync_state":                      status,
-		"blocks_behind":                   max32(0, bestPeerHeight-localHeight),
+		"blocks_behind":                   blocksBehind,
+		"connected_peers":                 peerCount,
+		"sync_peer":                       syncPeer,
+		"sync_peer_height":                syncPeerHeight,
+		"active_syncing_peer_count":       syncingPeerCount,
+		"request_in_flight":               recentSyncRequest,
+		"retry_count":                     health["sync_retry_count"],
+		"peer_rotation_count":             health["sync_peer_rotation_count"],
 		"last_requested_locator_tip_hash": lastLocatorTip,
 		"last_received_block_hash":        lastBlockHash,
 		"last_received_block_prev_hash":   lastBlockPrev,
@@ -838,6 +985,7 @@ func (s *Server) SyncStatus() map[string]any {
 		"last_sync_error":                 lastError,
 		"last_block_reject":               lastReject,
 		"sync_stalled":                    syncStalled,
+		"possibly_stalled":                possiblyStalled,
 		"peer_count":                      peerCount,
 		"stale_peer_count":                stalePeerCount,
 		"syncing_peer_count":              syncingPeerCount,
@@ -847,13 +995,24 @@ func (s *Server) SyncStatus() map[string]any {
 		"watchdog_reconnect_count":        health["watchdog_reconnect_count"],
 		"last_sync_attempt":               health["last_p2p_sync_request_time"],
 		"last_sync_attempt_age":           lastSyncReqAge,
+		"last_request_time":               health["last_p2p_sync_request_time"],
+		"last_progress_time":              health["last_height_change_time"],
+		"last_header_time":                health["last_header_received_time"],
+		"last_block_time":                 health["last_block_received_time"],
 		"last_height_change_age":          lastHeightChangeAge,
+		"last_height_progress_age":        lastHeightChangeAge,
 		"last_header_received_age":        lastHeaderAge,
 		"last_block_received_age":         lastBlockAge,
 		"last_getheaders_sent_age":        health["last_getheaders_sent_ago_seconds"],
 		"last_getblocks_sent_age":         health["last_getblocks_sent_ago_seconds"],
 		"last_peer_message_age":           lastPeerMsgAge,
 		"no_useful_chain_data":            noUsefulChainData,
+		"blocks_announced":                health["blocks_announced"],
+		"block_invs_received":             health["block_invs_received"],
+		"getdata_blocks_received":         health["getdata_blocks_received"],
+		"blocks_served_to_peers":          health["blocks_served_to_peers"],
+		"blocks_requested_from_peers":     health["blocks_requested_from_peers"],
+		"block_request_timeouts":          health["block_request_timeouts"],
 		"health":                          health,
 	}
 }
@@ -996,6 +1155,15 @@ func (s *Server) healthSnapshot() map[string]any {
 	watchdogReconnectCount := s.wdReconnects
 	lastBlockConn := s.lastBlockConn
 	lastHeightChg := s.lastHeightChg
+	lastSyncPeer := s.lastSyncPeer
+	syncRetryCount := s.syncRetryCount
+	syncPeerRotations := s.syncPeerRotations
+	blocksAnnounced := s.blocksAnnounced
+	blockInvsReceived := s.blockInvsReceived
+	getDataBlocksRecv := s.getDataBlocksRecv
+	blocksServed := s.blocksServed
+	blocksRequested := s.blocksRequested
+	blockReqTimeouts := s.blockReqTimeouts
 	s.healthMu.Unlock()
 	return map[string]any{
 		"node_uptime_seconds":                       secondsSince(startedAt),
@@ -1024,6 +1192,15 @@ func (s *Server) healthSnapshot() map[string]any {
 		"last_successful_block_connect_ago_seconds": secondsSince(lastBlockConn),
 		"last_height_change_time":                   unixOrZero(lastHeightChg),
 		"last_height_change_ago_seconds":            secondsSince(lastHeightChg),
+		"last_sync_peer":                            lastSyncPeer,
+		"sync_retry_count":                          syncRetryCount,
+		"sync_peer_rotation_count":                  syncPeerRotations,
+		"blocks_announced":                          blocksAnnounced,
+		"block_invs_received":                       blockInvsReceived,
+		"getdata_blocks_received":                   getDataBlocksRecv,
+		"blocks_served_to_peers":                    blocksServed,
+		"blocks_requested_from_peers":               blocksRequested,
+		"block_request_timeouts":                    blockReqTimeouts,
 	}
 }
 
@@ -1121,9 +1298,11 @@ func (s *Server) AddNode(ctx context.Context, addr string) error {
 		dialer := net.Dialer{Timeout: 15 * time.Second}
 		conn, err := dialer.DialContext(ctx, "tcp", addr)
 		if err != nil {
+			s.markKnownPeerFailure(addr)
 			s.log.Printf("p2p dial %s: %v", addr, err)
 			return
 		}
+		s.markKnownPeerConnected(addr, true)
 		s.log.Printf("p2p dial %s connected", addr)
 		s.handleConn(ctx, conn, true)
 	}()
@@ -1311,8 +1490,12 @@ func (s *Server) watchdogStep(ctx context.Context) {
 	lastHeaderAge, _ := health["last_header_received_ago_seconds"].(float64)
 	lastBlockAge, _ := health["last_block_received_ago_seconds"].(float64)
 
-	stalled := behind && lastHeightChangeAge > syncStaleThreshold.Seconds()
-	candidateNoUsefulData := lastHeaderAge > syncStaleThreshold.Seconds() && lastBlockAge > syncStaleThreshold.Seconds()
+	targetSeconds := chaincfg.TargetSpacing.Seconds()
+	possiblyStalledAfter := 2 * targetSeconds
+	stalledAfter := 3 * targetSeconds
+	possiblyStalled := behind && lastHeightChangeAge > possiblyStalledAfter
+	stalled := behind && lastHeightChangeAge > stalledAfter && (bestPeerHeight-localHeight) > 5
+	candidateNoUsefulData := lastHeaderAge > possiblyStalledAfter && lastBlockAge > possiblyStalledAfter
 
 	reconnected := int64(0)
 	stalePeers := 0
@@ -1342,8 +1525,9 @@ func (s *Server) watchdogStep(ctx context.Context) {
 	noUsefulChainData := candidateNoUsefulData &&
 		(behind || syncingPeers > 0 || stalePeers > 0)
 
+	requested := 0
 	if behind || stalled || noUsefulChainData {
-		s.requestSyncFromAheadPeers(true)
+		requested = s.requestSyncFromAheadPeers(true)
 	}
 	if stalled || noUsefulChainData || reconnected > 0 {
 		s.connectSeeds(ctx)
@@ -1352,9 +1536,11 @@ func (s *Server) watchdogStep(ctx context.Context) {
 
 	switch {
 	case stalled:
-		s.noteWatchdogAction(fmt.Sprintf("node appears stalled; forced sync requests; reconnecting %d stale peer(s)", reconnected))
+		s.noteWatchdogAction(fmt.Sprintf("sync stalled after %.0f minutes without height progress; requested blocks from %d peer(s); reconnecting %d stale peer(s)", lastHeightChangeAge/60, requested, reconnected))
+	case possiblyStalled:
+		s.noteWatchdogAction(fmt.Sprintf("possibly stalled: no height progress for %.0f minutes; requested latest blocks from %d peer(s)", lastHeightChangeAge/60, requested))
 	case behind:
-		s.noteWatchdogAction(fmt.Sprintf("node behind peers by %d block(s); forced getheaders/getblocks to %d syncing peer(s)", bestPeerHeight-localHeight, syncingPeers))
+		s.noteWatchdogAction(fmt.Sprintf("catching up: requested latest blocks from %d peer(s); behind peers by %d block(s)", requested, bestPeerHeight-localHeight))
 	case noUsefulChainData:
 		s.noteWatchdogAction(fmt.Sprintf("no useful chain data for %.0fs; reconnecting %d stale peer(s)", maxFloat(lastHeaderAge, lastBlockAge), reconnected))
 	case stalePeers > 0:
@@ -1364,10 +1550,15 @@ func (s *Server) watchdogStep(ctx context.Context) {
 	}
 }
 
-func (s *Server) requestSyncFromAheadPeers(force bool) {
-	for _, p := range s.snapshotPeers() {
-		_ = s.requestSyncFromPeerIfBehind(p, force)
+func (s *Server) requestSyncFromAheadPeers(force bool) int {
+	peers := s.syncCandidates()
+	requested := 0
+	for _, p := range peers {
+		if err := s.requestSyncFromPeerIfBehind(p, force); err == nil {
+			requested++
+		}
 	}
+	return requested
 }
 
 func (s *Server) requestSyncFromPeerIfBehind(p *peer, force bool) error {
@@ -1401,6 +1592,7 @@ func (s *Server) requestSyncFromPeerIfBehind(p *peer, force bool) error {
 		return nil
 	}
 	s.noteSyncRequest()
+	s.noteSyncPeer(p.remote)
 	if err := s.requestHeaders(p); err != nil {
 		p.setSyncResult(err)
 		return err
@@ -1411,6 +1603,133 @@ func (s *Server) requestSyncFromPeerIfBehind(p *peer, force bool) error {
 	}
 	p.setSyncResult(nil)
 	return nil
+}
+
+func (s *Server) bestSyncPeer() *peer {
+	candidates := s.syncCandidates()
+	if len(candidates) == 0 {
+		return nil
+	}
+	return candidates[0]
+}
+
+func (s *Server) syncCandidates() []*peer {
+	localHeight := int32(-1)
+	if tip := s.chain.Tip(); tip != nil {
+		localHeight = tip.Height
+	}
+	now := time.Now()
+	peers := s.snapshotPeers()
+	candidates := make([]*peer, 0, len(peers))
+	for _, p := range peers {
+		p.lastMu.Lock()
+		height := p.height
+		lastSeen := p.lastSeen
+		lastHeightUpdate := p.lastHeightUpdate
+		lastSyncError := p.lastSyncError
+		p.lastMu.Unlock()
+		if height < 0 {
+			continue
+		}
+		stale := (!lastHeightUpdate.IsZero() && now.Sub(lastHeightUpdate) > peerStaleThreshold) || (!lastSeen.IsZero() && now.Sub(lastSeen) > peerStaleThreshold)
+		if stale && height <= localHeight && lastSyncError != "" {
+			continue
+		}
+		candidates = append(candidates, p)
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		a := candidates[i]
+		b := candidates[j]
+		a.lastMu.Lock()
+		ah := a.height
+		aReq := a.lastSyncRequest
+		aErr := a.lastSyncError != ""
+		aFailures := a.syncFailures
+		aSuccesses := a.syncSuccesses
+		a.lastMu.Unlock()
+		b.lastMu.Lock()
+		bh := b.height
+		bReq := b.lastSyncRequest
+		bErr := b.lastSyncError != ""
+		bFailures := b.syncFailures
+		bSuccesses := b.syncSuccesses
+		b.lastMu.Unlock()
+		if ah != bh {
+			return ah > bh
+		}
+		if aErr != bErr {
+			return !aErr
+		}
+		if aSuccesses != bSuccesses {
+			return aSuccesses > bSuccesses
+		}
+		if aFailures != bFailures {
+			return aFailures < bFailures
+		}
+		if aReq.IsZero() != bReq.IsZero() {
+			return aReq.IsZero()
+		}
+		return aReq.Before(bReq)
+	})
+	if len(candidates) > 3 {
+		return candidates[:3]
+	}
+	return candidates
+}
+
+func (s *Server) noteSyncPeer(addr string) {
+	s.healthMu.Lock()
+	if s.lastSyncPeer != "" && s.lastSyncPeer != addr {
+		s.syncPeerRotations++
+	}
+	s.lastSyncPeer = addr
+	s.syncRetryCount++
+	s.healthMu.Unlock()
+}
+
+func (s *Server) addBlocksRequested(n int) {
+	if n <= 0 {
+		return
+	}
+	s.healthMu.Lock()
+	s.blocksRequested += int64(n)
+	s.healthMu.Unlock()
+}
+
+func (s *Server) addBlocksServed(n int) {
+	if n <= 0 {
+		return
+	}
+	s.healthMu.Lock()
+	s.blocksServed += int64(n)
+	s.healthMu.Unlock()
+}
+
+func (s *Server) addBlockInvsReceived(n int) {
+	if n <= 0 {
+		return
+	}
+	s.healthMu.Lock()
+	s.blockInvsReceived += int64(n)
+	s.healthMu.Unlock()
+}
+
+func (s *Server) addGetDataBlocksReceived(n int) {
+	if n <= 0 {
+		return
+	}
+	s.healthMu.Lock()
+	s.getDataBlocksRecv += int64(n)
+	s.healthMu.Unlock()
+}
+
+func (s *Server) addBlocksAnnounced(n int) {
+	if n <= 0 {
+		return
+	}
+	s.healthMu.Lock()
+	s.blocksAnnounced += int64(n)
+	s.healthMu.Unlock()
 }
 
 func (s *Server) connectSeeds(ctx context.Context) {
@@ -1834,6 +2153,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 			}
 		case wire.CommandBlock:
 			s.noteBlockMessage()
+			p.markBlockReceived()
 			block, err := wire.ReadBlock(bytes.NewReader(msg.Payload))
 			if err != nil {
 				s.log.Printf("p2p parse block from %s: %v", conn.RemoteAddr(), err)
@@ -1906,6 +2226,13 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 				s.log.Printf("p2p parse inv from %s: %v", conn.RemoteAddr(), err)
 				return
 			}
+			blockInvs := 0
+			for _, item := range inv {
+				if item.Type == wire.InvTypeBlock {
+					blockInvs++
+				}
+			}
+			s.addBlockInvsReceived(blockInvs)
 			if err := s.requestUnknownBlocks(p, inv); err != nil {
 				s.log.Printf("p2p request blocks from %s: %v", conn.RemoteAddr(), err)
 				return
@@ -1916,6 +2243,13 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 				s.log.Printf("p2p parse getdata from %s: %v", conn.RemoteAddr(), err)
 				return
 			}
+			blockRequests := 0
+			for _, item := range inv {
+				if item.Type == wire.InvTypeBlock {
+					blockRequests++
+				}
+			}
+			s.addGetDataBlocksReceived(blockRequests)
 			if err := s.serveInventory(p, inv); err != nil {
 				s.log.Printf("p2p serve getdata to %s: %v", conn.RemoteAddr(), err)
 				return
@@ -1952,6 +2286,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 			}
 		case wire.CommandHeaders:
 			s.noteHeaderMessage()
+			p.markHeaderReceived()
 			headers, err := wire.ReadHeadersPayload(bytes.NewReader(msg.Payload))
 			if err != nil {
 				s.log.Printf("p2p parse headers from %s: %v", conn.RemoteAddr(), err)
@@ -1982,6 +2317,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 			if outbound {
 				s.rememberPeerAddress(p.remote, "outbound-handshake")
 			}
+			s.markKnownPeerConnected(p.remote, outbound)
 			if err := s.sendKnownAddresses(p, 32); err != nil {
 				s.log.Printf("p2p send addr to %s: %v", conn.RemoteAddr(), err)
 			}
@@ -2027,9 +2363,42 @@ func (p *peer) setSyncResult(err error) {
 	p.lastSyncRequest = time.Now()
 	if err != nil {
 		p.lastSyncError = err.Error()
+		p.syncFailures++
 	} else {
 		p.lastSyncError = ""
+		p.syncSuccesses++
 	}
+	p.lastMu.Unlock()
+}
+
+func (p *peer) markHeaderReceived() {
+	p.lastMu.Lock()
+	p.lastHeaderRecv = time.Now()
+	p.lastMu.Unlock()
+}
+
+func (p *peer) markBlockReceived() {
+	p.lastMu.Lock()
+	p.lastBlockRecv = time.Now()
+	p.lastMu.Unlock()
+}
+
+func (p *peer) markBlocksRequested(n int) {
+	if n <= 0 {
+		return
+	}
+	p.lastMu.Lock()
+	p.blocksRequested += n
+	p.lastSyncRequest = time.Now()
+	p.lastMu.Unlock()
+}
+
+func (p *peer) markBlocksServed(n int) {
+	if n <= 0 {
+		return
+	}
+	p.lastMu.Lock()
+	p.blocksServed += n
 	p.lastMu.Unlock()
 }
 
@@ -2067,6 +2436,7 @@ func (p *peer) setLastBlockResult(result blockchain.BlockProcessResult) {
 	}
 	if result.Connected && result.BestChanged {
 		p.lastSyncError = ""
+		p.syncSuccesses++
 	}
 	p.lastMu.Unlock()
 }
@@ -2472,12 +2842,21 @@ func (s *Server) requestUnknownBlocks(p *peer, inv []wire.InvVect) error {
 	if err != nil {
 		return err
 	}
+	requestedBlocks := 0
+	for _, item := range want {
+		if item.Type == wire.InvTypeBlock {
+			requestedBlocks++
+		}
+	}
+	p.markBlocksRequested(requestedBlocks)
+	s.addBlocksRequested(requestedBlocks)
 	s.log.Printf("p2p sent getdata for %d inventory items to %s", len(want), p.remote)
 	return s.writePeerMessage(p, wire.CommandGetData, payload)
 }
 
 func (s *Server) serveInventory(p *peer, inv []wire.InvVect) error {
 	inv = limitInv(inv, maxServeInvItems)
+	servedBlocks := 0
 	for _, v := range inv {
 		switch v.Type {
 		case wire.InvTypeBlock:
@@ -2494,6 +2873,7 @@ func (s *Server) serveInventory(p *peer, inv []wire.InvVect) error {
 			if err := s.writePeerMessage(p, wire.CommandBlock, payload); err != nil {
 				return err
 			}
+			servedBlocks++
 			s.log.Printf("p2p sent block %s to %s", v.Hash.String(), p.remote)
 		case wire.InvTypeTx:
 			if s.pool == nil {
@@ -2512,6 +2892,8 @@ func (s *Server) serveInventory(p *peer, inv []wire.InvVect) error {
 			}
 		}
 	}
+	p.markBlocksServed(servedBlocks)
+	s.addBlocksServed(servedBlocks)
 	return nil
 }
 
@@ -2559,6 +2941,7 @@ func (s *Server) announceTip(p *peer) error {
 	if err != nil {
 		return err
 	}
+	s.addBlocksAnnounced(1)
 	return s.writePeerMessage(p, wire.CommandInv, payload)
 }
 
@@ -2583,6 +2966,7 @@ func (s *Server) serveBlockInventory(p *peer, req wire.GetBlocks) error {
 	if err != nil {
 		return err
 	}
+	s.addBlocksAnnounced(len(inv))
 	s.log.Printf("p2p serve %d block inv items to %s", len(inv), p.remote)
 	return s.writePeerMessage(p, wire.CommandInv, payload)
 }
@@ -2633,6 +3017,8 @@ func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error 
 	if err != nil {
 		return err
 	}
+	p.markBlocksRequested(len(want))
+	s.addBlocksRequested(len(want))
 	s.log.Printf("p2p request %d inventory items from %s", len(want), p.remote)
 	return s.writePeerMessage(p, wire.CommandGetData, payload)
 }

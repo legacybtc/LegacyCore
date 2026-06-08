@@ -106,6 +106,7 @@ var rpcHelpEntries = []rpcHelpEntry{
 	{Method: "getblockchaininfo", Usage: "getblockchaininfo", Category: "chain", Description: "Return chain status and sync summary."},
 	{Method: "getnetworkinfo", Usage: "getnetworkinfo", Category: "network", Description: "Return network and connection summary."},
 	{Method: "getpeerinfo", Usage: "getpeerinfo", Category: "network", Description: "Return connected peer diagnostics."},
+	{Method: "getknownpeers", Usage: "getknownpeers", Category: "network", Description: "Return locally cached known-peer diagnostics."},
 	{Method: "getsyncstatus", Usage: "getsyncstatus", Category: "network", Description: "Return sync watchdog and peer sync health."},
 	{Method: "getmempoolinfo", Usage: "getmempoolinfo", Category: "mempool", Description: "Return mempool counters and limits."},
 	{Method: "getrawmempool", Usage: "getrawmempool", Category: "mempool", Description: "Return mempool txid list."},
@@ -120,6 +121,7 @@ var rpcHelpEntries = []rpcHelpEntry{
 	{Method: "gettxout", Usage: "gettxout <txid> <vout>", Category: "tx", Description: "Return UTXO entry for an outpoint."},
 	{Method: "gettxoutsetinfo", Usage: "gettxoutsetinfo", Category: "tx", Description: "Return UTXO set statistics."},
 	{Method: "getblocktemplate", Usage: "getblocktemplate [request_object]", Category: "mining", Description: "Return pool/miner template (BIP22/BIP23 style fields)."},
+	{Method: "getdifficultyhistory", Usage: "getdifficultyhistory [window]", Category: "mining", Description: "Return recent DGW difficulty and solve-time diagnostics."},
 	{Method: "submitblock", Usage: "submitblock <block_hex>", Category: "mining", Description: "Submit a candidate block; null on accepted, reject string otherwise."},
 	{Method: "submitblockdebug", Usage: "submitblockdebug <block_hex>", Category: "mining", Description: "Submit a candidate block and return detailed accept/reject diagnostics."},
 	{Method: "validateblockproposal", Usage: "validateblockproposal <block_hex>", Category: "mining", Description: "Preflight a candidate block without storing it."},
@@ -1703,6 +1705,8 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		return s.startMiner(ctx, params)
 	case "getpeerinfo":
 		return map[string]any{"count": s.p2p.PeerCount(), "outbound": s.p2p.OutboundCount(), "peers": s.p2p.PeerInfos()}, nil
+	case "getknownpeers":
+		return map[string]any{"count": s.p2p.KnownAddressCount(), "known_peers_available": true, "peers": s.p2p.KnownPeerInfos()}, nil
 	case "getsyncstatus":
 		return s.p2p.SyncStatus(), nil
 	case "getconnectioncount":
@@ -1723,11 +1727,14 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		}
 		return map[string]any{"addr": args[0], "disconnected": s.p2p.DisconnectNode(args[0])}, nil
 	case "getnetworkhashps":
-		return s.estimateNetworkHashPS(20), nil
+		return s.estimateNetworkHashPS(rpcWindowParam(params, 100)), nil
 	case "getblockchaininfo":
 		return s.getBlockchainInfo(), nil
 	case "getchaintiming":
-		return s.chainTiming(20), nil
+		return s.chainTiming(100), nil
+	case "getdifficultyhistory":
+		history := s.difficultyHistory(rpcWindowParam(params, 100))
+		return map[string]any{"count": len(history), "history": history}, nil
 	case "doctor":
 		return s.doctor(), nil
 	case "getnewaddress":
@@ -2486,29 +2493,32 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		activeMining := s.minerActive
 		s.minerMu.Unlock()
 		return map[string]any{
-			"version":        version.CoreFull(),
-			"core_version":   version.CoreVersion,
-			"wallet_version": version.WalletVersion,
-			"network":        "mainnet",
-			"chain_id":       s.chain.Params().ChainID,
-			"genesis_hash":   s.chain.Params().GenesisHash,
-			"protocol":       70015,
-			"connections":    s.p2p.PeerCount(),
-			"outbound":       s.p2p.OutboundCount(),
-			"node_role":      s.nodeRole(),
-			"seed_node":      s.policy.SeedNode,
-			"known_peers":    s.p2p.KnownAddressCount(),
-			"mining_safe":    s.p2p.PeerCount() > 0 && storage.OK,
-			"active_mining":  activeMining,
-			"storage_ok":     storage.OK,
-			"port":           s.chain.Params().DefaultPort,
-			"localaddr":      s.p2p.ListenAddr(),
-			"dns_seeds":      len(s.chain.Params().DNSSeeds),
-			"addnodes":       len(s.p2p.BootstrapPeers()),
-			"rpcbind":        rpcBind,
-			"rpcauth":        s.auth.Enabled,
-			"rpctls":         s.bind.TLS,
-			"p2pbind":        p2pBind,
+			"version":               version.CoreFull(),
+			"core_version":          version.CoreVersion,
+			"wallet_version":        version.WalletVersion,
+			"network":               "mainnet",
+			"chain_id":              s.chain.Params().ChainID,
+			"genesis_hash":          s.chain.Params().GenesisHash,
+			"protocol":              70015,
+			"connections":           s.p2p.PeerCount(),
+			"outbound":              s.p2p.OutboundCount(),
+			"node_role":             s.nodeRole(),
+			"seed_node":             s.policy.SeedNode,
+			"known_peers":           s.p2p.KnownAddressCount(),
+			"known_peer_count":      s.p2p.KnownAddressCount(),
+			"known_peers_available": true,
+			"mining_safe":           s.p2p.PeerCount() > 0 && storage.OK,
+			"active_mining":         activeMining,
+			"storage_ok":            storage.OK,
+			"port":                  s.chain.Params().DefaultPort,
+			"localaddr":             s.p2p.ListenAddr(),
+			"dns_seeds":             len(s.chain.Params().DNSSeeds),
+			"addnodes":              len(s.p2p.BootstrapPeers()),
+			"known_peer_samples":    firstStrings(s.p2p.KnownAddresses(), 20),
+			"rpcbind":               rpcBind,
+			"rpcauth":               s.auth.Enabled,
+			"rpctls":                s.bind.TLS,
+			"p2pbind":               p2pBind,
 		}, nil
 	case "getdifficulty":
 		bits, err := s.chain.NextRequiredBits()
@@ -2614,7 +2624,7 @@ func (s *Server) getBlockchainInfo() map[string]any {
 	p := s.chain.Params()
 	tip := s.chain.Tip()
 	storage := s.chain.StorageHealth()
-	timing := s.chainTiming(20)
+	timing := s.chainTiming(100)
 
 	height := int32(-1)
 	best := ""
@@ -2639,7 +2649,13 @@ func (s *Server) getBlockchainInfo() map[string]any {
 		"difficulty_trend":           timing["difficulty_trend"],
 		"target_spacing_seconds":     timing["target_spacing_seconds"],
 		"average_block_time_seconds": timing["average_block_time_seconds"],
-		"networkhashps":              s.estimateNetworkHashPS(20),
+		"networkhashps":              s.estimateNetworkHashPS(100),
+		"known_peers_available":      true,
+		"known_peer_count":           s.p2p.KnownAddressCount(),
+		"known_peer_samples":         firstStrings(s.p2p.KnownAddresses(), 20),
+		"peer_count":                 s.p2p.PeerCount(),
+		"outbound_peer_count":        s.p2p.OutboundCount(),
+		"inbound_peer_count":         s.p2p.PeerCount() - s.p2p.OutboundCount(),
 		"connections":                s.p2p.PeerCount(),
 		"initialblockdownload":       false,
 		"verificationprogress":       1.0,
@@ -4121,6 +4137,24 @@ func (s *Server) estimateNetworkHashPS(window int32) map[string]any {
 	}
 }
 
+func rpcWindowParam(params json.RawMessage, fallback int32) int32 {
+	if fallback <= 0 {
+		fallback = 100
+	}
+	var args []json.RawMessage
+	if len(params) == 0 || json.Unmarshal(params, &args) != nil || len(args) == 0 {
+		return fallback
+	}
+	var window int32
+	if err := json.Unmarshal(args[0], &window); err != nil || window <= 0 {
+		return fallback
+	}
+	if window > 1000 {
+		return 1000
+	}
+	return window
+}
+
 func rpcExpectedHashesForBits(bits uint32) float64 {
 	target := consensus.CompactToBig(bits)
 	if target.Sign() <= 0 {
@@ -4136,6 +4170,58 @@ func (s *Server) chainTiming(window int32) map[string]any {
 	tip := s.chain.Tip()
 	if tip == nil || tip.Height <= 0 {
 		return map[string]any{"height": 0, "target_spacing_seconds": int64(chaincfg.TargetSpacing.Seconds()), "average_block_time_seconds": 0, "genesis_excluded": true}
+	}
+	if window <= 0 {
+		window = 100
+	}
+	primary := s.chainTimingStats(window)
+	last10 := s.chainTimingStats(10)
+	last50 := s.chainTimingStats(50)
+	last100 := s.chainTimingStats(100)
+	bits := ""
+	if tip != nil {
+		bits = fmt.Sprintf("%08x", tip.Bits)
+	}
+	return map[string]any{
+		"height":                         tip.Height,
+		"bestblockhash":                  tip.Hash,
+		"current_bits":                   bits,
+		"current_compact_target":         compactTargetHex(tip.Bits),
+		"target_spacing_seconds":         int64(chaincfg.TargetSpacing.Seconds()),
+		"window_blocks":                  primary["blocks"],
+		"start_height":                   primary["start_height"],
+		"tip_height":                     tip.Height,
+		"total_time_seconds":             primary["total_time_seconds"],
+		"average_block_time_seconds":     primary["average_block_time_seconds"],
+		"average_solve_time_seconds":     primary["average_block_time_seconds"],
+		"fastest_block_seconds":          primary["fastest_block_seconds"],
+		"slowest_block_seconds":          primary["slowest_block_seconds"],
+		"last_10_block_average_seconds":  last10["average_block_time_seconds"],
+		"last_50_block_average_seconds":  last50["average_block_time_seconds"],
+		"last_100_block_average_seconds": last100["average_block_time_seconds"],
+		"last_10":                        last10,
+		"last_50":                        last50,
+		"last_100":                       last100,
+		"windows":                        map[string]any{"10": last10, "50": last50, "100": last100},
+		"last_block_age_seconds":         int64(time.Now().Unix()) - int64(tip.Time),
+		"genesis_excluded":               true,
+		"trend":                          primary["trend"],
+		"difficulty_trend":               primary["trend"],
+		"estimated_next_adjustment":      primary["trend"],
+		"difficulty_history":             s.difficultyHistory(100),
+		"network_hashps":                 s.estimateNetworkHashPS(window),
+		"network_hashps_50":              s.estimateNetworkHashPS(50),
+		"network_hashps_100":             s.estimateNetworkHashPS(100),
+	}
+}
+
+func (s *Server) chainTimingStats(window int32) map[string]any {
+	tip := s.chain.Tip()
+	if tip == nil || tip.Height <= 0 {
+		return map[string]any{"blocks": 0, "average_block_time_seconds": 0.0, "fastest_block_seconds": 0, "slowest_block_seconds": 0, "trend": "near_target", "genesis_excluded": true}
+	}
+	if window <= 0 {
+		window = 100
 	}
 	start := tip.Height - window
 	if start < 1 {
@@ -4158,33 +4244,106 @@ func (s *Server) chainTiming(window int32) map[string]any {
 	if blocks > 0 && totalTime > 0 {
 		avg = float64(totalTime) / float64(blocks)
 	}
-	target := float64(chaincfg.TargetSpacing.Seconds())
-	trend := "stable"
-	if avg > 0 && avg < target*0.8 {
-		trend = "faster_than_target"
-	} else if avg > target*1.2 {
-		trend = "slower_than_target"
-	}
-	bits := ""
-	if tip != nil {
-		bits = fmt.Sprintf("%08x", tip.Bits)
+	fastest := int64(0)
+	slowest := int64(0)
+	for h := start + 1; h <= tip.Height; h++ {
+		prev, prevErr := s.chain.IndexByHeight(h - 1)
+		cur, curErr := s.chain.IndexByHeight(h)
+		if prevErr != nil || curErr != nil {
+			continue
+		}
+		solve := int64(cur.Time) - int64(prev.Time)
+		if solve < 0 {
+			continue
+		}
+		if fastest == 0 || solve < fastest {
+			fastest = solve
+		}
+		if solve > slowest {
+			slowest = solve
+		}
 	}
 	return map[string]any{
-		"height":                     tip.Height,
-		"bestblockhash":              tip.Hash,
-		"current_bits":               bits,
-		"target_spacing_seconds":     int64(chaincfg.TargetSpacing.Seconds()),
-		"window_blocks":              blocks,
+		"requested_window":           window,
+		"blocks":                     blocks,
 		"start_height":               start,
 		"tip_height":                 tip.Height,
 		"total_time_seconds":         totalTime,
 		"average_block_time_seconds": avg,
-		"last_block_age_seconds":     int64(time.Now().Unix()) - int64(tip.Time),
+		"average_solve_time_seconds": avg,
+		"fastest_block_seconds":      fastest,
+		"slowest_block_seconds":      slowest,
+		"target_spacing_seconds":     int64(chaincfg.TargetSpacing.Seconds()),
+		"trend":                      timingTrend(avg),
 		"genesis_excluded":           true,
-		"difficulty_trend":           trend,
-		"estimated_next_adjustment":  trend,
-		"network_hashps":             s.estimateNetworkHashPS(window),
+		"low_hash_variance_note":     "Short windows can look uneven on low-hash PoW; prefer the 100-block average for release decisions.",
 	}
+}
+
+func (s *Server) difficultyHistory(window int32) []map[string]any {
+	tip := s.chain.Tip()
+	if tip == nil || tip.Height <= 0 {
+		return nil
+	}
+	if window <= 0 {
+		window = 100
+	}
+	if window > 500 {
+		window = 500
+	}
+	start := tip.Height - window + 1
+	if start < 1 {
+		start = 1
+	}
+	out := make([]map[string]any, 0, tip.Height-start+1)
+	for h := start; h <= tip.Height; h++ {
+		idx, err := s.chain.IndexByHeight(h)
+		if err != nil {
+			continue
+		}
+		solve := int64(0)
+		direction := "same"
+		became := "same"
+		if h > 0 {
+			prev, prevErr := s.chain.IndexByHeight(h - 1)
+			if prevErr == nil {
+				solve = int64(idx.Time) - int64(prev.Time)
+				prevTarget := consensus.CompactToBig(prev.Bits)
+				curTarget := consensus.CompactToBig(idx.Bits)
+				switch curTarget.Cmp(prevTarget) {
+				case -1:
+					direction = "harder"
+					became = "harder"
+				case 1:
+					direction = "easier"
+					became = "easier"
+				}
+			}
+		}
+		out = append(out, map[string]any{
+			"height":                  idx.Height,
+			"timestamp":               idx.Time,
+			"solve_time_seconds":      solve,
+			"bits":                    fmt.Sprintf("%08x", idx.Bits),
+			"compact_target":          compactTargetHex(idx.Bits),
+			"difficulty_direction":    direction,
+			"difficulty_became":       became,
+			"target_spacing_seconds":  int64(chaincfg.TargetSpacing.Seconds()),
+			"consensus_rules_changed": false,
+		})
+	}
+	return out
+}
+
+func timingTrend(avg float64) string {
+	target := float64(chaincfg.TargetSpacing.Seconds())
+	if avg > 0 && avg < target*0.8 {
+		return "faster_than_target"
+	}
+	if avg > target*1.2 {
+		return "slower_than_target"
+	}
+	return "near_target"
 }
 
 func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady bool) map[string]any {
@@ -4230,7 +4389,7 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 	}
 	estimatedSeconds := float64(0)
 	if localHashPS > 0 {
-		if nh, ok := s.estimateNetworkHashPS(20)["hps"].(float64); ok && nh > 0 {
+		if nh, ok := s.estimateNetworkHashPS(100)["hps"].(float64); ok && nh > 0 {
 			estimatedSeconds = float64(chaincfg.TargetSpacing.Seconds()) * nh / localHashPS
 		}
 	}

@@ -30,9 +30,18 @@ import {
 import "./styles/app.css";
 import {
   buildImmatureRewardSummary,
+  buildWalletSyncState as deriveWalletSyncState,
+  describeSyncWatchdogAction,
   buildMinerDashboardState,
   formatBaseUnitsLBTC,
   formatHumanLBTC as formatDashboardHumanLBTC,
+  knownPeersLabel,
+  normalizePeerRows,
+  peerAddress,
+  peerDirection,
+  peerHeight,
+  peerStatusLabel,
+  syncAlertTone,
 } from "./dashboardLogic";
 
 const legacyLogo = "/legacy-logo.jpg";
@@ -357,6 +366,7 @@ function App() {
 
   const running = Boolean(snap?.node?.running);
   const walletLocked = Boolean(snap?.wallet?.wallet?.locked);
+  const syncView = walletSyncState(snap);
 
   return (
     <main className="appWindow compactMode">
@@ -411,7 +421,7 @@ function App() {
           )}
 
           {snap?.node?.error && <Notice tone="danger" title="Node error" source="node" text={snap.node.error} dismissible={false} />}
-          {snap?.sync?.sync_stalled && <Notice tone="warn" title="Sync status" source="sync" text="Sync appears stalled. Retrying peer sync..." />}
+          {syncView.tone === "bad" && <Notice tone="warn" title="Sync status" source="sync" text={syncView.label === "Stalled" ? "Sync is stalled after an extended timeout. Retrying peer sync..." : syncView.label} />}
           {page}
         </section>
       </div>
@@ -502,9 +512,11 @@ function Overview({
   const mining = snap.mining || {};
   const sync = snap.sync || {};
   const running = Boolean(snap.node?.running);
-  const connectedPeers = Number(chain.peer_count ?? (snap.peers || []).length ?? 0);
+  const peerRows = normalizePeerRows(snap.peers);
+  const syncView = walletSyncState(snap);
+  const connectedPeers = Number(chain.peer_count ?? peerRows.length ?? 0);
   const dnsSeeds = Number((chain.dns_seeds || snap.coin?.dns_seeds || []).length || 0);
-  const knownPeers = chain.known_peers_available ? Number(chain.known_peer_count || 0) : "Unavailable";
+  const knownPeers = knownPeersLabel(chain);
   const immatureSummary = buildImmatureRewardSummary(wallet, chain.height ?? wallet.height);
   const acceptedBlocks = Number(mining.accepted_blocks || 0);
   return (
@@ -524,7 +536,7 @@ function Overview({
         <Metric label="Connected Peers" value={connectedPeers} />
         <Metric label="DNS Seeds" value={dnsSeeds} />
         <Metric label="Known Peers" value={knownPeers} />
-        <Metric label="Sync" value={syncLabel(chain, snap.peers || [])} />
+        <Metric label="Sync" value={syncView.label} />
         <Metric label="Best block" value={chain.bestblockhash || "-"} mono copyable />
         <Metric label="Chain ID" value={snap.coin?.chain_id} mono copyable />
         <Metric label="Version" value={snap.coin?.version} />
@@ -548,7 +560,7 @@ function Overview({
           <div><span>Connected peers</span><strong>{connectedPeers}</strong></div>
           <div><span>DNS seeds</span><strong>{dnsSeeds}</strong></div>
           <div><span>Network</span><strong>Legacy Coin Mainnet</strong></div>
-          <div><span>Sync Progress</span><strong>{syncLabel(chain, snap.peers || [])}</strong></div>
+          <div><span>Sync Progress</span><strong>{syncView.label}</strong></div>
         </div>
       </section>
       <section className="panel">
@@ -588,11 +600,11 @@ function Overview({
         {portConflict && !running && <Notice tone="warn" title="RPC port status" source="node-port" text={portConflict} />}
         {snap?.node?.last_start_error && <p className="muted">Last start error: {snap.node.last_start_error}</p>}
       </section>
-      {sync.behind && (
+      {syncView.status !== "synced" && syncView.status !== "offline" && (
         <Notice
-          tone="warn"
+          tone={syncAlertTone(syncView)}
           source="sync"
-          text={`${sync.message || "Node is behind peers. Waiting for blocks / requesting blocks."} Local height ${sync.local_height}; best peer height ${sync.best_peer_height}. ${sync.last_block_reject ? `Last reject: ${sync.last_block_reject}` : sync.last_sync_error ? `Last sync error: ${sync.last_sync_error}` : ""}`}
+          text={`${syncView.message} Local height ${sync.local_height ?? syncView.localHeight}; best peer height ${sync.best_peer_height ?? syncView.bestPeerHeight}. ${sync.last_block_reject ? `Last reject: ${sync.last_block_reject}` : sync.last_sync_error ? `Last sync error: ${sync.last_sync_error}` : ""}`}
         />
       )}
       <div className="twoCol">
@@ -1204,6 +1216,7 @@ function ExplorerPage({ snap, run, refresh }: PageProps) {
 
   const summary = snap.explorer || {};
   const supply = summary.supply || snap.supply || {};
+  const timing = snap.chain_timing || {};
 
   async function rpcCall(command: string): Promise<any> {
     const response = await api().RunRPCCommand(command);
@@ -1471,10 +1484,15 @@ function ExplorerPage({ snap, run, refresh }: PageProps) {
         <Metric label="Bits" value={summary.current_bits || snap.blockchain?.current_bits || "-"} />
         <Metric label="Mempool" value={mempool?.count ?? summary.mempool_count ?? 0} />
         <Metric label="Avg block time" value={seconds(summary.average_block_time)} />
+        <Metric label="10-block avg" value={seconds(timing.last_10_block_average_seconds)} />
+        <Metric label="50-block avg" value={seconds(timing.last_50_block_average_seconds)} />
+        <Metric label="100-block avg" value={seconds(timing.last_100_block_average_seconds)} />
+        <Metric label="Target" value={seconds(timing.target_spacing_seconds || 600)} />
         <Metric label="Network KH/s" value={networkHashLabel(summary.network_hashps)} />
         <Metric label="Tx index" value={snap.blockchain?.txindex?.enabled ? "Enabled" : "Disabled"} />
         <Metric label="Address index" value={snap.blockchain?.addressindex?.enabled ? "Enabled" : "Disabled"} />
       </div>
+      {timingWarning(timing) && <Notice tone="warn" text={timingWarning(timing)} />}
       <div className="explorerTopGrid">
         <section className="panel explorerSearch">
           <h3>Local Explorer</h3>
@@ -1922,7 +1940,7 @@ function MiningPage({ snap, run }: PageProps) {
 }
 
 function NetworkPage({ snap, run, refresh }: PageProps) {
-  const peers = snap.peers || [];
+  const peers = normalizePeerRows(snap.peers);
   const peerRows = peers.slice(0, 200);
   const chain = snap.blockchain || {};
   const sync = snap.sync || {};
@@ -1934,8 +1952,11 @@ function NetworkPage({ snap, run, refresh }: PageProps) {
   const inbound = Number(chain.inbound_peer_count ?? Math.max(0, peers.length - outbound));
   const wrongChain = peers.filter((p: Dict) => p.chain_id && p.chain_id !== snap.coin?.chain_id);
   const netHash = networkHashLabel(snap.chain_timing?.network_hashps);
-  const knownPeers = chain.known_peers_available ? Number(chain.known_peer_count || 0) : 0;
+  const timing = snap.chain_timing || {};
+  const knownPeers = knownPeersLabel(chain);
   const state = walletSyncState(snap);
+  const watchdogAction = describeSyncWatchdogAction(sync.watchdog_last_action || health.watchdog_last_action, state);
+  const showSyncAlert = state.status !== "synced" && state.status !== "offline";
   const networkSettings = snap.settings?.network || { mode: "automatic", nodes: [] };
   async function reconnect() {
     await run("Reconnect seeds", () => api().ReconnectPeers());
@@ -1963,10 +1984,14 @@ function NetworkPage({ snap, run, refresh }: PageProps) {
       <div className="networkStatusStrip">
         <Metric label="Connected peers" value={peers.length} />
         <Metric label="DNS seeds configured" value={dnsSeeds.length} />
-        <Metric label="Known peers" value={chain.known_peers_available ? knownPeers : "Unavailable"} />
+        <Metric label="Known peers" value={knownPeers} />
         <Metric label="Sync" value={state.label} />
         <Metric label="Height" value={chain.height ?? "-"} />
         <Metric label="Network KH/s" value={netHash} />
+        <Metric label="10-block avg" value={seconds(timing.last_10_block_average_seconds)} />
+        <Metric label="50-block avg" value={seconds(timing.last_50_block_average_seconds)} />
+        <Metric label="100-block avg" value={seconds(timing.last_100_block_average_seconds)} />
+        <Metric label="Target" value={seconds(timing.target_spacing_seconds || 600)} />
         <Metric label="Inbound / Outbound" value={`${inbound} / ${outbound}`} />
       </div>
 
@@ -1974,6 +1999,7 @@ function NetworkPage({ snap, run, refresh }: PageProps) {
         <span>This wallet is directly connected to {peers.length} node{peers.length === 1 ? "" : "s"}. DNS seeds are bootstrap domains, not live peers.</span>
         <span>Connected peers come from getpeerinfo/getnetworkinfo. Global node counts require crawler infrastructure.</span>
       </section>
+      {timingWarning(timing) && <Notice tone="warn" text={timingWarning(timing)} />}
 
       <div className="networkActionRow">
         <button onClick={async () => { await run("Refresh network", () => api().ForcePeerSync()); await refresh(); }}>Refresh</button>
@@ -1983,13 +2009,13 @@ function NetworkPage({ snap, run, refresh }: PageProps) {
         <button onClick={() => setNodeInput("Open P2P port 19555; never expose RPC 19556")}>Port 19555 help</button>
       </div>
 
-      {(sync.behind || sync.sync_stalled || peers.length === 0 || wrongChain.length > 0) && (
+      {(showSyncAlert || peers.length === 0 || wrongChain.length > 0 || watchdogAction) && (
         <div className="networkAlerts">
-          {sync.behind && <Notice tone="warn" text={sync.message || "Node is behind peers. Waiting for blocks / requesting blocks."} />}
-          {sync.sync_stalled && <Notice tone="danger" text="Sync appears stalled. Refresh or Reconnect seeds forces another peer sync request." />}
+          {showSyncAlert && <Notice tone={syncAlertTone(state)} text={state.message || sync.message || "Catching up to peers."} />}
+          {state.status === "stalled" && <Notice tone="danger" text="Sync is stalled after an extended timeout. Refresh or Reconnect seeds forces another peer sync request." />}
           {peers.length === 0 && <Notice tone="danger" text="No direct P2P connections. Reconnect seeds or add a manual node." />}
           {wrongChain.length > 0 && <Notice tone="danger" text={`${wrongChain.length} peer(s) reported a different chain ID. Disconnect unknown nodes and use the default RC2 seeds.`} />}
-          {sync.watchdog_last_action && <Notice tone={sync.sync_stalled ? "danger" : "info"} text={`Sync watchdog: ${String(sync.watchdog_last_action)}`} />}
+          {watchdogAction && <Notice tone={state.status === "stalled" ? "danger" : "info"} text={`Sync watchdog: ${watchdogAction}`} />}
         </div>
       )}
 
@@ -2002,13 +2028,13 @@ function NetworkPage({ snap, run, refresh }: PageProps) {
           <div className="tr head"><span>Address</span><span>Type</span><span>Direction</span><span>Ping</span><span>Height</span><span>Status</span><span>Connected</span></div>
           {peers.length === 0 && <p className="muted">No peers connected yet. The node is still usable locally while it looks for peers.</p>}
           {peerRows.map((p: Dict, i: number) => (
-            <div className="tr" key={`${p.addr}-${i}`}>
-              <span className="mono"><CopyableValue value={p.addr || "-"} /></span>
+            <div className="tr" key={`${peerAddress(p)}-${i}`}>
+              <span className="mono"><CopyableValue value={peerAddress(p)} /></span>
               <span>{peerType(p, dnsSeeds, addnodes)}</span>
-              <span>{p.direction || p.connection_type || "-"}</span>
+              <span>{peerDirection(p)}</span>
               <span>{p.last_ping_ms ? `${Number(p.last_ping_ms).toFixed(1)} ms` : "-"}</span>
-              <span>{p.synced_blocks ?? p.starting_height ?? "-"}</span>
-              <span className={`peerStatus ${p.peer_status_tone || "good"}`}>{peerStatusText(p, chain)}</span>
+              <span>{peerHeight(p) || "-"}</span>
+              <span className={`peerStatus ${p.peer_status_tone || "good"}`}>{peerStatusLabel(p, chain)}</span>
               <span>{seconds(p.connected_for_seconds)}</span>
             </div>
           ))}
@@ -2028,7 +2054,7 @@ function NetworkPage({ snap, run, refresh }: PageProps) {
         <details className="advanced">
           <summary>Known peers</summary>
           <InfoPanel title="Known peers" rows={[
-            ["Known peers cached", chain.known_peers_available ? chain.known_peer_count : "Unavailable"],
+            ["Known peers cached", knownPeers],
             ["Total network nodes", "Unavailable without crawler support"],
             ["Crawler support", "Not enabled in wallet"],
           ]} flush />
@@ -2047,21 +2073,26 @@ function NetworkPage({ snap, run, refresh }: PageProps) {
             <Metric label="Last getheaders sent" value={seconds(sync.last_getheaders_sent_age ?? health.last_getheaders_sent_ago_seconds)} />
             <Metric label="Last getblocks sent" value={seconds(sync.last_getblocks_sent_age ?? health.last_getblocks_sent_ago_seconds)} />
             <Metric label="Syncing peers" value={sync.syncing_peer_count ?? 0} />
+            <Metric label="Active syncing peers" value={sync.active_syncing_peer_count ?? sync.syncing_peer_count ?? 0} />
+            <Metric label="Best peer height" value={sync.best_peer_height ?? chain.best_peer_height ?? "-"} />
+            <Metric label="Blocks behind" value={sync.blocks_behind ?? chain.blocks_behind ?? 0} />
+            <Metric label="Sync peer" value={sync.sync_peer || health.last_sync_peer || "-"} />
             <Metric label="Stale peers" value={sync.stale_peer_count ?? 0} />
             <Metric label="Last block connected" value={seconds(health.last_successful_block_connect_ago_seconds)} />
             <Metric label="Last height change" value={seconds(health.last_height_change_ago_seconds)} />
+            <Metric label="Last sync error" value={sync.last_sync_error || "-"} />
             <Metric label="Watchdog reconnects" value={sync.watchdog_reconnect_count ?? health.watchdog_reconnect_count ?? 0} />
             <Metric label="Last watchdog tick" value={seconds(health.last_watchdog_tick_ago_seconds)} />
             <Metric label="Last UI poll" value={dateTime(chain.ui_last_rpc_poll_time)} />
           </div>
-          <p className="muted compactNote">Last watchdog action: {sync.watchdog_last_action || health.watchdog_last_action || "-"}</p>
+          <p className="muted compactNote">Last watchdog action: {watchdogAction || "-"}</p>
         </details>
         <details className="advanced advancedOnly">
           <summary>Advanced peer diagnostics</summary>
           <div className="advancedPeerList">
             {peers.map((p: Dict, i: number) => (
               <div className="peerDiag" key={`${p.addr}-diag-${i}`}>
-                <strong className="mono"><CopyableValue value={p.addr || "-"} /></strong>
+                <strong className="mono"><CopyableValue value={peerAddress(p)} /></strong>
                 <span>Chain ID: {p.chain_id || "-"}</span>
                 <span>Last block: {p.last_received_block_hash ? `${shortenMiddle(p.last_received_block_hash)} / ${p.last_block_status || "-"}` : "-"}</span>
                 <span>Last metadata update: {seconds(p.last_peer_metadata_update_ago_seconds ?? p.last_height_update_ago_seconds)}</span>
@@ -2173,6 +2204,10 @@ function DiagnosticsPage({ snap, run }: PageProps) {
           ["Storage", storage?.ok ?? storage?.OK ?? snap.mining?.storage?.OK ?? "-"],
           ["Data directory", snap.node?.data_dir || snap.settings?.dataDir],
           ["Average block time", seconds(timing?.average_block_time_seconds)],
+          ["10-block average", seconds(timing?.last_10_block_average_seconds)],
+          ["50-block average", seconds(timing?.last_50_block_average_seconds)],
+          ["100-block average", seconds(timing?.last_100_block_average_seconds)],
+          ["Target block time", seconds(timing?.target_spacing_seconds || 600)],
           ["Network hash estimate", networkHashLabel(timing?.network_hashps)],
         ]} />
       </div>
@@ -2743,25 +2778,8 @@ function StatusBarClassic({ snap }: { snap: Dict | null }) {
   );
 }
 
-function walletSyncState(snap: Dict | null): { label: string; tone: "good" | "warn" | "bad" | "idle" } {
-  if (!snap?.node?.running) return { label: "Node stopped", tone: "idle" };
-  const peers = Number(snap?.blockchain?.peer_count ?? (snap?.peers || []).length ?? 0);
-  const sync = snap?.sync || {};
-  const syncStatus = String(sync.status || "").toLowerCase();
-  if (syncStatus === "no_peers") return { label: "No peers", tone: "bad" };
-  if (syncStatus === "stalled") return { label: "Stalled", tone: "bad" };
-  if (syncStatus === "syncing" || syncStatus === "behind") {
-    const behind = Number(sync.blocks_behind || 0);
-    return { label: behind > 0 ? `Behind ${behind} blocks` : "Syncing", tone: "warn" };
-  }
-  if (syncStatus === "current") return { label: "Synced", tone: "good" };
-  if (peers === 0) return { label: "No peers", tone: "bad" };
-  if (sync.sync_stalled) return { label: "Stalled", tone: "bad" };
-  if (sync.behind) {
-    const behind = Number(sync.blocks_behind || 0);
-    return { label: behind > 0 ? `Behind ${behind} blocks` : "Syncing", tone: "warn" };
-  }
-  return { label: "Synced", tone: "good" };
+function walletSyncState(snap: Dict | null) {
+  return deriveWalletSyncState(snap);
 }
 
 function Metric({ label, value, mono, icon, copyable }: { label: string; value: any; mono?: boolean; icon?: React.ReactNode; copyable?: boolean }) {
@@ -3022,6 +3040,16 @@ function fmtNumber(v: any) {
 function networkHashLabel(v: any) {
   const info = networkHashDiagnostics(v);
   return info.primaryLabel;
+}
+
+function timingWarning(timing: Dict) {
+  const avg100 = Number(timing?.last_100_block_average_seconds || 0);
+  const target = Number(timing?.target_spacing_seconds || 600);
+  if (!Number.isFinite(avg100) || avg100 <= 0 || !Number.isFinite(target) || target <= 0) return "";
+  if (avg100 < target * 0.5 || avg100 > target * 1.5) {
+    return `100-block average is ${seconds(avg100)} versus target ${seconds(target)}. Treat this as a release-gating timing diagnostic; DGW consensus was not changed.`;
+  }
+  return "";
 }
 
 function friendlyNetworkSource(source: string) {

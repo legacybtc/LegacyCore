@@ -453,8 +453,8 @@ func TestSyncStatusReportsPeerAheadCatchUpPending(t *testing.T) {
 	s.registerPeer(p)
 
 	status := s.SyncStatus()
-	if status["sync_state"] != "syncing" {
-		t.Fatalf("sync_state=%v want syncing", status["sync_state"])
+	if status["sync_state"] != "requesting_blocks" {
+		t.Fatalf("sync_state=%v want requesting_blocks", status["sync_state"])
 	}
 	if status["catch_up_pending"] != true {
 		t.Fatalf("catch_up_pending=%v want true", status["catch_up_pending"])

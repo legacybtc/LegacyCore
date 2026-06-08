@@ -2,9 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 const {
+  buildWalletSyncState,
   buildImmatureRewardSummary,
   buildMinerDashboardState,
+  describeSyncWatchdogAction,
   formatBaseUnitsLBTC,
+  knownPeersLabel,
+  normalizePeerRows,
+  peerAddress,
+  peerDirection,
+  peerHeight,
+  peerStatusLabel,
 } = await import("../.dashboard-test/dashboardLogic.js");
 
 const overnightWalletSummary = {
@@ -200,4 +208,82 @@ test("external payout mode is explicit and clearly labelled", () => {
   assert.equal(state.externalPayoutMode, true);
   assert.equal(state.payoutOwnershipLabel, "external payout mode");
   assert.match(state.payoutWarning, /External payout mode/);
+});
+
+function syncSnap(overrides = {}) {
+  const localHeight = overrides.localHeight ?? 2704;
+  const bestPeerHeight = overrides.bestPeerHeight ?? localHeight + 2;
+  const peers = Array.from({ length: overrides.peerCount ?? 5 }, (_, i) => ({
+    addr: `127.0.0.${i + 1}:19555`,
+    direction: "outbound",
+    synced_blocks: bestPeerHeight,
+    last_ping_ms: 12.5 + i,
+  }));
+  return {
+    node: { running: true },
+    blockchain: {
+      height: localHeight,
+      peer_count: peers.length,
+      target_spacing_seconds: 600,
+    },
+    peers,
+    sync: {
+      local_height: localHeight,
+      best_peer_height: bestPeerHeight,
+      blocks_behind: bestPeerHeight - localHeight,
+      peer_count: peers.length,
+      active_syncing_peer_count: overrides.activeSyncingPeerCount ?? 1,
+      last_height_progress_age: overrides.lastHeightProgressAge ?? 120,
+      target_spacing_seconds: 600,
+      request_in_flight: overrides.requestInFlight ?? false,
+      ...(overrides.sync || {}),
+    },
+  };
+}
+
+test("behind by two blocks with recent progress catches up, not stalled", () => {
+  const state = buildWalletSyncState(syncSnap({ lastHeightProgressAge: 120 }));
+  assert.equal(state.status, "catching_up");
+  assert.equal(state.blocksBehind, 2);
+  assert.notEqual(state.status, "stalled");
+});
+
+test("behind by two blocks under timeout is still catching up", () => {
+  const state = buildWalletSyncState(syncSnap({ lastHeightProgressAge: 900 }));
+  assert.equal(state.status, "catching_up");
+});
+
+test("behind by two blocks over soft timeout is possibly stalled", () => {
+  const state = buildWalletSyncState(syncSnap({ lastHeightProgressAge: 1500 }));
+  assert.equal(state.status, "possibly_stalled");
+});
+
+test("larger lag over hard timeout is stalled", () => {
+  const state = buildWalletSyncState(syncSnap({ bestPeerHeight: 2712, lastHeightProgressAge: 1900 }));
+  assert.equal(state.status, "stalled");
+});
+
+test("active sync request is requesting_blocks, not stalled", () => {
+  const state = buildWalletSyncState(syncSnap({ requestInFlight: true, lastHeightProgressAge: 120 }));
+  assert.equal(state.status, "requesting_blocks");
+  assert.match(state.message, /Requesting latest blocks/);
+});
+
+test("getpeerinfo map payload renders peer rows", () => {
+  const rows = normalizePeerRows({ peers: [{ address: "10.0.0.2:19555", outbound: true, reported_height: 2706 }] });
+  assert.equal(rows.length, 1);
+  assert.equal(peerAddress(rows[0]), "10.0.0.2:19555");
+  assert.equal(peerDirection(rows[0]), "outbound");
+  assert.equal(peerHeight(rows[0]), 2706);
+  assert.equal(peerStatusLabel(rows[0], { height: 2704 }), "requesting");
+});
+
+test("known peers unavailable wording is non-scary", () => {
+  assert.equal(knownPeersLabel({ known_peers_available: false }), "not reported by this node");
+});
+
+test("watchdog action wording is softened while catching up", () => {
+  const state = buildWalletSyncState(syncSnap({ requestInFlight: true }));
+  const text = describeSyncWatchdogAction("node behind peers by 2 block(s); forced getheaders/getblocks to 1 syncing peer(s)", state);
+  assert.equal(text, "Catching up: requested latest blocks from 1 peer; behind peers by 2 blocks.");
 });

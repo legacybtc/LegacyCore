@@ -65,6 +65,19 @@ export type MinerDashboardState = {
   activityThreadsLabel: string;
 };
 
+export type WalletSyncView = {
+  status: "synced" | "catching_up" | "requesting_blocks" | "possibly_stalled" | "stalled" | "no_peers" | "offline";
+  label: string;
+  tone: "good" | "warn" | "bad" | "idle";
+  message: string;
+  blocksBehind: number;
+  peerCount: number;
+  bestPeerHeight: number;
+  localHeight: number;
+  lastHeightProgressAge: number;
+  activeSyncingPeerCount: number;
+};
+
 export function formatHumanLBTC(v: any): string {
   const raw = String(v ?? "0").replace(/,/g, "").replace(/\s*LBTC$/i, "").trim();
   const n = Number(raw || 0);
@@ -120,6 +133,166 @@ export function buildImmatureRewardSummary(wallet: DashboardDict = {}, chainHeig
     note: cleanString(wallet.note) || "Coinbase rewards require 100 confirmations before spending.",
     outputs,
   };
+}
+
+export function normalizePeerRows(raw: any): DashboardDict[] {
+  const rows: any[] = Array.isArray(raw)
+    ? raw
+    : Array.isArray(raw?.peers)
+      ? raw.peers
+      : Array.isArray(raw?.result)
+        ? raw.result
+        : Array.isArray(raw?.result?.peers)
+          ? raw.result.peers
+          : [];
+  return rows
+    .filter((row: any) => row && typeof row === "object")
+    .map((row: any) => ({ ...row }));
+}
+
+export function knownPeersLabel(chain: DashboardDict = {}): string {
+  return boolValue(chain.known_peers_available) ? String(safeNumber(chain.known_peer_count, 0)) : "not reported by this node";
+}
+
+export function buildWalletSyncState(snap: DashboardDict | null): WalletSyncView {
+  if (!snap?.node?.running) {
+    return emptySyncView("offline", "Node stopped", "idle", "Node is not running.");
+  }
+  const sync = snap?.sync || {};
+  const chain = snap?.blockchain || {};
+  const peers = normalizePeerRows(snap?.peers);
+  const peerCount = safeNumber(sync.peer_count ?? chain.peer_count ?? peers.length, 0);
+  if (peerCount === 0 || cleanString(sync.status).toLowerCase() === "no_peers") {
+    return {
+      ...emptySyncView("no_peers", "No peers", "bad", "No direct P2P connections. Reconnect seeds or add a manual node."),
+      peerCount,
+    };
+  }
+
+  const localHeight = safeNumber(sync.local_height ?? chain.height, 0);
+  const bestPeerHeight = safeNumber(sync.best_peer_height ?? sync.peer_reported_height ?? maxPeerHeight(peers, localHeight), localHeight);
+  const blocksBehind = Math.max(0, safeNumber(sync.blocks_behind, bestPeerHeight - localHeight));
+  const targetSpacing = Math.max(60, safeNumber(sync.target_spacing_seconds ?? chain.target_spacing_seconds, 600));
+  const possiblyStalledAfter = targetSpacing * 2;
+  const stalledAfter = targetSpacing * 3;
+  const lastHeightProgressAge = firstNonNegative(
+    sync.last_height_progress_age,
+    sync.last_height_change_age,
+    sync.health?.last_height_change_ago_seconds,
+    sync.health?.last_successful_block_connect_ago_seconds,
+  );
+  const activeSyncingPeerCount = safeNumber(sync.active_syncing_peer_count ?? sync.syncing_peer_count, 0);
+  const requestInFlight = boolValue(sync.request_in_flight) || cleanString(sync.status).toLowerCase() === "requesting_blocks";
+  const lastSyncError = cleanString(sync.last_sync_error);
+  const repeatedFailureHint = boolValue(sync.repeated_sync_failures) || (boolValue(sync.no_useful_chain_data) && Boolean(lastSyncError));
+
+  if (blocksBehind <= 1) {
+    return {
+      status: "synced",
+      label: "Synced",
+      tone: "good",
+      message: "Local node is at or within one block of connected peers.",
+      blocksBehind,
+      peerCount,
+      bestPeerHeight,
+      localHeight,
+      lastHeightProgressAge,
+      activeSyncingPeerCount,
+    };
+  }
+
+  if (lastHeightProgressAge > stalledAfter && (blocksBehind > 5 || repeatedFailureHint)) {
+    return {
+      status: "stalled",
+      label: "Stalled",
+      tone: "bad",
+      message: `No height progress for ${Math.round(lastHeightProgressAge / 60)} minutes while peers are ${blocksBehind} blocks ahead.`,
+      blocksBehind,
+      peerCount,
+      bestPeerHeight,
+      localHeight,
+      lastHeightProgressAge,
+      activeSyncingPeerCount,
+    };
+  }
+
+  if (lastHeightProgressAge > possiblyStalledAfter) {
+    return {
+      status: "possibly_stalled",
+      label: "Possibly stalled",
+      tone: "warn",
+      message: `Still catching up, but height has not advanced for ${Math.round(lastHeightProgressAge / 60)} minutes.`,
+      blocksBehind,
+      peerCount,
+      bestPeerHeight,
+      localHeight,
+      lastHeightProgressAge,
+      activeSyncingPeerCount,
+    };
+  }
+
+  const status = requestInFlight ? "requesting_blocks" : "catching_up";
+  return {
+    status,
+    label: requestInFlight ? `Requesting blocks (${blocksBehind} behind)` : `Catching up (${blocksBehind} blocks behind)`,
+    tone: "warn",
+    message: requestInFlight
+      ? `Requesting latest blocks from connected peers. Behind peers by ${blocksBehind} block${blocksBehind === 1 ? "" : "s"}.`
+      : `Catching up to peers. Behind peers by ${blocksBehind} block${blocksBehind === 1 ? "" : "s"}.`,
+    blocksBehind,
+    peerCount,
+    bestPeerHeight,
+    localHeight,
+    lastHeightProgressAge,
+    activeSyncingPeerCount,
+  };
+}
+
+export function syncAlertTone(state: WalletSyncView): "info" | "warn" | "danger" | "success" {
+  if (state.status === "stalled" || state.status === "no_peers") return "danger";
+  if (state.status === "possibly_stalled" || state.status === "catching_up" || state.status === "requesting_blocks") return "warn";
+  if (state.status === "synced") return "success";
+  return "info";
+}
+
+export function describeSyncWatchdogAction(action: any, state?: WalletSyncView): string {
+  const raw = cleanString(action);
+  if (!raw) return "";
+  const behindMatch = raw.match(/node behind peers by (\d+) block\(s\); forced getheaders\/getblocks to (\d+) syncing peer\(s\)/i);
+  if (behindMatch) {
+    const blocks = Number(behindMatch[1]);
+    const peers = Number(behindMatch[2]);
+    return `Catching up: requested latest blocks from ${peers} peer${peers === 1 ? "" : "s"}; behind peers by ${blocks} block${blocks === 1 ? "" : "s"}.`;
+  }
+  if (state && state.status !== "stalled" && /node appears stalled/i.test(raw)) {
+    return "Catching up: requesting latest blocks from connected peers.";
+  }
+  return raw;
+}
+
+export function peerAddress(peer: DashboardDict): string {
+  return cleanString(peer.addr ?? peer.address ?? peer.remote ?? peer.endpoint) || "-";
+}
+
+export function peerDirection(peer: DashboardDict): string {
+  return cleanString(peer.direction ?? peer.connection_type) || (boolValue(peer.outbound) ? "outbound" : "-");
+}
+
+export function peerHeight(peer: DashboardDict): number {
+  return safeNumber(peer.synced_blocks ?? peer.reported_height ?? peer.starting_height, 0);
+}
+
+export function peerStatusLabel(peer: DashboardDict, chain: DashboardDict = {}): string {
+  if (peer.peer_status) return String(peer.peer_status);
+  if (peer.last_block_reject) return "block rejected";
+  if (peer.last_sync_error) return "sync error";
+  const local = safeNumber(chain.height, 0);
+  const height = peerHeight(peer);
+  const heightAge = safeNumber(peer.last_height_update_ago_seconds ?? peer.last_peer_metadata_update_ago_seconds, 0);
+  if (height > 0 && height < local) return "peer behind local node";
+  if (heightAge >= 900) return "stale peer metadata";
+  if (height > local) return "requesting";
+  return "ok";
 }
 
 export function buildMinerDashboardState(mining: DashboardDict = {}, wallet: DashboardDict = {}): MinerDashboardState {
@@ -261,6 +434,33 @@ function nullableNumber(v: any): number | null {
   const n = Number(v);
   if (!Number.isFinite(n) || n < 0) return null;
   return n;
+}
+
+function emptySyncView(status: WalletSyncView["status"], label: string, tone: WalletSyncView["tone"], message: string): WalletSyncView {
+  return {
+    status,
+    label,
+    tone,
+    message,
+    blocksBehind: 0,
+    peerCount: 0,
+    bestPeerHeight: 0,
+    localHeight: 0,
+    lastHeightProgressAge: -1,
+    activeSyncingPeerCount: 0,
+  };
+}
+
+function maxPeerHeight(peers: DashboardDict[], fallback: number): number {
+  return peers.reduce((best, peer) => Math.max(best, peerHeight(peer)), fallback);
+}
+
+function firstNonNegative(...values: any[]): number {
+  for (const value of values) {
+    const n = Number(value);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  return -1;
 }
 
 function safeNumber(v: any, fallback = 0): number {
