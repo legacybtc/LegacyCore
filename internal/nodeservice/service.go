@@ -804,6 +804,7 @@ func (s *Service) GetBlockchainInfo() (map[string]any, error) {
 	}
 	syncStatus := n.P2P().SyncStatus()
 	syncHealth, _ := syncStatus["health"].(map[string]any)
+	indexCfg, _ := config.LoadIndexConfig(filepath.Join(s.dataDir, config.ConfigFile))
 	return map[string]any{
 		"height":                 height,
 		"blocks":                 height,
@@ -820,6 +821,8 @@ func (s *Service) GetBlockchainInfo() (map[string]any, error) {
 		"total_network_note":     "Total network nodes require crawler support. This wallet only knows active peer connections.",
 		"mempool_size":           n.Mempool().Count(),
 		"mempool_orphans":        n.Mempool().OrphanCount(),
+		"txindex":                map[string]any{"enabled": indexCfg.TxIndex, "status": map[bool]string{true: "enabled", false: "disabled"}[indexCfg.TxIndex]},
+		"addressindex":           map[string]any{"enabled": indexCfg.AddressIndex, "status": map[bool]string{true: "enabled", false: "disabled"}[indexCfg.AddressIndex]},
 		"current_bits":           bits,
 		"next_required_bits":     fmt.Sprintf("%08x", nextBits),
 		"target_spacing_seconds": int64(chaincfg.TargetSpacing.Seconds()),
@@ -849,6 +852,13 @@ func (s *Service) GetWalletSummary() (map[string]any, error) {
 	var confirmedSpendable, safePendingChange, immature, locked int64
 	var lockedPendingOutgoing, lockedPendingChange, unsafePendingChange, chainDepthLimited, pendingExternalIncoming int64
 	lockedOutputs := make([]map[string]any, 0)
+	immatureOutputs := make([]map[string]any, 0)
+	spendableOutputs := make([]map[string]any, 0)
+	nextMaturityHeight := int32(0)
+	currentHeight := int32(-1)
+	if tip := n.Chain().Tip(); tip != nil {
+		currentHeight = tip.Height
+	}
 	for _, u := range unspent {
 		if u.Locked {
 			locked += u.Value
@@ -875,21 +885,92 @@ func (s *Service) GetWalletSummary() (map[string]any, error) {
 			})
 		} else if u.Coinbase && u.Confirmations < int32(chaincfg.CoinbaseMaturity) {
 			immature += u.Value
+			maturesAt := u.Height + int32(chaincfg.CoinbaseMaturity)
+			blocksRemaining := int32(0)
+			if currentHeight >= 0 && maturesAt > currentHeight {
+				blocksRemaining = maturesAt - currentHeight
+			}
+			if nextMaturityHeight == 0 || maturesAt < nextMaturityHeight {
+				nextMaturityHeight = maturesAt
+			}
+			immatureOutputs = append(immatureOutputs, map[string]any{
+				"txid":             u.TxID,
+				"vout":             u.Vout,
+				"address":          u.Address,
+				"height":           u.Height,
+				"value":            u.Value,
+				"value_lbtc":       amount.FormatWithTicker(u.Value),
+				"confirmations":    u.Confirmations,
+				"matures_at":       maturesAt,
+				"blocks_remaining": blocksRemaining,
+				"pubkey_hash":      u.PubKeyHashHex,
+				"pubkey_hash_hex":  u.PubKeyHashHex,
+			})
 		} else if u.Unconfirmed && u.SafeToSpend {
 			safePendingChange += u.Value
 		} else {
 			confirmedSpendable += u.Value
+			spendableOutputs = append(spendableOutputs, map[string]any{
+				"txid":            u.TxID,
+				"vout":            u.Vout,
+				"address":         u.Address,
+				"height":          u.Height,
+				"value":           u.Value,
+				"value_lbtc":      amount.FormatWithTicker(u.Value),
+				"confirmations":   u.Confirmations,
+				"matures_at":      u.Height,
+				"pubkey_hash":     u.PubKeyHashHex,
+				"pubkey_hash_hex": u.PubKeyHashHex,
+			})
 		}
 	}
 	available := confirmedSpendable + safePendingChange
 	total := available + immature + locked
 	addresses := n.Wallet().ListAddresses()
+	addressByHash := make(map[string]string)
+	hashByAddress := make(map[string]string)
+	for _, addr := range addresses {
+		pubHash, err := decodeMiningAddressHash(addr)
+		if err != nil {
+			continue
+		}
+		hashHex := hex.EncodeToString(pubHash)
+		hashByAddress[addr] = hashHex
+		if _, exists := addressByHash[hashHex]; !exists {
+			addressByHash[hashHex] = addr
+		}
+	}
+	defaultMiningAddress := s.defaultMiningAddress()
+	defaultMiningHash := ""
+	miningDestination := s.miningDestinationStatus()
+	if cfgAddress := strings.TrimSpace(fmt.Sprint(miningDestination["address"])); cfgAddress != "" {
+		defaultMiningAddress = cfgAddress
+	}
+	if defaultMiningAddress != "" {
+		if pubHash, err := decodeClassicMiningAddressHash(defaultMiningAddress); err == nil {
+			defaultMiningHash = hex.EncodeToString(pubHash)
+		}
+	}
+	if cfgHash := strings.TrimSpace(fmt.Sprint(miningDestination["pubkey_hash"])); cfgHash != "" {
+		defaultMiningHash = cfgHash
+	}
 	return map[string]any{
-		"wallet": n.Wallet().SecurityInfo(), "spendable": available, "available": available, "confirmed_available": confirmedSpendable, "safe_pending_change": safePendingChange, "immature": immature, "locked_pending": locked, "pending_outgoing": lockedPendingOutgoing, "locked_pending_outgoing": lockedPendingOutgoing, "locked_pending_change": lockedPendingChange, "unsafe_pending_change": unsafePendingChange, "pending_external_incoming": pendingExternalIncoming, "chain_depth_limited": chainDepthLimited, "locked_outputs": lockedOutputs,
+		"height": currentHeight, "wallet": n.Wallet().SecurityInfo(), "spendable": available, "available": available, "confirmed_available": confirmedSpendable, "safe_pending_change": safePendingChange, "immature": immature, "locked_pending": locked, "pending_outgoing": lockedPendingOutgoing, "locked_pending_outgoing": lockedPendingOutgoing, "locked_pending_change": lockedPendingChange, "unsafe_pending_change": unsafePendingChange, "pending_external_incoming": pendingExternalIncoming, "chain_depth_limited": chainDepthLimited, "locked_outputs": lockedOutputs,
 		"total": total, "spendable_lbtc": amount.FormatWithTicker(available), "available_lbtc": amount.FormatWithTicker(available), "confirmed_available_lbtc": amount.FormatWithTicker(confirmedSpendable), "safe_pending_change_lbtc": amount.FormatWithTicker(safePendingChange), "immature_lbtc": amount.FormatWithTicker(immature), "locked_pending_lbtc": amount.FormatWithTicker(locked), "pending_outgoing_lbtc": amount.FormatWithTicker(lockedPendingOutgoing), "locked_pending_outgoing_lbtc": amount.FormatWithTicker(lockedPendingOutgoing), "locked_pending_change_lbtc": amount.FormatWithTicker(lockedPendingChange), "unsafe_pending_change_lbtc": amount.FormatWithTicker(unsafePendingChange), "pending_external_incoming_lbtc": amount.FormatWithTicker(pendingExternalIncoming), "chain_depth_limited_lbtc": amount.FormatWithTicker(chainDepthLimited), "total_lbtc": amount.FormatWithTicker(total),
-		"receive_addresses":      addresses,
-		"default_mining_address": s.defaultMiningAddress(),
-		"outputs":                unspent, "note": "coinbase rewards require 100 confirmations before spending",
+		"next_maturity_height":        nextMaturityHeight,
+		"immature_outputs":            immatureOutputs,
+		"spendable_outputs":           spendableOutputs,
+		"receive_addresses":           addresses,
+		"default_mining_address":      defaultMiningAddress,
+		"default_mining_pubkey_hash":  defaultMiningHash,
+		"default_mining_wallet_owned": miningDestination["wallet_owned"],
+		"external_payout_mode":        miningDestination["external_payout_mode"],
+		"mining_destination_error":    miningDestination["error"],
+		"address_by_pubkey_hash":      addressByHash,
+		"pubkey_hash_by_address":      hashByAddress,
+		"locked_balance_view_limited": false,
+		"outputs":                     unspent,
+		"note":                        "coinbase rewards require 100 confirmations before spending",
 	}, nil
 }
 
@@ -1543,6 +1624,7 @@ func (s *Service) GetMinerStatus() (map[string]any, error) {
 			out["network_hashps"] = nh
 			out["network_hashps_source"] = source
 			out["status_source"] = "rpc"
+			normalizeMinerStatusForDashboard(out)
 			out["miner_state"] = deriveMinerState(out, false)
 			out["status_text"] = friendlyMinerStateLabel(fmt.Sprint(out["miner_state"]))
 			return out, nil
@@ -1559,30 +1641,69 @@ func (s *Service) GetMinerStatus() (map[string]any, error) {
 		}
 		source = "unavailable"
 	}
+	destination := s.miningDestinationStatus()
 	s.minerMu.Lock()
 	defer s.minerMu.Unlock()
 	miningNow := s.minerEnabled && s.minerLoopRunning
 	activeThreads := 0
 	threadState := "stopped"
+	liveHashPS := float64(0)
 	if miningNow {
 		activeThreads = s.minerThreads
 		threadState = "running"
+		liveHashPS = s.minerLocalHashPS
 	}
 	return map[string]any{
-		"status_source":      "local_fallback",
-		"rpc_offline":        true,
-		"rpc_error":          fmt.Sprint(err),
-		"active_mining":      miningNow,
-		"mining_enabled":     s.minerEnabled,
-		"active_threads":     activeThreads,
-		"configured_threads": s.minerThreads,
-		"thread_state":       threadState,
-		"miner_loop_running": s.minerLoopRunning,
-		"local_hashps":       s.minerLocalHashPS,
-		"local_khps":         s.minerLocalHashPS / 1000,
-		"session_hashes":     s.minerSessionHashes,
-		"last_nonce":         s.minerLastNonce,
-		"last_error":         "RPC offline: miner status is local fallback",
+		"status_source":               "local_fallback",
+		"status_fresh":                false,
+		"data_unavailable":            true,
+		"fallback_stale":              true,
+		"fallback_note":               "RPC timed out; local miner counters are shown only as stale diagnostics.",
+		"rpc_offline":                 true,
+		"rpc_error":                   fmt.Sprint(err),
+		"rpc_reachability":            "timeout",
+		"active_mining":               miningNow,
+		"mining_enabled":              s.minerEnabled,
+		"active_threads":              activeThreads,
+		"live_active_threads":         activeThreads,
+		"last_session_active_threads": map[bool]int{true: 0, false: s.minerThreads}[miningNow],
+		"configured_threads":          s.minerThreads,
+		"thread_state":                threadState,
+		"miner_loop_running":          s.minerLoopRunning,
+		"local_hashps":                liveHashPS,
+		"local_khps":                  liveHashPS / 1000,
+		"local_hashps_live":           liveHashPS,
+		"local_khps_live":             liveHashPS / 1000,
+		"last_session_hashps":         map[bool]float64{true: 0, false: s.minerLocalHashPS}[miningNow],
+		"last_session_khps":           map[bool]float64{true: 0, false: s.minerLocalHashPS / 1000}[miningNow],
+		"session_hashes":              s.minerSessionHashes,
+		"last_nonce":                  s.minerLastNonce,
+		"last_error":                  "",
+		"last_historical_event":       "RPC offline: miner status is local fallback",
+		"current_mining_state":        map[bool]string{true: "running (fallback)", false: "unavailable"}[miningNow],
+		"current_safety_state": func() string {
+			if errText := strings.TrimSpace(fmt.Sprint(destination["error"])); errText != "" {
+				return errText
+			}
+			return "data unavailable / RPC timeout"
+		}(),
+		"mining_reward_address":       destination["address"],
+		"configured_mining_address":   destination["address"],
+		"mining_pubkey_hash":          destination["pubkey_hash"],
+		"active_reward_hash":          destination["pubkey_hash"],
+		"mining_address_wallet_owned": destination["wallet_owned"],
+		"owned_by_wallet":             destination["wallet_owned"],
+		"external_payout_mode":        destination["external_payout_mode"],
+		"mining_destination_error":    destination["error"],
+		"payout_warning": func() string {
+			if errText := strings.TrimSpace(fmt.Sprint(destination["error"])); errText != "" {
+				return errText
+			}
+			if external, _ := destination["external_payout_mode"].(bool); external {
+				return "External payout mode: rewards will not appear in this wallet unless you own or import that address."
+			}
+			return ""
+		}(),
 		"mining_paused_reason": func() string {
 			if strings.TrimSpace(s.minerPausedReason) != "" {
 				return s.minerPausedReason
@@ -1594,6 +1715,68 @@ func (s *Service) GetMinerStatus() (map[string]any, error) {
 		"miner_state":           friendlyFallbackMinerState(miningNow, s.minerPausedReason),
 		"status_text":           friendlyMinerStateLabel(friendlyFallbackMinerState(miningNow, s.minerPausedReason)),
 	}, nil
+}
+
+func (s *Service) MiningDestinationStatus() map[string]any {
+	return s.miningDestinationStatus()
+}
+
+func normalizeMinerStatusForDashboard(status map[string]any) {
+	active, _ := status["active_mining"].(bool)
+	enabled, _ := status["mining_enabled"].(bool)
+	lastError := cleanMinerStatusString(status["last_error"])
+	if !active {
+		if _, exists := status["last_session_active_threads"]; !exists {
+			status["last_session_active_threads"] = status["active_threads"]
+		}
+		if _, exists := status["last_session_hashps"]; !exists {
+			status["last_session_hashps"] = status["local_hashps"]
+		}
+		if _, exists := status["last_session_khps"]; !exists {
+			status["last_session_khps"] = status["local_khps"]
+		}
+		status["active_threads"] = 0
+		status["live_active_threads"] = 0
+		status["live_hashrate"] = 0.0
+		status["live_hashps"] = 0.0
+		status["live_khps"] = 0.0
+		status["local_hashps"] = 0.0
+		status["local_khps"] = 0.0
+		status["local_hashps_live"] = 0.0
+		status["local_khps_live"] = 0.0
+	} else {
+		status["local_hashps_live"] = status["local_hashps"]
+		status["local_khps_live"] = status["local_khps"]
+	}
+	switch {
+	case isNormalMinerStopEvent(lastError):
+		status["last_error_raw"] = lastError
+		status["last_error"] = ""
+		status["last_error_is_action"] = true
+		status["last_action"] = "stopped by user/RPC"
+	case !active && !enabled && isHistoricalMinerRetryEvent(lastError):
+		status["last_error_raw"] = lastError
+		status["last_error"] = ""
+		status["last_historical_event"] = lastError
+	}
+}
+
+func cleanMinerStatusString(v any) string {
+	s := strings.TrimSpace(fmt.Sprint(v))
+	if s == "" || s == "<nil>" || strings.EqualFold(s, "null") {
+		return ""
+	}
+	return s
+}
+
+func isNormalMinerStopEvent(s string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(s))
+	return normalized == "rpc stopminer" || normalized == "stopminer" || normalized == "stopped" || normalized == "stopped by user"
+}
+
+func isHistoricalMinerRetryEvent(s string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(s))
+	return strings.Contains(normalized, "stale tip") || strings.Contains(normalized, "retry") || strings.Contains(normalized, "refresh")
 }
 
 func (s *Service) resolveNetworkHashPS() (map[string]any, string, error) {
@@ -1742,24 +1925,41 @@ func (s *Service) SetDefaultMiningAddress(addr string) (map[string]any, error) {
 		s.minerRewardAddress = ""
 		s.minerRewardHashHex = ""
 		s.minerMu.Unlock()
+		_ = ensureConfigKV(s.miningConfigPath(), "mining_reward_address", "")
+		_ = ensureConfigKV(s.miningConfigPath(), "mining_pubkey_hash", "")
+		_ = ensureConfigKV(s.miningConfigPath(), "mining_external_payout", "false")
 		return map[string]any{"default_mining_address": "", "message": "default mining address cleared"}, nil
 	}
-	if err := validateLegacyAddress(addr); err != nil {
+	pubHash, err := decodeClassicMiningAddressHash(addr)
+	if err != nil {
 		return nil, fmt.Errorf("invalid mining address")
 	}
-	n, err := s.current()
-	if err == nil && !s.walletOwnsAddress(n, addr) {
+	owned := false
+	if n, err := s.current(); err == nil {
+		owned = s.walletOwnsAddress(n, addr)
+	} else {
+		owned = s.walletOwnsAddressFromDisk(addr)
+	}
+	if !owned {
 		return nil, fmt.Errorf("address is not owned by this wallet")
 	}
-	pubHash, err := decodeMiningAddressHash(addr)
-	if err != nil {
+	if err := s.writeMiningDestination(addr, pubHash); err != nil {
 		return nil, err
 	}
+	hashHex := strings.ToLower(hex.EncodeToString(pubHash))
 	s.minerMu.Lock()
 	s.minerRewardAddress = addr
-	s.minerRewardHashHex = hex.EncodeToString(pubHash)
+	s.minerRewardHashHex = hashHex
 	s.minerMu.Unlock()
-	return map[string]any{"default_mining_address": addr, "pubkey_hash_hex": hex.EncodeToString(pubHash)}, nil
+	return map[string]any{
+		"default_mining_address":     addr,
+		"mining_reward_address":      addr,
+		"pubkey_hash_hex":            hashHex,
+		"default_mining_pubkey_hash": hashHex,
+		"wallet_owned":               true,
+		"external_payout_mode":       false,
+		"message":                    "wallet-owned mining reward address saved",
+	}, nil
 }
 
 func decodeMiningAddressHash(addr string) ([]byte, error) {
@@ -1771,6 +1971,120 @@ func decodeMiningAddressHash(addr string) ([]byte, error) {
 		return nil, fmt.Errorf("invalid mining address")
 	}
 	return payload, nil
+}
+
+func decodeClassicMiningAddressHash(addr string) ([]byte, error) {
+	version, payload, err := address.DecodeBase58Check(strings.TrimSpace(addr))
+	if err != nil || version != chaincfg.PublicKeyHashVersion || len(payload) != 20 {
+		return nil, fmt.Errorf("invalid mining address")
+	}
+	return payload, nil
+}
+
+func (s *Service) miningConfigPath() string {
+	return filepath.Join(s.dataDir, config.ConfigFile)
+}
+
+func (s *Service) writeMiningDestination(addr string, pubHash []byte) error {
+	if err := os.MkdirAll(s.dataDir, 0700); err != nil {
+		return err
+	}
+	configPath := s.miningConfigPath()
+	hashHex := strings.ToLower(hex.EncodeToString(pubHash))
+	if err := ensureConfigKV(configPath, "mining_reward_address", strings.TrimSpace(addr)); err != nil {
+		return err
+	}
+	if err := ensureConfigKV(configPath, "mining_pubkey_hash", hashHex); err != nil {
+		return err
+	}
+	if err := ensureConfigKV(configPath, "mining_external_payout", "false"); err != nil {
+		return err
+	}
+	_ = ensureConfigKV(configPath, "mining_safe_required", "true")
+	_ = ensureConfigKV(configPath, "reject_zero_mining_hash", "true")
+	return nil
+}
+
+func (s *Service) walletOwnsAddressFromDisk(addr string) bool {
+	w, err := wallet.Open(s.dataDir)
+	if err != nil {
+		return false
+	}
+	for _, own := range w.ListAddresses() {
+		if own == addr {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) walletAddressForHashFromDisk(pubHashHex string) string {
+	pubHashHex = strings.ToLower(strings.TrimSpace(pubHashHex))
+	w, err := wallet.Open(s.dataDir)
+	if err != nil {
+		return ""
+	}
+	for _, addr := range w.ListAddresses() {
+		pubHash, err := decodeClassicMiningAddressHash(addr)
+		if err == nil && strings.EqualFold(hex.EncodeToString(pubHash), pubHashHex) {
+			return addr
+		}
+	}
+	return ""
+}
+
+func (s *Service) miningDestinationStatus() map[string]any {
+	cfg, _ := config.LoadMiningConfig(s.miningConfigPath())
+	addr := strings.TrimSpace(cfg.RewardAddress)
+	hashHex := strings.ToLower(strings.TrimSpace(cfg.PubKeyHash))
+	owned := false
+	errMsg := ""
+	if addr != "" {
+		pubHash, err := decodeClassicMiningAddressHash(addr)
+		if err != nil {
+			errMsg = "Configured mining reward address is invalid."
+		} else {
+			addrHash := strings.ToLower(hex.EncodeToString(pubHash))
+			if hashHex != "" && !strings.EqualFold(hashHex, addrHash) {
+				errMsg = "Configured mining reward address/hash mismatch."
+			}
+			hashHex = addrHash
+			if n, err := s.current(); err == nil {
+				owned = s.walletOwnsAddress(n, addr)
+			} else {
+				owned = s.walletOwnsAddressFromDisk(addr)
+			}
+		}
+	} else if hashHex != "" {
+		if len(hashHex) != 40 {
+			errMsg = "Configured mining reward hash is invalid."
+		} else if n, err := s.current(); err == nil {
+			for _, own := range n.Wallet().ListAddresses() {
+				pubHash, err := decodeClassicMiningAddressHash(own)
+				if err == nil && strings.EqualFold(hex.EncodeToString(pubHash), hashHex) {
+					addr = own
+					owned = true
+					break
+				}
+			}
+		} else {
+			addr = s.walletAddressForHashFromDisk(hashHex)
+			owned = addr != ""
+		}
+	}
+	external := cfg.ExternalPayout && !owned && hashHex != ""
+	if errMsg == "" && hashHex != "" && !owned && !external {
+		errMsg = "Configured mining reward destination is not owned by this wallet."
+	}
+	return map[string]any{
+		"configured":           addr != "" || hashHex != "",
+		"address":              addr,
+		"pubkey_hash":          hashHex,
+		"wallet_owned":         owned,
+		"external_payout_mode": external,
+		"error":                errMsg,
+		"config_path":          s.miningConfigPath(),
+	}
 }
 
 func (s *Service) resolveMiningAddress(n *node.Node) (wallet.MiningAddressInfo, error) {
@@ -1952,6 +2266,8 @@ func (s *Service) GetExplorerSummary() (map[string]any, error) {
 		"average_block_time": timing["average_block_time_seconds"],
 		"network_hashps":     timing["network_hashps"],
 		"mempool_count":      n.Mempool().Count(),
+		"txindex":            chainInfo["txindex"],
+		"addressindex":       chainInfo["addressindex"],
 		"sync_status":        "local node active",
 		"supply":             supply,
 	}, nil
@@ -2176,7 +2492,36 @@ func (s *Service) SearchExplorer(query string) (map[string]any, error) {
 	}
 	if len(query) != 64 {
 		if strings.HasPrefix(query, "L") || strings.HasPrefix(query, "lhyb1") {
-			return map[string]any{"type": "address_unsupported", "message": "Address search requires address index support and is planned."}, nil
+			info, _ := s.GetBlockchainInfo()
+			addressIndexEnabled := false
+			txIndexEnabled := false
+			if m, ok := info["addressindex"].(map[string]any); ok {
+				addressIndexEnabled, _ = m["enabled"].(bool)
+			}
+			if m, ok := info["txindex"].(map[string]any); ok {
+				txIndexEnabled, _ = m["enabled"].(bool)
+			}
+			if !addressIndexEnabled {
+				return map[string]any{
+					"type":                 "address_index_required",
+					"address":              query,
+					"addressindex_enabled": addressIndexEnabled,
+					"txindex_enabled":      txIndexEnabled,
+					"message":              "Address search supports classic L... and hybrid lhyb1... addresses after addressindex=1, txindex=1, restart, and reindex.",
+					"action":               "enable_indexes_restart_reindex",
+				}, nil
+			}
+			balance, balanceErr := s.RunRPCMethod("getaddressbalance", []any{query})
+			utxos, utxosErr := s.RunRPCMethod("getaddressutxos", []any{query})
+			history, historyErr := s.RunRPCMethod("getaddresshistory", []any{query, 25, 0, "all", "all"})
+			if balanceErr != nil || utxosErr != nil || historyErr != nil {
+				return map[string]any{
+					"type":    "address_error",
+					"address": query,
+					"message": fmt.Sprintf("Address search failed: balance=%v utxos=%v history=%v", balanceErr, utxosErr, historyErr),
+				}, nil
+			}
+			return map[string]any{"type": "address", "address": query, "balance": balance, "utxos": utxos, "history": history}, nil
 		}
 		return map[string]any{"type": "invalid", "message": "Enter a block height, 64-character block hash, or 64-character txid."}, nil
 	}

@@ -60,7 +60,7 @@ type NodeTestResult struct {
 	Message string `json:"message"`
 }
 
-const lifecycleBuildMarker = "v1.0.4"
+const lifecycleBuildMarker = "v1.0.5"
 
 func NewApp() *App {
 	s := defaultSettings()
@@ -79,7 +79,12 @@ func (a *App) Startup(ctx context.Context) {
 	}
 	a.service = nodeservice.New(a.settings.DataDir)
 	a.lifecycleLogf("service created id=%s data_dir=%s", a.service.InstanceID(), a.settings.DataDir)
-	_, _ = a.service.SetDefaultMiningAddress(a.settings.DefaultMiningAddress)
+	a.ensureExplorerIndexesDefault()
+	if strings.TrimSpace(a.settings.DefaultMiningAddress) != "" {
+		if _, err := a.service.SetDefaultMiningAddress(a.settings.DefaultMiningAddress); err != nil {
+			a.lifecycleLogf("saved mining address rejected address=%s err=%v", a.settings.DefaultMiningAddress, err)
+		}
+	}
 	a.trayEnd = startTray(a)
 	if a.settings.StartNodeOnLaunch && a.service.WalletExists() {
 		a.lifecycleLog("startup auto-start requested")
@@ -87,6 +92,7 @@ func (a *App) Startup(ctx context.Context) {
 			a.lifecycleLogf("startup auto-start failed: %v", err)
 		} else {
 			a.lifecycleLog("startup auto-start success")
+			a.ensureDefaultMiningAddressFromWallet()
 		}
 	}
 	status := a.service.Status()
@@ -115,11 +121,21 @@ func (a *App) CoinInfo() map[string]any { return a.service.CoinInfo() }
 func (a *App) WalletExists() bool { return a.service.WalletExists() }
 
 func (a *App) CreateWallet(passphrase string) (map[string]any, error) {
-	return a.service.CreateWallet(passphrase)
+	out, err := a.service.CreateWallet(passphrase)
+	if err != nil {
+		return nil, err
+	}
+	a.setInitialMiningAddressFromResult(out)
+	return out, nil
 }
 
 func (a *App) ImportWallet(seedHex, passphrase string) (map[string]any, error) {
-	return a.service.ImportWallet(seedHex, passphrase)
+	out, err := a.service.ImportWallet(seedHex, passphrase)
+	if err != nil {
+		return nil, err
+	}
+	a.setInitialMiningAddressFromResult(out)
+	return out, nil
 }
 
 func (a *App) StartNode() error {
@@ -131,6 +147,7 @@ func (a *App) StartNode() error {
 	}
 	status := a.service.Status()
 	a.lifecycleLogf("node start success running=%t rpc_state=%s rpc_pid=%d rpc_process=%s", status.Running, status.RPCPortState, status.RPCPortPID, status.RPCPortProcess)
+	a.ensureDefaultMiningAddressFromWallet()
 	return nil
 }
 
@@ -152,6 +169,7 @@ func (a *App) RestartInternalNode() (map[string]any, error) {
 	}
 	status := a.service.Status()
 	a.lifecycleLogf("restart internal node success running=%t rpc_state=%s rpc_pid=%d rpc_process=%s", status.Running, status.RPCPortState, status.RPCPortPID, status.RPCPortProcess)
+	a.ensureDefaultMiningAddressFromWallet()
 	return map[string]any{
 		"ok":          true,
 		"stop_report": stopReport,
@@ -229,6 +247,60 @@ func (a *App) SetDefaultMiningAddress(addr string) (map[string]any, error) {
 		return nil, err
 	}
 	return result, nil
+}
+
+func (a *App) setInitialMiningAddressFromResult(out map[string]any) {
+	addr := strings.TrimSpace(fmt.Sprint(out["address"]))
+	if addr == "" || addr == "<nil>" {
+		a.ensureDefaultMiningAddressFromWallet()
+		return
+	}
+	if _, err := a.SetDefaultMiningAddress(addr); err != nil {
+		a.lifecycleLogf("initial mining address setup failed address=%s err=%v", addr, err)
+		return
+	}
+	out["default_mining_address"] = addr
+	a.lifecycleLogf("initial mining address set to first wallet address=%s", addr)
+}
+
+func (a *App) ensureDefaultMiningAddressFromWallet() {
+	a.mu.Lock()
+	hasDefault := strings.TrimSpace(a.settings.DefaultMiningAddress) != ""
+	a.mu.Unlock()
+	if hasDefault {
+		return
+	}
+	miningDestination := a.service.MiningDestinationStatus()
+	if configured, _ := miningDestination["configured"].(bool); configured {
+		owned, _ := miningDestination["wallet_owned"].(bool)
+		external, _ := miningDestination["external_payout_mode"].(bool)
+		if !owned && !external {
+			a.lifecycleLogf("default mining address auto-repair skipped: %v", miningDestination["error"])
+			return
+		}
+	}
+	addrs, err := a.service.ListReceiveAddresses()
+	if err != nil || len(addrs) == 0 {
+		return
+	}
+	addr := strings.TrimSpace(addrs[0])
+	if addr == "" {
+		return
+	}
+	if _, err := a.SetDefaultMiningAddress(addr); err != nil {
+		a.lifecycleLogf("default mining address auto-set skipped address=%s err=%v", addr, err)
+		return
+	}
+	a.lifecycleLogf("default mining address auto-set from first wallet address=%s", addr)
+}
+
+func (a *App) ensureExplorerIndexesDefault() {
+	out := a.service.EnableAddressAndTxIndexConfig()
+	if ok, _ := out["ok"].(bool); ok {
+		a.lifecycleLog("local explorer indexes requested by default addressindex=1 txindex=1")
+		return
+	}
+	a.lifecycleLogf("local explorer index default setup failed: %v", out["message"])
 }
 
 func (a *App) SendToAddress(to, amount, fee string) (map[string]any, error) {
@@ -557,6 +629,9 @@ func (a *App) RunRPCCommand(commandLine string) (map[string]any, error) {
 
 func (a *App) Snapshot() map[string]any {
 	nodeStatus := a.NodeStatus()
+	if nodeStatus.Running {
+		a.ensureDefaultMiningAddressFromWallet()
+	}
 	lifecycle := runtimeBuildMetadata()
 	lifecycle["log"] = lifecycleLogPath()
 	out := map[string]any{
@@ -624,7 +699,10 @@ func (a *App) SaveSettings(s Settings) (Settings, error) {
 		a.lifecycleLogf("old service stop report=%s", reportJSON(report))
 	}
 	if currentService != nil {
-		_, _ = currentService.SetDefaultMiningAddress(s.DefaultMiningAddress)
+		a.ensureExplorerIndexesDefault()
+		if strings.TrimSpace(s.DefaultMiningAddress) != "" {
+			_, _ = currentService.SetDefaultMiningAddress(s.DefaultMiningAddress)
+		}
 	}
 	return s, saveSettings(s)
 }
@@ -634,12 +712,20 @@ func defaultSettings() Settings {
 		DataDir:              config.DefaultDataDir(),
 		StartNodeOnLaunch:    true,
 		StopNodeOnExit:       true,
-		DefaultThreads:       runtime.NumCPU(),
+		DefaultThreads:       recommendedMiningThreads(),
 		DefaultMiningAddress: "",
 		Theme:                "system",
 		Network:              NetworkSettings{Mode: "automatic", Nodes: nil},
 		Launchpad:            LaunchpadSettings{APIURL: "http://127.0.0.1:8090"},
 	}
+}
+
+func recommendedMiningThreads() int {
+	n := runtime.NumCPU() - 2
+	if n < 1 {
+		return 1
+	}
+	return n
 }
 
 func (s Settings) withDefaults() Settings {

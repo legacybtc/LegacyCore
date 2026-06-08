@@ -1,4 +1,4 @@
-Legacy Wallet (LBTC mainnet) - v1.0.4
+Legacy Wallet (LBTC mainnet) - v1.0.5
 
 This package contains the Wails-built desktop wallet executable:
   LegacyWallet.exe
@@ -7,7 +7,7 @@ Quick start:
 1) Start LegacyWallet.exe
 2) Create or import a wallet
 3) Start the internal node from the Node controls tab if it is not already running
-4) Use the sidebar tabs for Overview, Wallet, Send, Receive, Transactions, Mining, Network / Seeds & Peers, Explorer, and RPC Console
+4) Use the sidebar tabs for Overview, Wallet, Send, Receive, Transactions, Mining, Network, Explorer, and RPC Console
 
 Balance visibility (CLI):
   legacycoin-cli.exe getwalletinfo

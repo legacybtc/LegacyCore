@@ -463,12 +463,14 @@ func LoadLogConfig(path string) (LogConfig, error) {
 type MiningConfig struct {
 	Enabled         bool
 	PubKeyHash      string
+	RewardAddress   string
 	Threads         int
 	MaxThreads      int
 	AutoStart       bool
 	PeerRequired    bool
 	SafeRequired    bool
 	RejectZeroHash  bool
+	ExternalPayout  bool
 	StopAfterBlocks int64
 }
 
@@ -484,6 +486,9 @@ func LoadMiningConfig(path string) (MiningConfig, error) {
 	}
 	if vals := kv["mining_pubkey_hash"]; len(vals) > 0 {
 		cfg.PubKeyHash = strings.ToLower(strings.TrimSpace(vals[len(vals)-1]))
+	}
+	if vals := kv["mining_reward_address"]; len(vals) > 0 {
+		cfg.RewardAddress = strings.TrimSpace(vals[len(vals)-1])
 	}
 	if vals := kv["mining_threads"]; len(vals) > 0 {
 		var n int
@@ -527,6 +532,10 @@ func LoadMiningConfig(path string) (MiningConfig, error) {
 	if vals := kv["reject_zero_mining_hash"]; len(vals) > 0 {
 		v := strings.ToLower(strings.TrimSpace(vals[len(vals)-1]))
 		cfg.RejectZeroHash = v == "1" || v == "true" || v == "yes" || v == "on"
+	}
+	if vals := kv["mining_external_payout"]; len(vals) > 0 {
+		v := strings.ToLower(strings.TrimSpace(vals[len(vals)-1]))
+		cfg.ExternalPayout = v == "1" || v == "true" || v == "yes" || v == "on"
 	}
 	return cfg, nil
 }

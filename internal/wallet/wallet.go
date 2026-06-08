@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,6 +37,8 @@ type Wallet struct {
 	path         string
 	keys         map[string]string
 	hybridKeys   map[string]pqc.HybridPrivateBytes
+	addresses    map[string]struct{}
+	hybridAddrs  map[string]struct{}
 	encrypted    bool
 	locked       bool
 	saltHex      string
@@ -53,6 +56,8 @@ type Wallet struct {
 type stored struct {
 	Keys            map[string]string                 `json:"keys,omitempty"`
 	HybridKeys      map[string]pqc.HybridPrivateBytes `json:"hybrid_keys,omitempty"`
+	Addresses       []string                          `json:"addresses,omitempty"`
+	HybridAddresses []string                          `json:"hybrid_addresses,omitempty"`
 	Encrypted       bool                              `json:"encrypted,omitempty"`
 	Salt            string                            `json:"salt,omitempty"`
 	Nonce           string                            `json:"nonce,omitempty"`
@@ -94,13 +99,20 @@ type UTXOView struct {
 
 func Open(dataDir string) (*Wallet, error) {
 	path := filepath.Join(dataDir, "wallet.json")
-	w := &Wallet{path: path, keys: make(map[string]string), hybridKeys: make(map[string]pqc.HybridPrivateBytes)}
+	w := &Wallet{
+		path:        path,
+		keys:        make(map[string]string),
+		hybridKeys:  make(map[string]pqc.HybridPrivateBytes),
+		addresses:   make(map[string]struct{}),
+		hybridAddrs: make(map[string]struct{}),
+	}
 	b, err := os.ReadFile(path)
 	if err == nil {
 		var s stored
 		if err := json.Unmarshal(b, &s); err != nil {
 			return nil, err
 		}
+		w.loadAddressMetadataLocked(s.Addresses, s.HybridAddresses)
 		if s.Encrypted {
 			w.encrypted = true
 			w.locked = true
@@ -144,6 +156,7 @@ func (w *Wallet) NewHybridAddress() (string, error) {
 	addr := key.Public().Address()
 	w.mu.Lock()
 	w.hybridKeys[addr] = key.Bytes()
+	w.hybridAddrs[addr] = struct{}{}
 	w.refreshMetadataLocked()
 	w.mu.Unlock()
 	return addr, w.persist()
@@ -171,6 +184,7 @@ func (w *Wallet) NewAddress() (string, error) {
 	addr := address.EncodeBase58Check(chaincfg.PublicKeyHashVersion, pubHash)
 	w.mu.Lock()
 	w.keys[addr] = hex.EncodeToString(priv.Serialize())
+	w.addresses[addr] = struct{}{}
 	w.refreshMetadataLocked()
 	w.mu.Unlock()
 	return addr, w.persist()
@@ -204,12 +218,29 @@ func (w *Wallet) SetHDSeed(seedHex string) (string, error) {
 func (w *Wallet) ListAddresses() []string {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
-	out := make([]string, 0, len(w.keys)+len(w.hybridKeys))
+	seen := make(map[string]struct{}, len(w.keys)+len(w.hybridKeys)+len(w.addresses)+len(w.hybridAddrs))
+	out := make([]string, 0, len(w.keys)+len(w.hybridKeys)+len(w.addresses)+len(w.hybridAddrs))
 	for addr := range w.keys {
+		seen[addr] = struct{}{}
 		out = append(out, addr)
 	}
 	for addr := range w.hybridKeys {
-		out = append(out, addr)
+		if _, ok := seen[addr]; !ok {
+			seen[addr] = struct{}{}
+			out = append(out, addr)
+		}
+	}
+	for addr := range w.addresses {
+		if _, ok := seen[addr]; !ok {
+			seen[addr] = struct{}{}
+			out = append(out, addr)
+		}
+	}
+	for addr := range w.hybridAddrs {
+		if _, ok := seen[addr]; !ok {
+			seen[addr] = struct{}{}
+			out = append(out, addr)
+		}
 	}
 	sort.Strings(out)
 	return out
@@ -256,6 +287,7 @@ func (w *Wallet) ImportPrivKey(wif string) (string, error) {
 	addr := address.EncodeBase58Check(chaincfg.PublicKeyHashVersion, pubHash)
 	w.mu.Lock()
 	w.keys[addr] = hex.EncodeToString(priv.Serialize())
+	w.addresses[addr] = struct{}{}
 	w.refreshMetadataLocked()
 	w.mu.Unlock()
 	return addr, w.persist()
@@ -272,7 +304,15 @@ func (w *Wallet) Encrypt(passphrase string) error {
 		return fmt.Errorf("empty passphrase")
 	}
 	w.refreshMetadataLocked()
-	cipherHex, saltHex, nonceHex, err := encryptState(keyState{Keys: w.keys, HybridKeys: w.hybridKeys, SeedHex: w.seedHex, NextIndex: w.nextIndex}, passphrase)
+	cipherHex, saltHex, nonceHex, err := encryptState(keyState{
+		Keys:            w.keys,
+		HybridKeys:      w.hybridKeys,
+		SeedHex:         w.seedHex,
+		NextIndex:       w.nextIndex,
+		ClassicKeyCount: w.classicCount,
+		HybridKeyCount:  w.hybridCount,
+		HasHDSeed:       w.hasHDSeed,
+	}, passphrase)
 	if err != nil {
 		w.mu.Unlock()
 		return err
@@ -307,6 +347,9 @@ func (w *Wallet) Unlock(passphrase string, timeout time.Duration) error {
 		return err
 	}
 	w.keys = state.Keys
+	if w.keys == nil {
+		w.keys = make(map[string]string)
+	}
 	w.hybridKeys = state.HybridKeys
 	if w.hybridKeys == nil {
 		w.hybridKeys = make(map[string]pqc.HybridPrivateBytes)
@@ -408,6 +451,7 @@ func (w *Wallet) RestorePlainBackup(path string) (map[string]int, error) {
 			importedClassic++
 		}
 		w.keys[addr] = key
+		w.addresses[addr] = struct{}{}
 	}
 	if w.hybridKeys == nil {
 		w.hybridKeys = make(map[string]pqc.HybridPrivateBytes)
@@ -417,6 +461,7 @@ func (w *Wallet) RestorePlainBackup(path string) (map[string]int, error) {
 			importedHybrid++
 		}
 		w.hybridKeys[addr] = key
+		w.hybridAddrs[addr] = struct{}{}
 	}
 	if w.seedHex == "" && s.SeedHex != "" {
 		w.seedHex = s.SeedHex
@@ -1088,7 +1133,15 @@ func (w *Wallet) persist() error {
 			return fmt.Errorf("wallet locked")
 		}
 		w.refreshMetadataLocked()
-		cipherHex, saltHex, nonceHex, err := encryptState(keyState{Keys: w.keys, HybridKeys: w.hybridKeys, SeedHex: w.seedHex, NextIndex: w.nextIndex}, w.unlockPass)
+		cipherHex, saltHex, nonceHex, err := encryptState(keyState{
+			Keys:            w.keys,
+			HybridKeys:      w.hybridKeys,
+			SeedHex:         w.seedHex,
+			NextIndex:       w.nextIndex,
+			ClassicKeyCount: w.classicCount,
+			HybridKeyCount:  w.hybridCount,
+			HasHDSeed:       w.hasHDSeed,
+		}, w.unlockPass)
 		if err != nil {
 			w.mu.Unlock()
 			return err
@@ -1108,6 +1161,8 @@ func (w *Wallet) persist() error {
 	for k, v := range w.hybridKeys {
 		s.HybridKeys[k] = v
 	}
+	s.Addresses = sortedAddressKeys(w.addresses)
+	s.HybridAddresses = sortedAddressKeys(w.hybridAddrs)
 	s.SeedHex = w.seedHex
 	s.NextIndex = w.nextIndex
 	s.ClassicKeyCount = uint32(len(w.keys))
@@ -1125,9 +1180,70 @@ func (w *Wallet) persist() error {
 }
 
 func (w *Wallet) refreshMetadataLocked() {
-	w.classicCount = uint32(len(w.keys))
-	w.hybridCount = uint32(len(w.hybridKeys))
+	if w.addresses == nil {
+		w.addresses = make(map[string]struct{})
+	}
+	if w.hybridAddrs == nil {
+		w.hybridAddrs = make(map[string]struct{})
+	}
+	if len(w.keys) > 0 || !w.encrypted {
+		w.addresses = make(map[string]struct{}, len(w.keys))
+		for addr := range w.keys {
+			w.addresses[addr] = struct{}{}
+		}
+	}
+	if len(w.hybridKeys) > 0 || !w.encrypted {
+		w.hybridAddrs = make(map[string]struct{}, len(w.hybridKeys))
+		for addr := range w.hybridKeys {
+			w.hybridAddrs[addr] = struct{}{}
+		}
+	}
+	if len(w.addresses) > 0 {
+		w.classicCount = uint32(len(w.addresses))
+	} else {
+		w.classicCount = uint32(len(w.keys))
+	}
+	if len(w.hybridAddrs) > 0 {
+		w.hybridCount = uint32(len(w.hybridAddrs))
+	} else {
+		w.hybridCount = uint32(len(w.hybridKeys))
+	}
 	w.hasHDSeed = w.seedHex != ""
+}
+
+func (w *Wallet) loadAddressMetadataLocked(classic []string, hybrid []string) {
+	if w.addresses == nil {
+		w.addresses = make(map[string]struct{})
+	}
+	if w.hybridAddrs == nil {
+		w.hybridAddrs = make(map[string]struct{})
+	}
+	for _, addr := range classic {
+		addr = strings.TrimSpace(addr)
+		if addr != "" {
+			w.addresses[addr] = struct{}{}
+		}
+	}
+	for _, addr := range hybrid {
+		addr = strings.TrimSpace(addr)
+		if addr != "" {
+			w.hybridAddrs[addr] = struct{}{}
+		}
+	}
+}
+
+func sortedAddressKeys(in map[string]struct{}) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	for addr := range in {
+		if strings.TrimSpace(addr) != "" {
+			out = append(out, addr)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (w *Wallet) persistLocked() error {
@@ -1140,6 +1256,8 @@ func (w *Wallet) persistLocked() error {
 		Salt:            w.saltHex,
 		Nonce:           w.nonceHex,
 		Cipher:          w.cipherHex,
+		Addresses:       sortedAddressKeys(w.addresses),
+		HybridAddresses: sortedAddressKeys(w.hybridAddrs),
 		NextIndex:       w.nextIndex,
 		ClassicKeyCount: w.classicCount,
 		HybridKeyCount:  w.hybridCount,

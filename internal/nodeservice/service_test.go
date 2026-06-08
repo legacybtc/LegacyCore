@@ -14,6 +14,7 @@ import (
 	"legacycoin/legacy-go/internal/config"
 	"legacycoin/legacy-go/internal/node"
 	"legacycoin/legacy-go/internal/pow"
+	"legacycoin/legacy-go/internal/wallet"
 )
 
 func requireProductionYespower(t *testing.T) {
@@ -128,8 +129,16 @@ func TestClassifyWalletSpendSeparatesChangeFromSelfTransfer(t *testing.T) {
 }
 
 func TestSetDefaultMiningAddressWithoutNode(t *testing.T) {
-	s := New(t.TempDir())
-	addr := address.EncodeBase58Check(chaincfg.PublicKeyHashVersion, bytes.Repeat([]byte{0x11}, 20))
+	dir := t.TempDir()
+	w, err := wallet.Open(dir)
+	if err != nil {
+		t.Fatalf("wallet.Open: %v", err)
+	}
+	addr, err := w.NewAddress()
+	if err != nil {
+		t.Fatalf("NewAddress: %v", err)
+	}
+	s := New(dir)
 	out, err := s.SetDefaultMiningAddress(addr)
 	if err != nil {
 		t.Fatalf("SetDefaultMiningAddress: %v", err)
@@ -140,12 +149,61 @@ func TestSetDefaultMiningAddressWithoutNode(t *testing.T) {
 	if got := out["default_mining_address"]; got != addr {
 		t.Fatalf("returned default mining address=%v want=%v", got, addr)
 	}
+	cfg, err := config.LoadMiningConfig(filepath.Join(dir, config.ConfigFile))
+	if err != nil {
+		t.Fatalf("LoadMiningConfig: %v", err)
+	}
+	if cfg.RewardAddress != addr || cfg.PubKeyHash == "" {
+		t.Fatalf("mining config not written: %+v", cfg)
+	}
+}
+
+func TestSetDefaultMiningAddressRejectsUnowned(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := wallet.Open(dir); err != nil {
+		t.Fatalf("wallet.Open: %v", err)
+	}
+	s := New(dir)
+	addr := address.EncodeBase58Check(chaincfg.PublicKeyHashVersion, bytes.Repeat([]byte{0x11}, 20))
+	if _, err := s.SetDefaultMiningAddress(addr); err == nil {
+		t.Fatal("expected unowned mining address error")
+	}
 }
 
 func TestSetDefaultMiningAddressRejectsInvalid(t *testing.T) {
 	s := New(t.TempDir())
 	if _, err := s.SetDefaultMiningAddress("not-an-address"); err == nil {
 		t.Fatal("expected invalid mining address error")
+	}
+}
+
+func TestEnableAddressAndTxIndexConfigWritesConfig(t *testing.T) {
+	dir := t.TempDir()
+	s := New(dir)
+	out := s.EnableAddressAndTxIndexConfig()
+	if ok, _ := out["ok"].(bool); !ok {
+		t.Fatalf("EnableAddressAndTxIndexConfig failed: %#v", out)
+	}
+	cfg, err := config.LoadIndexConfig(filepath.Join(dir, config.ConfigFile))
+	if err != nil {
+		t.Fatalf("LoadIndexConfig: %v", err)
+	}
+	if !cfg.AddressIndex || !cfg.TxIndex {
+		t.Fatalf("expected both indexes enabled, got addressindex=%t txindex=%t", cfg.AddressIndex, cfg.TxIndex)
+	}
+}
+
+func TestSearchExplorerAddressDisabledReturnsActionableState(t *testing.T) {
+	s := New(t.TempDir())
+	out, err := s.SearchExplorer("lhyb1ZqGjjxY7KDrZPP7HNJHUEad7c6EQT2Bop9")
+	if err != nil {
+		t.Fatalf("SearchExplorer: %v", err)
+	}
+	if out["type"] != "address_index_required" {
+		t.Fatalf("expected address_index_required, got %#v", out)
+	}
+	if out["action"] != "enable_indexes_restart_reindex" {
+		t.Fatalf("expected enable action, got %#v", out)
 	}
 }
 

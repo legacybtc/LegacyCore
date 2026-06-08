@@ -1,4 +1,4 @@
-Legacy Wallet / Legacy Core Quick Start (v1.0.4)
+Legacy Wallet / Legacy Core Quick Start (v1.0.5)
 
 Windows:
 1) Extract this package to a normal folder (not Program Files).

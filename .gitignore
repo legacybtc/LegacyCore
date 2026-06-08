@@ -6,6 +6,7 @@ dist/
 
 # Frontend generated output
 cmd/legacywallet/frontend/node_modules/
+cmd/legacywallet/frontend/.dashboard-test/
 cmd/legacywallet/frontend/dist/
 !cmd/legacywallet/frontend/dist/
 cmd/legacywallet/frontend/dist/*

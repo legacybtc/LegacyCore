@@ -93,6 +93,49 @@ func TestClassicAndHybridAddressLists(t *testing.T) {
 	}
 }
 
+func TestEncryptedLockedWalletPreservesAddressMetadata(t *testing.T) {
+	dir := t.TempDir()
+	w, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	classic, err := w.NewAddress()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hybrid, err := w.NewHybridAddress()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Encrypt("passphrase"); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := reopened.SecurityInfo()
+	if locked, _ := info["locked"].(bool); !locked {
+		t.Fatalf("expected reopened wallet to be locked: %#v", info)
+	}
+	addrs := reopened.ListAddresses()
+	if len(addrs) != 2 {
+		t.Fatalf("locked address count=%d want=2 (%#v)", len(addrs), addrs)
+	}
+	var hasClassic, hasHybrid bool
+	for _, addr := range addrs {
+		if addr == classic {
+			hasClassic = true
+		}
+		if addr == hybrid {
+			hasHybrid = true
+		}
+	}
+	if !hasClassic || !hasHybrid {
+		t.Fatalf("locked wallet missing address metadata classic=%t hybrid=%t addrs=%#v", hasClassic, hasHybrid, addrs)
+	}
+}
+
 func TestDestinationScriptClassicAndHybrid(t *testing.T) {
 	priv, err := btcec.NewPrivateKey()
 	if err != nil {

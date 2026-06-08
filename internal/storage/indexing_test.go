@@ -122,6 +122,13 @@ func TestAddressIndexLookupAfterSaveBlock(t *testing.T) {
 	if confirmed != 5000000000 || total != 5000000000 {
 		t.Fatalf("unexpected address balance confirmed=%d total=%d", confirmed, total)
 	}
+	history, err := store.AddressHistory(addr)
+	if err != nil {
+		t.Fatalf("AddressHistory failed: %v", err)
+	}
+	if len(history) != 1 || !history[0].Coinbase || history[0].TxID != txHash.String() || history[0].Value != 5000000000 {
+		t.Fatalf("unexpected address history for coinbase output: %#v", history)
+	}
 }
 
 func TestTxIndexSurvivesRestart(t *testing.T) {

@@ -38,15 +38,16 @@ import (
 )
 
 type Server struct {
-	chain  *blockchain.Chain
-	pool   *mempool.Pool
-	wallet *wallet.Wallet
-	p2p    *p2p.Server
-	server *http.Server
-	stop   context.CancelFunc
-	auth   config.RPCAuth
-	bind   config.RPCBind
-	policy config.LaunchPolicy
+	chain      *blockchain.Chain
+	pool       *mempool.Pool
+	wallet     *wallet.Wallet
+	p2p        *p2p.Server
+	server     *http.Server
+	stop       context.CancelFunc
+	auth       config.RPCAuth
+	bind       config.RPCBind
+	policy     config.LaunchPolicy
+	configPath string
 
 	minerMu              sync.Mutex
 	minerActive          bool
@@ -287,7 +288,7 @@ func p2pIsLocalhost(host string) bool {
 
 const MaxRPCRequestBytes int64 = 1 << 20
 
-func New(chain *blockchain.Chain, pool *mempool.Pool, wallet *wallet.Wallet, p2pServer *p2p.Server, stop context.CancelFunc, auth config.RPCAuth, bind config.RPCBind, policy config.LaunchPolicy) *Server {
+func New(chain *blockchain.Chain, pool *mempool.Pool, wallet *wallet.Wallet, p2pServer *p2p.Server, stop context.CancelFunc, auth config.RPCAuth, bind config.RPCBind, policy config.LaunchPolicy, configPath string) *Server {
 	return &Server{
 		chain:        chain,
 		pool:         pool,
@@ -297,8 +298,16 @@ func New(chain *blockchain.Chain, pool *mempool.Pool, wallet *wallet.Wallet, p2p
 		auth:         auth,
 		bind:         bind,
 		policy:       policy,
+		configPath:   strings.TrimSpace(configPath),
 		defaultTxFee: 1_000,
 	}
+}
+
+func (s *Server) miningConfigPath() string {
+	if strings.TrimSpace(s.configPath) != "" {
+		return s.configPath
+	}
+	return config.DefaultConfigPath()
 }
 
 func (s *Server) ListenAndServe(ctx context.Context) error {
@@ -332,7 +341,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		defer cancel()
 		_ = s.server.Shutdown(shutdownCtx)
 	}()
-	if cfg, err := config.LoadMiningConfig(config.DefaultConfigPath()); err == nil && !s.policy.SeedNode && (cfg.AutoStart || cfg.Enabled) {
+	if cfg, err := config.LoadMiningConfig(s.miningConfigPath()); err == nil && !s.policy.SeedNode && (cfg.AutoStart || cfg.Enabled) {
 		go func() {
 			time.Sleep(2 * time.Second)
 			_, _ = s.startMiner(ctx, json.RawMessage("[]"))
@@ -510,7 +519,7 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 			},
 			"paths": map[string]any{
 				"datadir": config.DefaultDataDir(),
-				"config":  config.DefaultConfigPath(),
+				"config":  s.miningConfigPath(),
 			},
 			"ports": map[string]any{
 				"p2p": p.DefaultPort,
@@ -1569,13 +1578,11 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 				return nil, &rpcError{Code: -13, Message: "setupwallet hybrid address: " + err.Error()}
 			}
 		}
-		miningInfo, err := s.wallet.NewMiningAddress()
+		miningInfo, err := s.firstWalletMiningAddress()
 		if err != nil {
 			return nil, &rpcError{Code: -13, Message: "setupwallet mining address: " + err.Error()}
 		}
-		_ = config.AppendConfigLine(config.DefaultConfigPath(), "mining_pubkey_hash", miningInfo.PubKeyHashHex)
-		_ = config.AppendConfigLine(config.DefaultConfigPath(), "mining_safe_required", "true")
-		_ = config.AppendConfigLine(config.DefaultConfigPath(), "reject_zero_mining_hash", "true")
+		_ = s.persistMiningDestination(miningInfo)
 		if passphrase != "" {
 			if err := s.wallet.Encrypt(passphrase); err != nil && !strings.Contains(err.Error(), "already encrypted") {
 				return nil, &rpcError{Code: -13, Message: "setupwallet encrypt: " + err.Error()}
@@ -1585,33 +1592,53 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 			"wallet":             s.wallet.SecurityInfo(),
 			"mining_address":     miningInfo.Address,
 			"mining_pubkey_hash": miningInfo.PubKeyHashHex,
-			"config":             config.DefaultConfigPath(),
+			"config":             s.miningConfigPath(),
 			"next":               "start miner with this mining_pubkey_hash; coinbase rewards mature after 100 blocks",
 		}, nil
 	case "getminingaddress":
-		info, err := s.wallet.NewMiningAddress()
+		cfg, _ := config.LoadMiningConfig(s.miningConfigPath())
+		dest, err := s.resolveMiningDestination(cfg, true)
 		if err != nil {
 			return nil, &rpcError{Code: -13, Message: err.Error()}
 		}
-		_ = config.AppendConfigLine(config.DefaultConfigPath(), "mining_pubkey_hash", info.PubKeyHashHex)
-		return info, nil
+		return wallet.MiningAddressInfo{Address: dest.Address, PubKeyHashHex: dest.PubKeyHashHex}, nil
 	case "setminingaddress":
 		var args []string
 		if err := json.Unmarshal(params, &args); err != nil || len(args) != 1 {
-			return nil, &rpcError{Code: -32602, Message: "setminingaddress expects 40-char pubkey hash hex"}
+			return nil, &rpcError{Code: -32602, Message: "setminingaddress expects one wallet-owned Legacy address"}
 		}
-		if err := validateMiningPubKeyHash(args[0]); err != nil {
-			return nil, &rpcError{Code: -32602, Message: err.Error()}
+		input := strings.TrimSpace(args[0])
+		info := wallet.MiningAddressInfo{}
+		if hashErr := validateMiningPubKeyHash(input); hashErr == nil {
+			addr := s.walletClassicAddressForHash(input)
+			if addr == "" {
+				return nil, &rpcError{Code: -32602, Message: unownedMiningDestinationMessage}
+			}
+			info = wallet.MiningAddressInfo{Address: addr, PubKeyHashHex: strings.ToLower(input)}
+		} else {
+			if err := decodeMiningAddressInput(input, &info); err != nil {
+				return nil, &rpcError{Code: -32602, Message: "setminingaddress expects a wallet-owned classic Legacy address"}
+			}
+			if !s.walletOwnsClassicAddress(info.Address) {
+				return nil, &rpcError{Code: -32602, Message: unownedMiningDestinationMessage}
+			}
 		}
-		if err := config.AppendConfigLine(config.DefaultConfigPath(), "mining_pubkey_hash", strings.ToLower(args[0])); err != nil {
+		if err := s.persistMiningDestination(info); err != nil {
 			return nil, &rpcError{Code: -32603, Message: err.Error()}
 		}
-		return map[string]any{"mining_pubkey_hash": strings.ToLower(args[0]), "config": config.DefaultConfigPath()}, nil
+		return map[string]any{
+			"mining_address":     info.Address,
+			"mining_pubkey_hash": strings.ToLower(info.PubKeyHashHex),
+			"wallet_owned":       true,
+			"external_payout":    false,
+			"config":             s.miningConfigPath(),
+			"message":            "wallet-owned mining reward address saved",
+		}, nil
 	case "getwalletsummary":
-		cfg, _ := config.LoadMiningConfig(config.DefaultConfigPath())
+		cfg, _ := config.LoadMiningConfig(s.miningConfigPath())
 		return s.walletSummary([]string{cfg.PubKeyHash}), nil
 	case "listimmature":
-		cfg, _ := config.LoadMiningConfig(config.DefaultConfigPath())
+		cfg, _ := config.LoadMiningConfig(s.miningConfigPath())
 		summary := s.walletSummary([]string{cfg.PubKeyHash})
 		return summary["immature_outputs"], nil
 	case "checkstorage":
@@ -1645,16 +1672,18 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		report["health"] = s.chain.StorageHealth()
 		return report, nil
 	case "getmininginfo":
-		cfg, _ := config.LoadMiningConfig(config.DefaultConfigPath())
+		cfg, _ := config.LoadMiningConfig(s.miningConfigPath())
 		storage := s.chain.StorageHealth()
 		peerOK := !cfg.PeerRequired || s.p2p.PeerCount() > 0
-		miningReady := storage.OK && peerOK && validateMiningPubKeyHash(cfg.PubKeyHash) == nil
+		dest := s.miningDestinationStatus(cfg)
+		miningReady := storage.OK && peerOK && (dest.Owned || dest.External)
 		return s.minerStatus(cfg, storage, miningReady), nil
 	case "getminerstatus":
-		cfg, _ := config.LoadMiningConfig(config.DefaultConfigPath())
+		cfg, _ := config.LoadMiningConfig(s.miningConfigPath())
 		storage := s.chain.StorageHealth()
 		peerOK := !cfg.PeerRequired || s.p2p.PeerCount() > 0
-		miningReady := storage.OK && peerOK && validateMiningPubKeyHash(cfg.PubKeyHash) == nil
+		dest := s.miningDestinationStatus(cfg)
+		miningReady := storage.OK && peerOK && (dest.Owned || dest.External)
 		return s.minerStatus(cfg, storage, miningReady), nil
 
 	case "benchmarkminer":
@@ -2320,8 +2349,9 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		threads := 1
 		force := false
 		pubHashHex := ""
+		rawDeveloperHash := false
 
-		cfg, _ := config.LoadMiningConfig(config.DefaultConfigPath())
+		cfg, _ := config.LoadMiningConfig(s.miningConfigPath())
 		if cfg.Threads > 0 {
 			threads = cfg.Threads
 		}
@@ -2334,6 +2364,7 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 			if err := json.Unmarshal(args[0], &rawPubHash); err == nil {
 				// Raw/developer mode: first argument is the 20-byte pubkey hash hex.
 				pubHashHex = rawPubHash
+				rawDeveloperHash = true
 				if len(args) > 1 {
 					if err := json.Unmarshal(args[1], &threads); err != nil || threads <= 0 {
 						return nil, &rpcError{Code: -32602, Message: "invalid thread count"}
@@ -2362,11 +2393,21 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 			}
 		}
 
+		if !rawDeveloperHash {
+			dest, err := s.resolveMiningDestination(cfg, true)
+			if err != nil {
+				return nil, &rpcError{Code: -32602, Message: err.Error()}
+			}
+			pubHashHex = dest.PubKeyHashHex
+		}
 		if pubHashHex == "" {
 			return nil, &rpcError{Code: -32602, Message: "generate needs mining_pubkey_hash in config, or use generate <pubkey_hash_hex> [threads]"}
 		}
 		if err := validateMiningPubKeyHash(pubHashHex); err != nil {
 			return nil, &rpcError{Code: -32602, Message: err.Error()}
+		}
+		if rawDeveloperHash && s.walletClassicAddressForHash(pubHashHex) == "" && !cfg.ExternalPayout {
+			return nil, &rpcError{Code: -32602, Message: unownedMiningDestinationMessage}
 		}
 		pubHash, err := hex.DecodeString(pubHashHex)
 		if err != nil || len(pubHash) != 20 {
@@ -3703,6 +3744,153 @@ func validateMiningPubKeyHash(pubHashHex string) error {
 	return nil
 }
 
+const unownedMiningDestinationMessage = "Configured mining reward address is not owned by this wallet. Choose a wallet receive address or explicitly enable external payout mode."
+
+type miningDestination struct {
+	Address       string
+	PubKeyHashHex string
+	Owned         bool
+	External      bool
+	Error         string
+}
+
+func decodeClassicMiningAddressHash(addr string) ([]byte, error) {
+	version, payload, err := address.DecodeBase58Check(strings.TrimSpace(addr))
+	if err != nil || version != chaincfg.PublicKeyHashVersion || len(payload) != 20 {
+		return nil, fmt.Errorf("invalid mining address")
+	}
+	return payload, nil
+}
+
+func classicAddressHashHex(addr string) (string, error) {
+	pubHash, err := decodeClassicMiningAddressHash(addr)
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(pubHash), nil
+}
+
+func decodeMiningAddressInput(addr string, out *wallet.MiningAddressInfo) error {
+	addr = strings.TrimSpace(addr)
+	hashHex, err := classicAddressHashHex(addr)
+	if err != nil {
+		return err
+	}
+	*out = wallet.MiningAddressInfo{Address: addr, PubKeyHashHex: hashHex}
+	return nil
+}
+
+func (s *Server) walletClassicAddressForHash(pubHashHex string) string {
+	pubHashHex = strings.ToLower(strings.TrimSpace(pubHashHex))
+	if validateMiningPubKeyHash(pubHashHex) != nil {
+		return ""
+	}
+	for _, addr := range s.wallet.ListAddresses() {
+		hashHex, err := classicAddressHashHex(addr)
+		if err == nil && strings.EqualFold(hashHex, pubHashHex) {
+			return addr
+		}
+	}
+	return ""
+}
+
+func (s *Server) walletOwnsClassicAddress(addr string) bool {
+	hashHex, err := classicAddressHashHex(addr)
+	if err != nil {
+		return false
+	}
+	return s.walletClassicAddressForHash(hashHex) == strings.TrimSpace(addr)
+}
+
+func (s *Server) firstWalletMiningAddress() (wallet.MiningAddressInfo, error) {
+	for _, addr := range s.wallet.ListAddresses() {
+		hashHex, err := classicAddressHashHex(addr)
+		if err == nil {
+			return wallet.MiningAddressInfo{Address: addr, PubKeyHashHex: hashHex}, nil
+		}
+	}
+	return s.wallet.NewMiningAddress()
+}
+
+func (s *Server) persistMiningDestination(info wallet.MiningAddressInfo) error {
+	if err := config.AppendConfigLine(s.miningConfigPath(), "mining_reward_address", info.Address); err != nil {
+		return err
+	}
+	if err := config.AppendConfigLine(s.miningConfigPath(), "mining_pubkey_hash", strings.ToLower(info.PubKeyHashHex)); err != nil {
+		return err
+	}
+	_ = config.AppendConfigLine(s.miningConfigPath(), "mining_external_payout", "false")
+	_ = config.AppendConfigLine(s.miningConfigPath(), "mining_safe_required", "true")
+	_ = config.AppendConfigLine(s.miningConfigPath(), "reject_zero_mining_hash", "true")
+	return nil
+}
+
+func (s *Server) resolveMiningDestination(cfg config.MiningConfig, createIfMissing bool) (miningDestination, error) {
+	rewardAddress := strings.TrimSpace(cfg.RewardAddress)
+	pubHashHex := strings.ToLower(strings.TrimSpace(cfg.PubKeyHash))
+	if rewardAddress != "" {
+		addrHash, err := classicAddressHashHex(rewardAddress)
+		if err != nil {
+			return miningDestination{Address: rewardAddress, PubKeyHashHex: pubHashHex, Error: err.Error()}, err
+		}
+		if pubHashHex != "" && !strings.EqualFold(pubHashHex, addrHash) {
+			err := fmt.Errorf("configured mining reward address/hash mismatch")
+			return miningDestination{Address: rewardAddress, PubKeyHashHex: pubHashHex, Error: err.Error()}, err
+		}
+		owned := s.walletOwnsClassicAddress(rewardAddress)
+		if !owned {
+			if cfg.ExternalPayout {
+				return miningDestination{Address: rewardAddress, PubKeyHashHex: addrHash, External: true}, nil
+			}
+			err := errors.New(unownedMiningDestinationMessage)
+			return miningDestination{Address: rewardAddress, PubKeyHashHex: addrHash, Error: err.Error()}, err
+		}
+		info := wallet.MiningAddressInfo{Address: rewardAddress, PubKeyHashHex: addrHash}
+		_ = s.persistMiningDestination(info)
+		return miningDestination{Address: rewardAddress, PubKeyHashHex: addrHash, Owned: true}, nil
+	}
+	if pubHashHex != "" {
+		if err := validateMiningPubKeyHash(pubHashHex); err != nil {
+			return miningDestination{PubKeyHashHex: pubHashHex, Error: err.Error()}, err
+		}
+		addr := s.walletClassicAddressForHash(pubHashHex)
+		if addr == "" {
+			if cfg.ExternalPayout {
+				return miningDestination{PubKeyHashHex: pubHashHex, External: true}, nil
+			}
+			err := errors.New(unownedMiningDestinationMessage)
+			return miningDestination{PubKeyHashHex: pubHashHex, Error: err.Error()}, err
+		}
+		info := wallet.MiningAddressInfo{Address: addr, PubKeyHashHex: pubHashHex}
+		_ = s.persistMiningDestination(info)
+		return miningDestination{Address: addr, PubKeyHashHex: pubHashHex, Owned: true}, nil
+	}
+	if !createIfMissing {
+		err := fmt.Errorf("mining reward address is not configured")
+		return miningDestination{Error: err.Error()}, err
+	}
+	info, err := s.firstWalletMiningAddress()
+	if err != nil {
+		return miningDestination{Error: err.Error()}, err
+	}
+	if !s.walletOwnsClassicAddress(info.Address) {
+		err := fmt.Errorf("created mining reward address is not owned by this wallet")
+		return miningDestination{Address: info.Address, PubKeyHashHex: info.PubKeyHashHex, Error: err.Error()}, err
+	}
+	if err := s.persistMiningDestination(info); err != nil {
+		return miningDestination{Address: info.Address, PubKeyHashHex: info.PubKeyHashHex, Error: err.Error()}, err
+	}
+	return miningDestination{Address: info.Address, PubKeyHashHex: strings.ToLower(info.PubKeyHashHex), Owned: true}, nil
+}
+
+func (s *Server) miningDestinationStatus(cfg config.MiningConfig) miningDestination {
+	dest, err := s.resolveMiningDestination(cfg, false)
+	if err != nil {
+		return dest
+	}
+	return dest
+}
+
 func (s *Server) walletSummary(pubKeyHashes []string) map[string]any {
 	tip := s.chain.Tip()
 	currentHeight := int32(-1)
@@ -3717,15 +3905,27 @@ func (s *Server) walletSummary(pubKeyHashes []string) map[string]any {
 		Confirmations int32  `json:"confirmations"`
 		MaturesAt     int32  `json:"matures_at"`
 		PubKeyHash    string `json:"pubkey_hash"`
+		Address       string `json:"address,omitempty"`
 	}
 	spendable := int64(0)
 	immature := int64(0)
 	immatureOut := make([]out, 0)
 	spendableOut := make([]out, 0)
 	want := make(map[string]struct{})
+	addressByHash := make(map[string]string)
+	hashByAddress := make(map[string]string)
+	for _, addr := range s.wallet.ListAddresses() {
+		hashHex, err := classicAddressHashHex(addr)
+		if err != nil {
+			continue
+		}
+		addressByHash[hashHex] = addr
+		hashByAddress[addr] = hashHex
+		want[hashHex] = struct{}{}
+	}
 	for _, h := range pubKeyHashes {
 		h = strings.ToLower(strings.TrimSpace(h))
-		if validateMiningPubKeyHash(h) == nil {
+		if validateMiningPubKeyHash(h) == nil && addressByHash[h] != "" {
 			want[h] = struct{}{}
 		}
 	}
@@ -3736,7 +3936,7 @@ func (s *Server) walletSummary(pubKeyHashes []string) map[string]any {
 			if u.Coinbase {
 				maturesAt = u.Height + int32(chaincfg.CoinbaseMaturity)
 			}
-			row := out{TxID: u.TxID, Vout: u.Vout, Height: u.Height, Value: u.Value, Confirmations: u.Confirmations, MaturesAt: maturesAt, PubKeyHash: u.PubKeyHashHex}
+			row := out{TxID: u.TxID, Vout: u.Vout, Height: u.Height, Value: u.Value, Confirmations: u.Confirmations, MaturesAt: maturesAt, PubKeyHash: u.PubKeyHashHex, Address: u.Address}
 			if u.Coinbase && u.Confirmations < int32(chaincfg.CoinbaseMaturity) {
 				immature += u.Value
 				immatureOut = append(immatureOut, row)
@@ -3761,6 +3961,7 @@ func (s *Server) walletSummary(pubKeyHashes []string) map[string]any {
 			if _, ok := want[pkh]; !ok {
 				continue
 			}
+			addr := addressByHash[pkh]
 			key := fmt.Sprintf("%s:%d", u.TxID, u.Vout)
 			if _, ok := seen[key]; ok {
 				continue
@@ -3773,7 +3974,7 @@ func (s *Server) walletSummary(pubKeyHashes []string) map[string]any {
 			if u.Coinbase {
 				maturesAt = u.Height + int32(chaincfg.CoinbaseMaturity)
 			}
-			row := out{TxID: u.TxID, Vout: u.Vout, Height: u.Height, Value: u.Value, Confirmations: confs, MaturesAt: maturesAt, PubKeyHash: pkh}
+			row := out{TxID: u.TxID, Vout: u.Vout, Height: u.Height, Value: u.Value, Confirmations: confs, MaturesAt: maturesAt, PubKeyHash: pkh, Address: addr}
 			if u.Coinbase && confs < int32(chaincfg.CoinbaseMaturity) {
 				immature += u.Value
 				immatureOut = append(immatureOut, row)
@@ -3790,6 +3991,8 @@ func (s *Server) walletSummary(pubKeyHashes []string) map[string]any {
 		}
 	}
 	lockedViewLimited := s.wallet.SecurityInfo()["locked"] == true
+	cfg, _ := config.LoadMiningConfig(s.miningConfigPath())
+	dest := s.miningDestinationStatus(cfg)
 	return map[string]any{
 		"height":                      currentHeight,
 		"wallet":                      s.wallet.SecurityInfo(),
@@ -3798,13 +4001,21 @@ func (s *Server) walletSummary(pubKeyHashes []string) map[string]any {
 		"next_maturity_height":        nextMaturity,
 		"spendable_outputs":           spendableOut,
 		"immature_outputs":            immatureOut,
+		"address_by_pubkey_hash":      addressByHash,
+		"pubkey_hash_by_address":      hashByAddress,
+		"default_mining_address":      dest.Address,
+		"default_mining_pubkey_hash":  dest.PubKeyHashHex,
+		"default_mining_wallet_owned": dest.Owned,
+		"external_payout_mode":        dest.External,
+		"mining_destination_error":    dest.Error,
 		"note":                        "coinbase rewards require 100 confirmations before spending",
 		"locked_balance_view_limited": lockedViewLimited,
 	}
 }
 
 func (s *Server) doctor() map[string]any {
-	cfg, _ := config.LoadMiningConfig(config.DefaultConfigPath())
+	cfg, _ := config.LoadMiningConfig(s.miningConfigPath())
+	dest := s.miningDestinationStatus(cfg)
 	storage := s.chain.StorageHealth()
 	winfo := s.wallet.SecurityInfo()
 	checks := []map[string]any{
@@ -3812,7 +4023,15 @@ func (s *Server) doctor() map[string]any {
 		{"id": "storage_ok", "ok": storage.OK, "message": "best block, height index and UTXO stats readable"},
 		{"id": "wallet_initialized", "ok": winfo["hdseed"] == true && winfo["classic_keys"].(int) > 0, "message": "wallet has HD seed and classic key"},
 		{"id": "hybrid_wallet_initialized", "ok": winfo["hybrid_keys"].(int) > 0, "message": "hybrid wallet path has at least one key"},
-		{"id": "mining_hash_valid", "ok": validateMiningPubKeyHash(cfg.PubKeyHash) == nil, "message": "mining_pubkey_hash is configured and non-zero"},
+		{"id": "mining_destination_wallet_owned", "ok": dest.Owned || dest.External, "message": func() string {
+			if dest.Error != "" {
+				return dest.Error
+			}
+			if dest.External {
+				return "external payout mode is explicitly enabled"
+			}
+			return "mining reward destination is wallet-owned"
+		}()},
 		{"id": "rpc_local_or_authenticated", "ok": rpcIsLocalhost(s.rpcBindHost()) || s.auth.Enabled, "message": "non-local RPC requires auth"},
 		{"id": "peers_visible", "ok": s.p2p.PeerCount() >= 0, "message": "peer subsystem is readable"},
 	}
@@ -3836,7 +4055,7 @@ func (s *Server) doctor() map[string]any {
 		"peers":   s.p2p.PeerCount(),
 		"storage": storage,
 		"wallet":  winfo,
-		"mining":  map[string]any{"pubkey_hash": cfg.PubKeyHash, "threads": cfg.Threads},
+		"mining":  map[string]any{"address": dest.Address, "pubkey_hash": dest.PubKeyHashHex, "wallet_owned": dest.Owned, "external_payout": dest.External, "destination_error": dest.Error, "threads": cfg.Threads},
 	}
 }
 
@@ -4000,22 +4219,69 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 	if tip := s.chain.Tip(); tip != nil {
 		currentBits = fmt.Sprintf("%08x", tip.Bits)
 	}
+	dest := s.miningDestinationStatus(cfg)
+	displayRewardHash := strings.TrimSpace(rewardHash)
+	if displayRewardHash == "" {
+		displayRewardHash = dest.PubKeyHashHex
+	}
+	displayRewardAddress := dest.Address
+	if displayRewardAddress == "" && displayRewardHash != "" {
+		displayRewardAddress = s.walletClassicAddressForHash(displayRewardHash)
+	}
 	estimatedSeconds := float64(0)
 	if localHashPS > 0 {
 		if nh, ok := s.estimateNetworkHashPS(20)["hps"].(float64); ok && nh > 0 {
 			estimatedSeconds = float64(chaincfg.TargetSpacing.Seconds()) * nh / localHashPS
 		}
 	}
+	lastError := strings.TrimSpace(minerLastError)
+	lastAction := ""
+	lastHistoricalEvent := ""
+	lastErrorRaw := ""
+	if isNormalMinerStopReason(lastError) {
+		lastAction = "stopped by user/RPC"
+		lastErrorRaw = lastError
+		lastError = ""
+	} else if !activeMining && isHistoricalMinerRetryReason(lastError) {
+		lastHistoricalEvent = lastError
+		lastErrorRaw = lastError
+		lastError = ""
+	}
+	liveThreads := 0
+	liveHashPS := float64(0)
+	if activeMining {
+		liveThreads = minerThreads
+		liveHashPS = localHashPS
+	}
+	currentMiningState := "stopped"
+	if activeMining {
+		currentMiningState = "running"
+	}
+	currentSafetyState := "idle / ready, miner stopped"
+	if activeMining && miningReady {
+		currentSafetyState = "safe"
+	} else if activeMining && !miningReady {
+		currentSafetyState = "unsafe"
+	} else if dest.Error != "" {
+		currentSafetyState = dest.Error
+	}
 	return map[string]any{
-		"mining_ready":       miningReady,
-		"can_start":          canStart,
-		"mining_enabled":     cfg.Enabled || activeMining,
-		"active_mining":      activeMining,
-		"mining_safe":        miningReady,
-		"threads":            cfg.Threads,
-		"configured_threads": cfg.Threads,
-		"max_threads":        cfg.MaxThreads,
-		"active_threads":     minerThreads,
+		"mining_ready":        miningReady,
+		"can_start":           canStart,
+		"mining_enabled":      cfg.Enabled || activeMining,
+		"active_mining":       activeMining,
+		"mining_safe":         miningReady,
+		"threads":             cfg.Threads,
+		"configured_threads":  cfg.Threads,
+		"max_threads":         cfg.MaxThreads,
+		"active_threads":      liveThreads,
+		"live_active_threads": liveThreads,
+		"last_session_active_threads": func() int {
+			if activeMining {
+				return 0
+			}
+			return minerThreads
+		}(),
 		"effective_threads": func() int {
 			if activeMining {
 				return minerThreads
@@ -4034,18 +4300,41 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 			}
 			return "miner is stopped; configured_threads will be used next time mining starts"
 		}(),
-		"auto_start":                      cfg.AutoStart,
-		"peer_required":                   cfg.PeerRequired || peerRequired,
-		"safe_required":                   cfg.SafeRequired,
-		"stop_after_blocks":               stopAfter,
-		"blocks_remaining":                blocksRemaining,
-		"session_blocks":                  minerBlocks,
-		"started_at":                      startedAt,
-		"uptime_seconds":                  uptime,
-		"last_block_hash":                 minerLastHash,
-		"last_error":                      minerLastError,
-		"local_hashps":                    localHashPS,
-		"local_khps":                      localHashPS / 1000,
+		"auto_start":            cfg.AutoStart,
+		"peer_required":         cfg.PeerRequired || peerRequired,
+		"safe_required":         cfg.SafeRequired,
+		"stop_after_blocks":     stopAfter,
+		"blocks_remaining":      blocksRemaining,
+		"session_blocks":        minerBlocks,
+		"started_at":            startedAt,
+		"uptime_seconds":        uptime,
+		"last_block_hash":       minerLastHash,
+		"last_error":            lastError,
+		"last_error_raw":        lastErrorRaw,
+		"last_action":           lastAction,
+		"last_historical_event": lastHistoricalEvent,
+		"current_mining_state":  currentMiningState,
+		"current_safety_state":  currentSafetyState,
+		"live_hashrate":         liveHashPS,
+		"live_hashps":           liveHashPS,
+		"live_khps":             liveHashPS / 1000,
+		"local_hashps":          liveHashPS,
+		"local_khps":            liveHashPS / 1000,
+		"local_hashps_live":     liveHashPS,
+		"local_khps_live":       liveHashPS / 1000,
+		"last_session_hashps": func() float64 {
+			if activeMining {
+				return 0
+			}
+			return localHashPS
+		}(),
+		"last_session_khps": func() float64 {
+			if activeMining {
+				return 0
+			}
+			return localHashPS / 1000
+		}(),
+		"live_active_threads_note":        "active_threads and local_khps are live-only; use last_session_* for stopped miner history",
 		"session_hashes":                  sessionHashes,
 		"hashes_per_thread":               hashesPerThread(localHashPS, minerThreads),
 		"last_nonce":                      lastNonce,
@@ -4054,15 +4343,40 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 		"accepted_blocks":                 minerBlocks,
 		"stale_blocks":                    staleBlocks,
 		"rejected_blocks":                 rejectedBlocks,
-		"mining_pubkey_hash":              cfg.PubKeyHash,
-		"active_reward_hash":              rewardHash,
-		"reject_zero_hash":                cfg.RejectZeroHash,
-		"peers":                           s.p2p.PeerCount(),
-		"storage":                         storage,
-		"wallet":                          s.wallet.SecurityInfo(),
-		"config":                          config.DefaultConfigPath(),
-		"control_rpcs":                    []string{"startminer", "stopminer", "restartminer", "getminerstatus", "benchmarkminer", "autotuneminer", "setminerthreads", "setminingaddress", "configureminer"},
+		"mining_reward_address":           displayRewardAddress,
+		"configured_mining_address":       strings.TrimSpace(cfg.RewardAddress),
+		"mining_address_wallet_owned":     dest.Owned,
+		"owned_by_wallet":                 dest.Owned,
+		"external_payout_mode":            dest.External,
+		"mining_destination_error":        dest.Error,
+		"payout_warning": func() string {
+			if dest.External {
+				return "External payout mode: rewards will not appear in this wallet unless you own or import that address."
+			}
+			if dest.Error != "" {
+				return dest.Error
+			}
+			return ""
+		}(),
+		"mining_pubkey_hash": dest.PubKeyHashHex,
+		"active_reward_hash": displayRewardHash,
+		"reject_zero_hash":   cfg.RejectZeroHash,
+		"peers":              s.p2p.PeerCount(),
+		"storage":            storage,
+		"wallet":             s.wallet.SecurityInfo(),
+		"config":             s.miningConfigPath(),
+		"control_rpcs":       []string{"startminer", "stopminer", "restartminer", "getminerstatus", "benchmarkminer", "autotuneminer", "setminerthreads", "setminingaddress", "configureminer"},
 	}
+}
+
+func isNormalMinerStopReason(s string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(s))
+	return normalized == "rpc stopminer" || normalized == "rpc restartminer" || normalized == "stopminer" || normalized == "stopped" || normalized == "stopped by user"
+}
+
+func isHistoricalMinerRetryReason(s string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(s))
+	return strings.Contains(normalized, "stale tip") || strings.Contains(normalized, "retry") || strings.Contains(normalized, "refresh")
 }
 
 func (s *Server) parseMinerStartOptions(params json.RawMessage, cfg config.MiningConfig) (threads int, stopAfter int64, peerRequired bool, err error) {
@@ -4111,15 +4425,16 @@ func (s *Server) startMiner(parent context.Context, params json.RawMessage) (any
 	if s.policy.SeedNode {
 		return nil, &rpcError{Code: -32603, Message: "mining disabled: node_role=seed runs full-node relay only"}
 	}
-	cfg, _ := config.LoadMiningConfig(config.DefaultConfigPath())
+	cfg, _ := config.LoadMiningConfig(s.miningConfigPath())
 	threads, stopAfter, peerRequired, err := s.parseMinerStartOptions(params, cfg)
 	if err != nil {
 		return nil, &rpcError{Code: -32602, Message: "startminer options: " + err.Error()}
 	}
-	if err := validateMiningPubKeyHash(cfg.PubKeyHash); err != nil {
-		return nil, &rpcError{Code: -32602, Message: "mining_pubkey_hash not ready: " + err.Error()}
+	dest, err := s.resolveMiningDestination(cfg, true)
+	if err != nil {
+		return nil, &rpcError{Code: -32602, Message: err.Error()}
 	}
-	pubHash, err := hex.DecodeString(cfg.PubKeyHash)
+	pubHash, err := hex.DecodeString(dest.PubKeyHashHex)
 	if err != nil || len(pubHash) != 20 {
 		return nil, &rpcError{Code: -32602, Message: "invalid mining_pubkey_hash"}
 	}
@@ -4144,7 +4459,7 @@ func (s *Server) startMiner(parent context.Context, params json.RawMessage) (any
 	s.minerLastError = ""
 	s.minerStartedAt = time.Now()
 	s.minerStopAfterBlocks = stopAfter
-	s.minerRewardHash = cfg.PubKeyHash
+	s.minerRewardHash = strings.ToLower(dest.PubKeyHashHex)
 	s.minerPeerRequired = peerRequired
 	s.minerLocalHashPS = 0
 	s.minerSessionHashes = 0
@@ -4152,13 +4467,25 @@ func (s *Server) startMiner(parent context.Context, params json.RawMessage) (any
 	s.minerStaleBlocks = 0
 	s.minerRejectedBlocks = 0
 	s.minerMu.Unlock()
-	_ = config.AppendConfigLine(config.DefaultConfigPath(), "mining_enabled", "true")
-	_ = config.AppendConfigLine(config.DefaultConfigPath(), "mining_threads", fmt.Sprint(threads))
-	_ = config.AppendConfigLine(config.DefaultConfigPath(), "mining_stop_after_blocks", fmt.Sprint(stopAfter))
-	_ = config.AppendConfigLine(config.DefaultConfigPath(), "mining_peer_required", fmt.Sprint(peerRequired))
+	_ = config.AppendConfigLine(s.miningConfigPath(), "mining_enabled", "true")
+	_ = config.AppendConfigLine(s.miningConfigPath(), "mining_threads", fmt.Sprint(threads))
+	_ = config.AppendConfigLine(s.miningConfigPath(), "mining_stop_after_blocks", fmt.Sprint(stopAfter))
+	_ = config.AppendConfigLine(s.miningConfigPath(), "mining_peer_required", fmt.Sprint(peerRequired))
 
 	go s.minerLoop(minerCtx, pubHash, threads)
-	return map[string]any{"active_mining": true, "threads": threads, "stop_after_blocks": stopAfter, "peer_required": peerRequired, "mining_pubkey_hash": cfg.PubKeyHash}, nil
+	return map[string]any{
+		"active_mining":               true,
+		"threads":                     threads,
+		"stop_after_blocks":           stopAfter,
+		"peer_required":               peerRequired,
+		"mining_address":              dest.Address,
+		"mining_reward_address":       dest.Address,
+		"mining_pubkey_hash":          strings.ToLower(dest.PubKeyHashHex),
+		"active_reward_hash":          strings.ToLower(dest.PubKeyHashHex),
+		"mining_address_wallet_owned": dest.Owned,
+		"owned_by_wallet":             dest.Owned,
+		"external_payout_mode":        dest.External,
+	}, nil
 }
 
 func (s *Server) stopMiner(reason string) map[string]any {
@@ -4175,7 +4502,7 @@ func (s *Server) stopMiner(reason string) map[string]any {
 	s.minerCancel = nil
 	s.minerLastError = reason
 	s.minerMu.Unlock()
-	_ = config.AppendConfigLine(config.DefaultConfigPath(), "mining_enabled", "false")
+	_ = config.AppendConfigLine(s.miningConfigPath(), "mining_enabled", "false")
 	uptime := int64(0)
 	if !startedAt.IsZero() {
 		uptime = int64(time.Since(startedAt).Seconds())
@@ -4184,7 +4511,7 @@ func (s *Server) stopMiner(reason string) map[string]any {
 }
 
 func (s *Server) benchmarkMiner(ctx context.Context, params json.RawMessage) (any, *rpcError) {
-	cfg, _ := config.LoadMiningConfig(config.DefaultConfigPath())
+	cfg, _ := config.LoadMiningConfig(s.miningConfigPath())
 	threads := cfg.Threads
 	durationSeconds := int64(30)
 	var args []json.RawMessage
@@ -4214,10 +4541,11 @@ func (s *Server) benchmarkMiner(ctx context.Context, params json.RawMessage) (an
 	if cfg.MaxThreads > 0 && threads > cfg.MaxThreads {
 		return nil, &rpcError{Code: -32602, Message: fmt.Sprintf("threads %d exceeds mining_max_threads %d", threads, cfg.MaxThreads)}
 	}
-	if err := validateMiningPubKeyHash(cfg.PubKeyHash); err != nil {
-		return nil, &rpcError{Code: -32602, Message: "mining_pubkey_hash not ready: " + err.Error()}
+	dest, err := s.resolveMiningDestination(cfg, true)
+	if err != nil {
+		return nil, &rpcError{Code: -32602, Message: err.Error()}
 	}
-	pubHash, err := hex.DecodeString(cfg.PubKeyHash)
+	pubHash, err := hex.DecodeString(dest.PubKeyHashHex)
 	if err != nil || len(pubHash) != 20 {
 		return nil, &rpcError{Code: -32602, Message: "invalid mining_pubkey_hash"}
 	}
@@ -4245,7 +4573,7 @@ func (s *Server) benchmarkMiner(ctx context.Context, params json.RawMessage) (an
 }
 
 func (s *Server) autoTuneMiner(ctx context.Context, params json.RawMessage) (any, *rpcError) {
-	cfg, _ := config.LoadMiningConfig(config.DefaultConfigPath())
+	cfg, _ := config.LoadMiningConfig(s.miningConfigPath())
 	maxThreads := cfg.MaxThreads
 	if maxThreads <= 0 {
 		maxThreads = cfg.Threads
@@ -4299,11 +4627,11 @@ func (s *Server) setMinerThreads(params json.RawMessage) (any, *rpcError) {
 	if err := json.Unmarshal(params, &args); err != nil || len(args) != 1 || args[0] <= 0 {
 		return nil, &rpcError{Code: -32602, Message: "setminerthreads expects one positive integer"}
 	}
-	cfg, _ := config.LoadMiningConfig(config.DefaultConfigPath())
+	cfg, _ := config.LoadMiningConfig(s.miningConfigPath())
 	if cfg.MaxThreads > 0 && args[0] > cfg.MaxThreads {
 		return nil, &rpcError{Code: -32602, Message: fmt.Sprintf("threads %d exceeds mining_max_threads %d", args[0], cfg.MaxThreads)}
 	}
-	if err := config.AppendConfigLine(config.DefaultConfigPath(), "mining_threads", fmt.Sprint(args[0])); err != nil {
+	if err := config.AppendConfigLine(s.miningConfigPath(), "mining_threads", fmt.Sprint(args[0])); err != nil {
 		return nil, &rpcError{Code: -32603, Message: err.Error()}
 	}
 	return map[string]any{"configured_threads": args[0], "note": "restart miner for active thread change to take effect"}, nil
@@ -4318,6 +4646,7 @@ func (s *Server) configureMiner(params json.RawMessage) (any, *rpcError) {
 		}
 	}
 	set := map[string]any{}
+	externalPayoutRequested := boolFromAny(opts["external_payout"]) || boolFromAny(opts["mining_external_payout"])
 	for k, v := range opts {
 		switch k {
 		case "threads", "mining_threads":
@@ -4325,47 +4654,91 @@ func (s *Server) configureMiner(params json.RawMessage) (any, *rpcError) {
 			if n <= 0 {
 				return nil, &rpcError{Code: -32602, Message: "threads must be positive"}
 			}
-			_ = config.AppendConfigLine(config.DefaultConfigPath(), "mining_threads", fmt.Sprint(n))
+			_ = config.AppendConfigLine(s.miningConfigPath(), "mining_threads", fmt.Sprint(n))
 			set["threads"] = n
 		case "max_threads", "mining_max_threads":
 			n := intFromAny(v)
 			if n <= 0 {
 				return nil, &rpcError{Code: -32602, Message: "max_threads must be positive"}
 			}
-			_ = config.AppendConfigLine(config.DefaultConfigPath(), "mining_max_threads", fmt.Sprint(n))
+			_ = config.AppendConfigLine(s.miningConfigPath(), "mining_max_threads", fmt.Sprint(n))
 			set["max_threads"] = n
 		case "enabled", "mining_enabled":
 			b := boolFromAny(v)
-			_ = config.AppendConfigLine(config.DefaultConfigPath(), "mining_enabled", fmt.Sprint(b))
+			_ = config.AppendConfigLine(s.miningConfigPath(), "mining_enabled", fmt.Sprint(b))
 			set["enabled"] = b
 		case "auto_start", "mining_auto_start":
 			b := boolFromAny(v)
-			_ = config.AppendConfigLine(config.DefaultConfigPath(), "mining_auto_start", fmt.Sprint(b))
+			_ = config.AppendConfigLine(s.miningConfigPath(), "mining_auto_start", fmt.Sprint(b))
 			set["auto_start"] = b
 		case "peer_required", "mining_peer_required":
 			b := boolFromAny(v)
-			_ = config.AppendConfigLine(config.DefaultConfigPath(), "mining_peer_required", fmt.Sprint(b))
+			_ = config.AppendConfigLine(s.miningConfigPath(), "mining_peer_required", fmt.Sprint(b))
 			set["peer_required"] = b
 		case "stop_after_blocks", "mining_stop_after_blocks":
 			n := intFromAny(v)
 			if n < 0 {
 				return nil, &rpcError{Code: -32602, Message: "stop_after_blocks cannot be negative"}
 			}
-			_ = config.AppendConfigLine(config.DefaultConfigPath(), "mining_stop_after_blocks", fmt.Sprint(n))
+			_ = config.AppendConfigLine(s.miningConfigPath(), "mining_stop_after_blocks", fmt.Sprint(n))
 			set["stop_after_blocks"] = n
 		case "pubkey_hash", "mining_pubkey_hash":
 			str := strings.ToLower(fmt.Sprint(v))
 			if err := validateMiningPubKeyHash(str); err != nil {
 				return nil, &rpcError{Code: -32602, Message: err.Error()}
 			}
-			_ = config.AppendConfigLine(config.DefaultConfigPath(), "mining_pubkey_hash", str)
+			addr := s.walletClassicAddressForHash(str)
+			if addr == "" && !externalPayoutRequested {
+				return nil, &rpcError{Code: -32602, Message: unownedMiningDestinationMessage}
+			}
+			if addr != "" {
+				info := wallet.MiningAddressInfo{Address: addr, PubKeyHashHex: str}
+				if err := s.persistMiningDestination(info); err != nil {
+					return nil, &rpcError{Code: -32603, Message: err.Error()}
+				}
+				set["mining_reward_address"] = addr
+				set["external_payout"] = false
+			} else {
+				_ = config.AppendConfigLine(s.miningConfigPath(), "mining_pubkey_hash", str)
+				_ = config.AppendConfigLine(s.miningConfigPath(), "mining_external_payout", "true")
+				set["external_payout"] = true
+			}
 			set["mining_pubkey_hash"] = str
+		case "address", "mining_address", "mining_reward_address":
+			addr := strings.TrimSpace(fmt.Sprint(v))
+			hashHex, err := classicAddressHashHex(addr)
+			if err != nil {
+				return nil, &rpcError{Code: -32602, Message: "invalid mining address"}
+			}
+			owned := s.walletOwnsClassicAddress(addr)
+			if !owned && !externalPayoutRequested {
+				return nil, &rpcError{Code: -32602, Message: unownedMiningDestinationMessage}
+			}
+			if owned {
+				info := wallet.MiningAddressInfo{Address: addr, PubKeyHashHex: hashHex}
+				if err := s.persistMiningDestination(info); err != nil {
+					return nil, &rpcError{Code: -32603, Message: err.Error()}
+				}
+				set["external_payout"] = false
+			} else {
+				_ = config.AppendConfigLine(s.miningConfigPath(), "mining_reward_address", addr)
+				_ = config.AppendConfigLine(s.miningConfigPath(), "mining_pubkey_hash", hashHex)
+				_ = config.AppendConfigLine(s.miningConfigPath(), "mining_external_payout", "true")
+				set["external_payout"] = true
+			}
+			set["mining_reward_address"] = addr
+			set["mining_pubkey_hash"] = hashHex
+		case "external_payout", "mining_external_payout":
+			b := boolFromAny(v)
+			_ = config.AppendConfigLine(s.miningConfigPath(), "mining_external_payout", fmt.Sprint(b))
+			set["external_payout"] = b
 		default:
 			return nil, &rpcError{Code: -32602, Message: "unknown miner option: " + k}
 		}
 	}
-	cfg, _ := config.LoadMiningConfig(config.DefaultConfigPath())
-	return map[string]any{"updated": set, "config": config.DefaultConfigPath(), "miner": map[string]any{"threads": cfg.Threads, "max_threads": cfg.MaxThreads, "auto_start": cfg.AutoStart, "peer_required": cfg.PeerRequired, "stop_after_blocks": cfg.StopAfterBlocks, "pubkey_hash": cfg.PubKeyHash}}, nil
+	cfg, _ := config.LoadMiningConfig(s.miningConfigPath())
+	dest := s.miningDestinationStatus(cfg)
+	return map[string]any{"updated": set, "config": s.miningConfigPath(), "miner": map[string]any{"threads": cfg.Threads, "max_threads": cfg.MaxThreads, "auto_start": cfg.AutoStart, "peer_required": cfg.PeerRequired, "stop_after_blocks": cfg.StopAfterBlocks, "address": dest.Address, "pubkey_hash": dest.PubKeyHashHex, "wallet_owned": dest.Owned, "external_payout": dest.External, "destination_error": dest.Error}}, nil
 }
 
 func hashesPerThread(total float64, threads int) float64 {

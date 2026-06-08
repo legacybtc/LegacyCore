@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 
 	"legacycoin/legacy-go/internal/address"
 	"legacycoin/legacy-go/internal/chaincfg"
+	"legacycoin/legacy-go/internal/config"
+	"legacycoin/legacy-go/internal/wallet"
 )
 
 func TestJSONRPCSingleRequestMethodNotFound(t *testing.T) {
@@ -174,5 +177,68 @@ func TestJSONRPCGetAddressHistoryParamValidation(t *testing.T) {
 				t.Fatalf("expected invalid params, got %+v", resp.Error)
 			}
 		})
+	}
+}
+
+func TestSetMiningAddressRequiresWalletOwnedAddress(t *testing.T) {
+	dir := t.TempDir()
+	w, err := wallet.Open(dir)
+	if err != nil {
+		t.Fatalf("wallet.Open: %v", err)
+	}
+	owned, err := w.NewAddress()
+	if err != nil {
+		t.Fatalf("NewAddress: %v", err)
+	}
+	unowned := address.EncodeBase58Check(chaincfg.PublicKeyHashVersion, bytes.Repeat([]byte{0x42}, 20))
+	s := &Server{wallet: w, configPath: filepath.Join(dir, config.ConfigFile)}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{"jsonrpc":"1.0","id":"set","method":"setminingaddress","params":["`+unowned+`"]}`))
+	s.handle(rec, req)
+	var rejected response
+	if err := json.Unmarshal(rec.Body.Bytes(), &rejected); err != nil {
+		t.Fatalf("decode rejected response: %v", err)
+	}
+	if rejected.Error == nil || rejected.Error.Code != -32602 {
+		t.Fatalf("expected unowned address rejection, got %+v", rejected.Error)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{"jsonrpc":"1.0","id":"set","method":"setminingaddress","params":["`+owned+`"]}`))
+	s.handle(rec, req)
+	var accepted response
+	if err := json.Unmarshal(rec.Body.Bytes(), &accepted); err != nil {
+		t.Fatalf("decode accepted response: %v", err)
+	}
+	if accepted.Error != nil {
+		t.Fatalf("unexpected owned address error: %+v", accepted.Error)
+	}
+	cfg, err := config.LoadMiningConfig(filepath.Join(dir, config.ConfigFile))
+	if err != nil {
+		t.Fatalf("LoadMiningConfig: %v", err)
+	}
+	if cfg.RewardAddress != owned || cfg.PubKeyHash == "" {
+		t.Fatalf("mining destination not persisted: %+v", cfg)
+	}
+}
+
+func TestResolveMiningDestinationRejectsStaleUnownedHash(t *testing.T) {
+	dir := t.TempDir()
+	w, err := wallet.Open(dir)
+	if err != nil {
+		t.Fatalf("wallet.Open: %v", err)
+	}
+	if _, err := w.NewAddress(); err != nil {
+		t.Fatalf("NewAddress: %v", err)
+	}
+	s := &Server{wallet: w, configPath: filepath.Join(dir, config.ConfigFile)}
+	cfg := config.MiningConfig{PubKeyHash: "85f774538db4b5243fe64121bbfe53bc83441e0e"}
+	dest, err := s.resolveMiningDestination(cfg, true)
+	if err == nil {
+		t.Fatalf("expected stale unowned hash to be rejected, got %+v", dest)
+	}
+	if dest.Owned || dest.External {
+		t.Fatalf("unexpected ownership flags for stale hash: %+v", dest)
 	}
 }

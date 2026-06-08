@@ -396,7 +396,7 @@ func (n *Node) Run(ctx context.Context, cancel context.CancelFunc) error {
 	}()
 	fmt.Printf("Legacy Coin Go node listening on RPC port %d\n", n.chain.Params().RPCPort)
 	go func() {
-		errc <- rpc.New(n.chain, n.pool, n.wallet, n.p2p, cancel, n.auth, n.rpcBind, n.policy).ListenAndServe(ctx)
+		errc <- rpc.New(n.chain, n.pool, n.wallet, n.p2p, cancel, n.auth, n.rpcBind, n.policy, n.paths.ConfigPath).ListenAndServe(ctx)
 	}()
 	err := <-errc
 	cancel()
