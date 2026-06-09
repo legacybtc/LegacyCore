@@ -29,6 +29,18 @@ func TestGetMinerStatusFallsBackWhenRPCOffline(t *testing.T) {
 	if status["active_mining"] != true {
 		t.Fatalf("expected active_mining true in fallback, got %v", status["active_mining"])
 	}
+	if status["mining_safe"] != false || status["safe_to_mine"] != false {
+		t.Fatalf("fallback status must be unsafe/unknown, got mining_safe=%v safe_to_mine=%v", status["mining_safe"], status["safe_to_mine"])
+	}
+	if status["dashboard_data_fresh"] != false {
+		t.Fatalf("fallback status must be marked stale, got %v", status["dashboard_data_fresh"])
+	}
+	if status["mining_blocked_reason"] != "Mining blocked: RPC is not responding." {
+		t.Fatalf("unexpected mining blocked reason: %v", status["mining_blocked_reason"])
+	}
+	if status["rpc_health"] != "offline" && status["rpc_health"] != "timeout" {
+		t.Fatalf("expected rpc_health offline/timeout, got %v", status["rpc_health"])
+	}
 }
 
 func TestStopMinerFallsBackWhenRPCOffline(t *testing.T) {

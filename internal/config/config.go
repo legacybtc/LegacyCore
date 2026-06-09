@@ -469,6 +469,10 @@ type MiningConfig struct {
 	AutoStart       bool
 	PeerRequired    bool
 	SafeRequired    bool
+	MinGoodPeers    int
+	AllowUnsafe     bool
+	BlocksBehindOK  int
+	RejectUnsafeGBT bool
 	RejectZeroHash  bool
 	ExternalPayout  bool
 	StopAfterBlocks int64
@@ -479,7 +483,7 @@ func LoadMiningConfig(path string) (MiningConfig, error) {
 	if err != nil {
 		return MiningConfig{}, err
 	}
-	cfg := MiningConfig{Threads: 1, MaxThreads: runtime.NumCPU(), PeerRequired: false, SafeRequired: true, RejectZeroHash: true}
+	cfg := MiningConfig{Threads: 1, MaxThreads: runtime.NumCPU(), PeerRequired: false, SafeRequired: true, MinGoodPeers: 3, BlocksBehindOK: 1, RejectUnsafeGBT: true, RejectZeroHash: true}
 	if vals := kv["mining_enabled"]; len(vals) > 0 {
 		v := strings.ToLower(strings.TrimSpace(vals[len(vals)-1]))
 		cfg.Enabled = v == "1" || v == "true" || v == "yes" || v == "on"
@@ -528,6 +532,28 @@ func LoadMiningConfig(path string) (MiningConfig, error) {
 	if vals := kv["mining_safe_required"]; len(vals) > 0 {
 		v := strings.ToLower(strings.TrimSpace(vals[len(vals)-1]))
 		cfg.SafeRequired = v == "1" || v == "true" || v == "yes" || v == "on"
+	}
+	if vals := kv["mining_min_good_peers"]; len(vals) > 0 {
+		var n int
+		_, _ = fmt.Sscanf(strings.TrimSpace(vals[len(vals)-1]), "%d", &n)
+		if n >= 0 {
+			cfg.MinGoodPeers = n
+		}
+	}
+	if vals := kv["mining_blocks_behind_allowed"]; len(vals) > 0 {
+		var n int
+		_, _ = fmt.Sscanf(strings.TrimSpace(vals[len(vals)-1]), "%d", &n)
+		if n >= 0 {
+			cfg.BlocksBehindOK = n
+		}
+	}
+	if vals := kv["mining_allow_unsafe"]; len(vals) > 0 {
+		v := strings.ToLower(strings.TrimSpace(vals[len(vals)-1]))
+		cfg.AllowUnsafe = v == "1" || v == "true" || v == "yes" || v == "on"
+	}
+	if vals := kv["mining_reject_unsafe_templates"]; len(vals) > 0 {
+		v := strings.ToLower(strings.TrimSpace(vals[len(vals)-1]))
+		cfg.RejectUnsafeGBT = v == "1" || v == "true" || v == "yes" || v == "on"
 	}
 	if vals := kv["reject_zero_mining_hash"]; len(vals) > 0 {
 		v := strings.ToLower(strings.TrimSpace(vals[len(vals)-1]))

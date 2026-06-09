@@ -169,10 +169,49 @@ test("RPC fallback is shown as unavailable, not fake fresh mining", () => {
     mining_paused_reason: "rpc offline",
   }, overnightWalletSummary);
   assert.equal(state.status, "error");
-  assert.equal(state.safetyLabel, "data unavailable / RPC timeout");
+  assert.equal(state.safetyLabel, "unknown — RPC timeout");
   assert.equal(state.liveActiveThreads, 0);
-  assert.match(state.hashrateMetricLabel, /0 KH\/s \(last session 0[.,]946 KH\/s\)/);
+  assert.match(state.hashrateMetricLabel, /last known 0[.,]946 KH\/s \(stale\)/);
+  assert.equal(state.hashrateFeedMode, "last-known/stale");
+  assert.equal(state.dataFreshnessLabel, "last known / stale");
   assert.equal(state.displayLastError, "");
+});
+
+test("RPC timeout cannot render mining safety as safe even with stale running data", () => {
+  const state = buildMinerDashboardState({
+    status_source: "local_fallback",
+    rpc_offline: true,
+    rpc_health: "timeout",
+    data_unavailable: true,
+    fallback_stale: true,
+    dashboard_data_fresh: false,
+    active_mining: true,
+    mining_enabled: true,
+    mining_safe: true,
+    safe_to_mine: true,
+    active_threads: 12,
+    configured_threads: 12,
+    max_threads: 12,
+    local_khps: 5.2,
+    last_session_khps: 5.2,
+    mining_blocked_reason: "Mining blocked: RPC is not responding.",
+  }, overnightWalletSummary);
+  assert.equal(state.status, "error");
+  assert.equal(state.activeMining, false);
+  assert.equal(state.safetyLabel, "unknown — RPC timeout");
+  assert.equal(state.blockedReasonLabel, "Mining blocked: RPC is not responding.");
+  assert.match(state.hashrateMetricLabel, /last known 5[.,]2 KH\/s \(stale\)/);
+  assert.match(state.threadWarningLabel, /all CPU threads/);
+});
+
+test("high stale rate warning is surfaced in miner dashboard state", () => {
+  const state = buildMinerDashboardState({
+    ...stoppedMinerStatus,
+    stale_rate: 0.6,
+    stale_rate_warning: "High stale rate: node may be lagging or mining old templates.",
+  }, overnightWalletSummary);
+  assert.equal(state.staleRateLabel, "60%");
+  assert.match(state.staleRateWarning, /High stale rate/);
 });
 
 test("unowned payout hash is rendered as a blocking wallet safety warning", () => {

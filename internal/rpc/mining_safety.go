@@ -1,0 +1,238 @@
+package rpc
+
+import "strings"
+
+const (
+	defaultMiningMinGoodPeers      = 3
+	defaultMiningBlocksBehindLimit = 1
+	highMinerStaleRate             = 0.50
+	highMinerStaleMinimum          = int64(3)
+)
+
+type MiningSafetyInput struct {
+	RPCHealth             string
+	StorageOK             bool
+	StorageError          string
+	DestinationOK         bool
+	DestinationError      string
+	SafeRequired          bool
+	AllowUnsafe           bool
+	MinGoodPeers          int
+	BlocksBehindAllowed   int
+	LocalHeight           int32
+	BestPeerHeight        int32
+	BlocksBehind          int32
+	PeerCount             int
+	GoodPeerCount         int
+	StalePeerCount        int
+	SyncState             string
+	RequestInFlight       bool
+	NoUsefulChainData     bool
+	LastSyncError         string
+	RecentReorg           bool
+	PeerSplit             bool
+	AcceptedBlocks        int64
+	StaleBlocks           int64
+	RejectedBlocks        int64
+	TemplateAgeSeconds    float64
+	CurrentTemplateHeight int32
+	CurrentTipHeight      int32
+}
+
+type MiningSafetyStatus struct {
+	Safe                  bool
+	State                 string
+	Reason                string
+	RPCHealth             string
+	LocalHeight           int32
+	BestPeerHeight        int32
+	BlocksBehind          int32
+	PeerCount             int
+	GoodPeerCount         int
+	StalePeerCount        int
+	SyncState             string
+	RequestInFlight       bool
+	NoUsefulChainData     bool
+	RecentReorg           bool
+	PeerSplit             bool
+	StaleRate             float64
+	StaleRateWarning      string
+	UnsafeOverride        bool
+	StorageOK             bool
+	DestinationOK         bool
+	TemplateAgeSeconds    float64
+	CurrentTipHeight      int32
+	CurrentTemplateHeight int32
+}
+
+func (s MiningSafetyStatus) Fields() map[string]any {
+	return map[string]any{
+		"safe_to_mine":            s.Safe,
+		"mining_safe":             s.Safe,
+		"mining_safety_state":     s.State,
+		"mining_blocked_reason":   s.Reason,
+		"mining_safety_reason":    s.Reason,
+		"rpc_health":              s.RPCHealth,
+		"sync_state":              s.SyncState,
+		"blocks_behind":           s.BlocksBehind,
+		"peer_count":              s.PeerCount,
+		"good_peer_count":         s.GoodPeerCount,
+		"stale_peer_count":        s.StalePeerCount,
+		"best_peer_height":        s.BestPeerHeight,
+		"local_height":            s.LocalHeight,
+		"request_in_flight":       s.RequestInFlight,
+		"no_useful_chain_data":    s.NoUsefulChainData,
+		"recent_reorg":            s.RecentReorg,
+		"peer_split":              s.PeerSplit,
+		"stale_rate":              s.StaleRate,
+		"stale_rate_warning":      s.StaleRateWarning,
+		"unsafe_override":         s.UnsafeOverride,
+		"storage_ok":              s.StorageOK,
+		"destination_ok":          s.DestinationOK,
+		"last_template_age":       s.TemplateAgeSeconds,
+		"current_template_height": s.CurrentTemplateHeight,
+		"current_tip_height":      s.CurrentTipHeight,
+	}
+}
+
+func CheckSafeToMine(input MiningSafetyInput) MiningSafetyStatus {
+	rpcHealth := strings.ToLower(strings.TrimSpace(input.RPCHealth))
+	if rpcHealth == "" {
+		rpcHealth = "ok"
+	}
+	syncState := strings.ToLower(strings.TrimSpace(input.SyncState))
+	if syncState == "" {
+		syncState = "unknown"
+	}
+	minGoodPeers := input.MinGoodPeers
+	if minGoodPeers <= 0 {
+		minGoodPeers = defaultMiningMinGoodPeers
+	}
+	blocksBehindAllowed := input.BlocksBehindAllowed
+	if blocksBehindAllowed < 0 {
+		blocksBehindAllowed = defaultMiningBlocksBehindLimit
+	}
+	blocksBehind := input.BlocksBehind
+	if blocksBehind < 0 {
+		blocksBehind = 0
+	}
+	if input.BestPeerHeight > input.LocalHeight && input.BestPeerHeight-input.LocalHeight > blocksBehind {
+		blocksBehind = input.BestPeerHeight - input.LocalHeight
+	}
+	totalBlocks := input.AcceptedBlocks + input.StaleBlocks + input.RejectedBlocks
+	staleRate := float64(0)
+	if totalBlocks > 0 {
+		staleRate = float64(input.StaleBlocks) / float64(totalBlocks)
+	}
+	staleWarning := ""
+	if input.StaleBlocks >= highMinerStaleMinimum && staleRate >= highMinerStaleRate {
+		staleWarning = "High stale rate: node may be lagging or mining old templates."
+	}
+	status := MiningSafetyStatus{
+		Safe:                  true,
+		State:                 "safe",
+		Reason:                "",
+		RPCHealth:             rpcHealth,
+		LocalHeight:           input.LocalHeight,
+		BestPeerHeight:        input.BestPeerHeight,
+		BlocksBehind:          blocksBehind,
+		PeerCount:             input.PeerCount,
+		GoodPeerCount:         input.GoodPeerCount,
+		StalePeerCount:        input.StalePeerCount,
+		SyncState:             syncState,
+		RequestInFlight:       input.RequestInFlight,
+		NoUsefulChainData:     input.NoUsefulChainData,
+		RecentReorg:           input.RecentReorg,
+		PeerSplit:             input.PeerSplit,
+		StaleRate:             staleRate,
+		StaleRateWarning:      staleWarning,
+		StorageOK:             input.StorageOK,
+		DestinationOK:         input.DestinationOK,
+		TemplateAgeSeconds:    input.TemplateAgeSeconds,
+		CurrentTemplateHeight: input.CurrentTemplateHeight,
+		CurrentTipHeight:      input.CurrentTipHeight,
+	}
+	if !input.SafeRequired && input.AllowUnsafe {
+		status.UnsafeOverride = true
+		status.State = "unsafe_override"
+		status.Reason = "Unsafe mining override enabled by expert config."
+		return status
+	}
+	block := func(reason string) MiningSafetyStatus {
+		status.Safe = false
+		status.State = "unsafe"
+		status.Reason = reason
+		return status
+	}
+	switch rpcHealth {
+	case "timeout":
+		return block("Mining blocked: RPC is not responding.")
+	case "offline":
+		return block("Mining blocked: RPC is offline.")
+	}
+	if !input.StorageOK {
+		if strings.TrimSpace(input.StorageError) != "" {
+			return block("Mining blocked: storage health failed: " + strings.TrimSpace(input.StorageError))
+		}
+		return block("Mining blocked: storage health failed.")
+	}
+	if !input.DestinationOK {
+		if strings.TrimSpace(input.DestinationError) != "" {
+			return block(strings.TrimSpace(input.DestinationError))
+		}
+		return block("Mining blocked: reward destination is not safe.")
+	}
+	if input.PeerCount == 0 || syncState == "no_peers" || syncState == "offline" {
+		return block("Mining blocked: node has no peers.")
+	}
+	if input.GoodPeerCount < minGoodPeers {
+		return block("Mining blocked: waiting for more reliable peers.")
+	}
+	if blocksBehind > int32(blocksBehindAllowed) {
+		return block("Mining blocked: node is behind peers by " + int32String(blocksBehind) + " blocks.")
+	}
+	switch syncState {
+	case "catching_up", "requesting_blocks", "possibly_stalled", "stalled":
+		return block("Mining blocked: node is not safely synced to the public chain.")
+	case "unknown":
+		return block("Mining blocked: peer sync state is unknown.")
+	}
+	if input.RequestInFlight {
+		return block("Mining blocked: sync request is still in progress.")
+	}
+	if input.NoUsefulChainData {
+		return block("Mining blocked: peer data is stale.")
+	}
+	if input.RecentReorg {
+		return block("Mining blocked: recent reorg detected; waiting for chain stability.")
+	}
+	if input.PeerSplit {
+		return block("Mining blocked: connected peers disagree about the public chain tip.")
+	}
+	if staleWarning != "" {
+		return block("Mining paused: high stale rate and unstable mining templates.")
+	}
+	return status
+}
+
+func int32String(n int32) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var buf [12]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
+}

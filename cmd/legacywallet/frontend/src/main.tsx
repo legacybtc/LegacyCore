@@ -1751,8 +1751,9 @@ function MiningPage({ snap, run }: PageProps) {
   const rpcOffline = Boolean(mining.rpc_offline);
   const activeMining = minerView.activeMining;
   const unownedPayoutBlocksMining = Boolean((minerView.activeRewardHash || minerView.resolvedRewardAddress) && !minerView.rewardOwnedByWallet && !minerView.externalPayoutMode);
-  const canStartMining = !rpcOffline && Boolean(mining.can_start ?? !activeMining) && !unownedPayoutBlocksMining;
-  const blockedReason = minerView.payoutWarning || minerView.displayLastError || mining.mining_paused_reason || "";
+  const safeToMine = Boolean(mining.safe_to_mine ?? mining.mining_safe ?? mining.can_start);
+  const canStartMining = !rpcOffline && Boolean(mining.can_start ?? (!activeMining && safeToMine)) && !unownedPayoutBlocksMining;
+  const blockedReason = minerView.payoutWarning || minerView.blockedReasonLabel || minerView.displayLastError || mining.mining_paused_reason || "";
   const emergencyStopEnabled = rpcOffline || activeMining || startAttempted || Number(mining.local_hashps || 0) > 0 || Number(mining.session_hashes || 0) > 0 || Boolean(mining.miner_loop_running);
   const miningStatusLabel = startAttempted && !activeMining && minerView.status === "stopped" ? "starting" : minerView.statusLabel;
   const miningSafetyLabel = minerView.safetyLabel;
@@ -1816,8 +1817,13 @@ function MiningPage({ snap, run }: PageProps) {
         <Metric label="Mining safety" value={miningSafetyLabel} />
         <Metric label="Threads" value={minerView.threadMetricLabel} />
         <Metric label="Local KH/s" value={minerView.hashrateMetricLabel} />
+        <Metric label="RPC health" value={minerView.rpcHealthLabel} />
+        <Metric label="Data freshness" value={minerView.dataFreshnessLabel} />
         <Metric label="Mining to" value={minerView.miningToLabel} />
         <Metric label="Owned by wallet" value={minerView.payoutOwnershipLabel} />
+        <Metric label="Sync state" value={mining.sync_state || "-"} />
+        <Metric label="Blocks behind" value={mining.blocks_behind ?? 0} />
+        <Metric label="Good peers" value={mining.good_peer_count ?? "-"} />
         <Metric label="Network KH/s" value={networkRateLabel} />
         <Metric label="Source" value={friendlyNetworkSource(netSource)} />
         <Metric label={minerView.acceptedLabel} value={mining.accepted_blocks || 0} />
@@ -1827,14 +1833,15 @@ function MiningPage({ snap, run }: PageProps) {
       </div>
       <section className="panel minerControls">
         <h3>Miner controls</h3>
-        {mining.rpc_offline && <Notice tone="warn" text={`Miner data unavailable / RPC timeout (${mining.rpc_error || "no RPC response"}). The node process may still be running; the wallet will retry and clear this when RPC responds.`} />}
+        {mining.rpc_offline && <Notice tone="warn" text={`Miner data unavailable / RPC timeout (${mining.rpc_error || "no RPC response"}). Mining safety is unknown/unsafe until RPC responds; reduce miner threads if this repeats.`} />}
         {minerView.payoutWarning && <Notice tone={minerView.externalPayoutMode ? "warn" : "danger"} text={minerView.payoutWarning} />}
+        {minerView.staleRateWarning && <Notice tone="warn" text={minerView.staleRateWarning} />}
         {startError && <Notice tone="danger" text={startError} />}
         {!startError && !rpcOffline && !activeMining && !canStartMining && <Notice tone="warn" text={`Mining is blocked: ${blockedReason || "safety checks are preventing miner start"}`} />}
         {!startError && minerView.displayLastError && <Notice tone="warn" text={`Last miner error: ${minerView.displayLastError}`} />}
         {!startError && !minerView.displayLastError && minerView.lastActionLabel !== "-" && <Notice tone="info" text={`Last action: ${minerView.lastActionLabel}`} />}
-        {usesAllThreads && <Notice tone="warn" text="Using all CPU threads may make the wallet/RPC less responsive. For desktop wallet mining, leave 1-2 threads free for Windows, the GUI, and RPC." />}
-        {!usesAllThreads && <Notice tone="info" text="For desktop wallet mining, leave CPU headroom for Windows, the GUI, and RPC. You can override threads manually." />}
+        {(usesAllThreads || minerView.threadWarningLabel) && <Notice tone="warn" text={minerView.threadWarningLabel || "Using all CPU threads may make the wallet/RPC less responsive. For desktop wallet mining, leave 1-2 threads free for Windows, the GUI, and RPC."} />}
+        {!usesAllThreads && !minerView.threadWarningLabel && <Notice tone="info" text="For desktop wallet mining, leave CPU headroom for Windows, the GUI, and RPC. You can override threads manually." />}
         <div className="profileGrid">
           {profiles.map((profile) => <button key={profile.id} onClick={() => chooseProfile(profile)} className={selectedProfile === profile.id ? "active profileCard" : "profileCard"}><strong>{profile.label}</strong><span>{profile.threads} threads</span><small>{profile.note}</small></button>)}
         </div>
@@ -1865,6 +1872,14 @@ function MiningPage({ snap, run }: PageProps) {
       <div className="miningLower">
         <InfoPanel title="Miner session" rows={[
           ["Mining status", miningStatusLabel],
+          ["Mining safety", miningSafetyLabel],
+          ["Safety reason", minerView.blockedReasonLabel],
+          ["RPC health", minerView.rpcHealthLabel],
+          ["Data freshness", minerView.dataFreshnessLabel],
+          ["Sync state", mining.sync_state || "-"],
+          ["Blocks behind", mining.blocks_behind ?? 0],
+          ["Peer count", mining.peer_count ?? mining.peers ?? "-"],
+          ["Good peer count", mining.good_peer_count ?? "-"],
           ["Mining loop", minerView.miningLoopLabel],
           ["Reason", minerView.reasonLabel],
           ["Session mode", minerView.sessionModeLabel],
@@ -1896,6 +1911,9 @@ function MiningPage({ snap, run }: PageProps) {
           ["Average block time", avgBlockTimeSeconds > 0 ? `${Math.round(avgBlockTimeSeconds)}s` : "-"],
           ["Hashrate updated", netHash.updatedAt],
           ["Session blocks", mining.session_blocks || 0],
+          ["Stale rate", minerView.staleRateLabel],
+          ["Stale rate warning", minerView.staleRateWarning || "-"],
+          ["Last stale reason", mining.last_stale_reason || "-"],
           ["Uptime", seconds(mining.uptime_seconds)],
         ["Last block", mining.last_block_hash || "-"],
         ["Last action", minerView.lastActionLabel],
