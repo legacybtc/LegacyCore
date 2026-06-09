@@ -816,7 +816,9 @@ func (s *Service) GetBlockchainInfo() (map[string]any, error) {
 		"dns_seeds":              n.Chain().Params().DNSSeeds,
 		"dns_seed_count":         len(n.Chain().Params().DNSSeeds),
 		"manual_addnodes":        n.P2P().BootstrapPeers(),
-		"known_peers_available":  false,
+		"known_peers_available":  true,
+		"known_peer_count":       n.P2P().KnownAddressCount(),
+		"known_peer_samples":     firstServiceStrings(n.P2P().KnownAddresses(), 20),
 		"total_network_nodes":    "unavailable",
 		"total_network_note":     "Total network nodes require crawler support. This wallet only knows active peer connections.",
 		"mempool_size":           n.Mempool().Count(),
@@ -1427,6 +1429,19 @@ func (s *Service) GetPeerInfo() ([]any, error) {
 			if rows, ok := result.([]any); ok {
 				return rows, nil
 			}
+			if payload, ok := result.(map[string]any); ok {
+				if rows, ok := payload["peers"].([]any); ok {
+					return rows, nil
+				}
+				if rows, ok := payload["result"].([]any); ok {
+					return rows, nil
+				}
+				if nested, ok := payload["result"].(map[string]any); ok {
+					if rows, ok := nested["peers"].([]any); ok {
+						return rows, nil
+					}
+				}
+			}
 			return nil, fmt.Errorf("external node returned unexpected peer payload")
 		}
 		return nil, err
@@ -1532,45 +1547,185 @@ func (s *Service) GetChainTiming() (map[string]any, error) {
 			"network_hashps_source":      networkHashSource,
 		}, nil
 	}
-	window := int32(20)
+	window := int32(100)
+	primary := s.chainTimingStats(n, window)
+	last10 := s.chainTimingStats(n, 10)
+	last50 := s.chainTimingStats(n, 50)
+	last100 := s.chainTimingStats(n, 100)
+	return map[string]any{
+		"height":                         tip.Height,
+		"bestblockhash":                  tip.Hash,
+		"current_bits":                   fmt.Sprintf("%08x", tip.Bits),
+		"current_compact_target":         serviceCompactTargetHex(tip.Bits),
+		"target_spacing_seconds":         int64(chaincfg.TargetSpacing.Seconds()),
+		"window_blocks":                  primary["blocks"],
+		"start_height":                   primary["start_height"],
+		"tip_height":                     tip.Height,
+		"total_time_seconds":             primary["total_time_seconds"],
+		"average_block_time_seconds":     primary["average_block_time_seconds"],
+		"average_solve_time_seconds":     primary["average_block_time_seconds"],
+		"fastest_block_seconds":          primary["fastest_block_seconds"],
+		"slowest_block_seconds":          primary["slowest_block_seconds"],
+		"last_10_block_average_seconds":  last10["average_block_time_seconds"],
+		"last_50_block_average_seconds":  last50["average_block_time_seconds"],
+		"last_100_block_average_seconds": last100["average_block_time_seconds"],
+		"last_10":                        last10,
+		"last_50":                        last50,
+		"last_100":                       last100,
+		"windows":                        map[string]any{"10": last10, "50": last50, "100": last100},
+		"last_block_age_seconds":         int64(time.Now().Unix()) - int64(tip.Time),
+		"genesis_excluded":               true,
+		"trend":                          primary["trend"],
+		"difficulty_trend":               primary["trend"],
+		"difficulty_history":             s.difficultyHistory(n, 100),
+		"network_hashps":                 networkHash,
+		"network_hashps_source":          networkHashSource,
+		"network_hashps_50":              s.estimateNetworkHashPS(n, 50),
+		"network_hashps_100":             s.estimateNetworkHashPS(n, 100),
+	}, nil
+}
+
+func (s *Service) chainTimingStats(n *node.Node, window int32) map[string]any {
+	tip := n.Chain().Tip()
+	if tip == nil || tip.Height <= 0 {
+		return map[string]any{"blocks": 0, "average_block_time_seconds": 0.0, "fastest_block_seconds": 0, "slowest_block_seconds": 0, "trend": "near_target", "genesis_excluded": true}
+	}
+	if window <= 0 {
+		window = 100
+	}
 	start := tip.Height - window
 	if start < 1 {
 		start = 1
 	}
+	if start >= tip.Height {
+		start = tip.Height - 1
+	}
+	first, err := n.Chain().IndexByHeight(start)
+	if err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+	last, err := n.Chain().IndexByHeight(tip.Height)
+	if err != nil {
+		return map[string]any{"error": err.Error()}
+	}
+	blocks := tip.Height - start
+	totalTime := int64(last.Time) - int64(first.Time)
 	avg := float64(0)
-	totalTime := int64(0)
-	blocks := int32(0)
-	if tip.Height > 1 && start < tip.Height {
-		first, firstErr := n.Chain().IndexByHeight(start)
-		last, lastErr := n.Chain().IndexByHeight(tip.Height)
-		if firstErr == nil && lastErr == nil {
-			totalTime = int64(last.Time) - int64(first.Time)
-			blocks = tip.Height - start
-			if totalTime > 0 && blocks > 0 {
-				avg = float64(totalTime) / float64(blocks)
-			}
+	if blocks > 0 && totalTime > 0 {
+		avg = float64(totalTime) / float64(blocks)
+	}
+	fastest := int64(0)
+	slowest := int64(0)
+	for h := start + 1; h <= tip.Height; h++ {
+		prev, prevErr := n.Chain().IndexByHeight(h - 1)
+		cur, curErr := n.Chain().IndexByHeight(h)
+		if prevErr != nil || curErr != nil {
+			continue
+		}
+		solve := int64(cur.Time) - int64(prev.Time)
+		if solve < 0 {
+			continue
+		}
+		if fastest == 0 || solve < fastest {
+			fastest = solve
+		}
+		if solve > slowest {
+			slowest = solve
 		}
 	}
-	target := float64(chaincfg.TargetSpacing.Seconds())
-	trend := "stable"
-	if avg > 0 && avg < target*0.8 {
-		trend = "faster_than_target"
-	} else if avg > target*1.2 {
-		trend = "slower_than_target"
-	}
 	return map[string]any{
-		"height":                     tip.Height,
-		"bestblockhash":              tip.Hash,
-		"current_bits":               fmt.Sprintf("%08x", tip.Bits),
-		"target_spacing_seconds":     int64(chaincfg.TargetSpacing.Seconds()),
-		"window_blocks":              blocks,
+		"requested_window":           window,
+		"blocks":                     blocks,
+		"start_height":               start,
+		"tip_height":                 tip.Height,
 		"total_time_seconds":         totalTime,
 		"average_block_time_seconds": avg,
-		"last_block_age_seconds":     int64(time.Now().Unix()) - int64(tip.Time),
-		"difficulty_trend":           trend,
-		"network_hashps":             networkHash,
-		"network_hashps_source":      networkHashSource,
-	}, nil
+		"average_solve_time_seconds": avg,
+		"fastest_block_seconds":      fastest,
+		"slowest_block_seconds":      slowest,
+		"target_spacing_seconds":     int64(chaincfg.TargetSpacing.Seconds()),
+		"trend":                      serviceTimingTrend(avg),
+		"genesis_excluded":           true,
+		"low_hash_variance_note":     "Short windows can look uneven on low-hash PoW; prefer the 100-block average for release decisions.",
+	}
+}
+
+func (s *Service) difficultyHistory(n *node.Node, window int32) []map[string]any {
+	tip := n.Chain().Tip()
+	if tip == nil || tip.Height <= 0 {
+		return nil
+	}
+	if window <= 0 {
+		window = 100
+	}
+	if window > 500 {
+		window = 500
+	}
+	start := tip.Height - window + 1
+	if start < 1 {
+		start = 1
+	}
+	out := make([]map[string]any, 0, tip.Height-start+1)
+	for h := start; h <= tip.Height; h++ {
+		idx, err := n.Chain().IndexByHeight(h)
+		if err != nil {
+			continue
+		}
+		solve := int64(0)
+		direction := "same"
+		if h > 0 {
+			prev, prevErr := n.Chain().IndexByHeight(h - 1)
+			if prevErr == nil {
+				solve = int64(idx.Time) - int64(prev.Time)
+				prevTarget := consensus.CompactToBig(prev.Bits)
+				curTarget := consensus.CompactToBig(idx.Bits)
+				switch curTarget.Cmp(prevTarget) {
+				case -1:
+					direction = "harder"
+				case 1:
+					direction = "easier"
+				}
+			}
+		}
+		out = append(out, map[string]any{
+			"height":                  idx.Height,
+			"timestamp":               idx.Time,
+			"solve_time_seconds":      solve,
+			"bits":                    fmt.Sprintf("%08x", idx.Bits),
+			"compact_target":          serviceCompactTargetHex(idx.Bits),
+			"difficulty_direction":    direction,
+			"difficulty_became":       direction,
+			"target_spacing_seconds":  int64(chaincfg.TargetSpacing.Seconds()),
+			"consensus_rules_changed": false,
+		})
+	}
+	return out
+}
+
+func serviceTimingTrend(avg float64) string {
+	target := float64(chaincfg.TargetSpacing.Seconds())
+	if avg > 0 && avg < target*0.8 {
+		return "faster_than_target"
+	}
+	if avg > target*1.2 {
+		return "slower_than_target"
+	}
+	return "near_target"
+}
+
+func serviceCompactTargetHex(bits uint32) string {
+	target := consensus.CompactToBig(bits)
+	if target == nil || target.Sign() <= 0 {
+		return strings.Repeat("0", 64)
+	}
+	return fmt.Sprintf("%064x", target)
+}
+
+func firstServiceStrings(in []string, max int) []string {
+	if max <= 0 || len(in) <= max {
+		return in
+	}
+	return in[:max]
 }
 
 func (s *Service) Doctor() (map[string]any, error) {
@@ -1781,7 +1936,7 @@ func isHistoricalMinerRetryEvent(s string) bool {
 
 func (s *Service) resolveNetworkHashPS() (map[string]any, string, error) {
 	now := time.Now().Unix()
-	rpcRaw, rpcErr := callLocalRPC(s.dataDir, "getnetworkhashps", []any{}, 1500*time.Millisecond)
+	rpcRaw, rpcErr := callLocalRPC(s.dataDir, "getnetworkhashps", []any{100}, 1500*time.Millisecond)
 	if rpcErr == nil {
 		switch t := rpcRaw.(type) {
 		case map[string]any:
@@ -1834,7 +1989,7 @@ func (s *Service) resolveNetworkHashPS() (map[string]any, string, error) {
 
 	n, curErr := s.current()
 	if curErr == nil {
-		estimated := s.estimateNetworkHashPS(n, 20)
+		estimated := s.estimateNetworkHashPS(n, 100)
 		hps := asFloat(estimated["hps"])
 		estimated["mhps"] = hps / 1_000_000
 		estimated["source"] = "estimated_from_chain_timing"

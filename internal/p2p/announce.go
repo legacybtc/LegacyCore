@@ -36,6 +36,7 @@ func (s *Server) announceBlockToPeersExcept(hash chainhash.Hash, skip *peer) {
 		}
 		sent++
 	}
+	s.addBlocksAnnounced(sent)
 	s.log.Printf("p2p: announced block %s to %d peers", hash.String(), sent)
 }
 
