@@ -467,6 +467,36 @@ func TestSyncStatusReportsPeerAheadCatchUpPending(t *testing.T) {
 	}
 }
 
+func TestSyncStatusClearsRequestInFlightWhenCurrent(t *testing.T) {
+	s, _, cleanup := newP2PTestServerWithGenesis(t)
+	defer cleanup()
+
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	p := &peer{
+		conn:             serverConn,
+		remote:           "127.0.0.1:19555",
+		height:           0,
+		lastSeen:         time.Now(),
+		lastPong:         time.Now(),
+		lastHeightUpdate: time.Now(),
+	}
+	s.registerPeer(p)
+	s.noteSyncRequest()
+
+	status := s.SyncStatus()
+	if status["sync_state"] != "current" {
+		t.Fatalf("sync_state=%v want current", status["sync_state"])
+	}
+	if status["blocks_behind"] != int32(0) {
+		t.Fatalf("blocks_behind=%v want 0", status["blocks_behind"])
+	}
+	if status["request_in_flight"] != false {
+		t.Fatalf("request_in_flight=%v want false for current node", status["request_in_flight"])
+	}
+}
+
 func TestRequestSyncFromPeerIfBehindDoesNotSpamRetry(t *testing.T) {
 	s, params, cleanup := newP2PTestServerWithGenesis(t)
 	defer cleanup()

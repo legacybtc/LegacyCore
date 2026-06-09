@@ -925,6 +925,7 @@ func (s *Server) SyncStatus() map[string]any {
 	possiblyStalledAfter := 2 * targetSeconds
 	stalledAfter := 3 * targetSeconds
 	recentSyncRequest := lastSyncReqAge >= 0 && lastSyncReqAge < 2*targetSeconds
+	syncRequestInFlight := recentSyncRequest && behind && blocksBehind > 1
 	noUsefulChainData := peerCount > 0 &&
 		lastHeaderAge > possiblyStalledAfter &&
 		lastBlockAge > possiblyStalledAfter &&
@@ -973,7 +974,7 @@ func (s *Server) SyncStatus() map[string]any {
 		"sync_peer":                       syncPeer,
 		"sync_peer_height":                syncPeerHeight,
 		"active_syncing_peer_count":       syncingPeerCount,
-		"request_in_flight":               recentSyncRequest,
+		"request_in_flight":               syncRequestInFlight,
 		"retry_count":                     health["sync_retry_count"],
 		"peer_rotation_count":             health["sync_peer_rotation_count"],
 		"last_requested_locator_tip_hash": lastLocatorTip,

@@ -197,7 +197,7 @@ func CheckSafeToMine(input MiningSafetyInput) MiningSafetyStatus {
 	case "unknown":
 		return block("Mining blocked: peer sync state is unknown.")
 	}
-	if input.RequestInFlight {
+	if input.RequestInFlight && !miningSyncStateCurrent(syncState, blocksBehind, int32(blocksBehindAllowed)) {
 		return block("Mining blocked: sync request is still in progress.")
 	}
 	if input.NoUsefulChainData {
@@ -213,6 +213,15 @@ func CheckSafeToMine(input MiningSafetyInput) MiningSafetyStatus {
 		return block("Mining paused: high stale rate and unstable mining templates.")
 	}
 	return status
+}
+
+func miningSyncStateCurrent(syncState string, blocksBehind, blocksBehindAllowed int32) bool {
+	switch syncState {
+	case "current", "synced":
+		return blocksBehind <= blocksBehindAllowed
+	default:
+		return false
+	}
 }
 
 func int32String(n int32) string {
