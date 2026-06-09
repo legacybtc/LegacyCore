@@ -5,9 +5,11 @@ const {
   buildWalletSyncState,
   buildImmatureRewardSummary,
   buildMinerDashboardState,
+  buildMiningStartState,
   describeSyncWatchdogAction,
   formatBaseUnitsLBTC,
   knownPeersLabel,
+  miningBlockedNotice,
   normalizePeerRows,
   peerAddress,
   peerDirection,
@@ -128,6 +130,41 @@ test("active miner uses live counters and safe label", () => {
   assert.equal(state.threadMetricLabel, "12 active / 12 configured");
   assert.match(state.hashrateMetricLabel, /1[.,]2 KH\/s live/);
   assert.equal(state.acceptedLabel, "Accepted");
+});
+
+test("current healthy miner state enables start mining", () => {
+  const mining = {
+    ...stoppedMinerStatus,
+    active_mining: false,
+    mining_enabled: false,
+    mining_safe: true,
+    safe_to_mine: true,
+    mining_blocked_reason: "",
+    can_start: true,
+    sync_state: "current",
+    blocks_behind: 0,
+    good_peer_count: 4,
+    rpc_health: "ok",
+    dashboard_data_fresh: true,
+    fallback_stale: false,
+  };
+  const view = buildMinerDashboardState(mining, overnightWalletSummary);
+  const start = buildMiningStartState(mining, overnightWalletSummary, view);
+  assert.equal(view.safetyLabel, "idle / ready, miner stopped");
+  assert.equal(view.blockedReasonLabel, "-");
+  assert.equal(start.canStartMining, true);
+  assert.equal(start.blockedReason, "");
+});
+
+test("mining blocked notice does not duplicate prefix", () => {
+  assert.equal(
+    miningBlockedNotice("Mining blocked: sync request is still in progress."),
+    "Mining blocked: sync request is still in progress.",
+  );
+  assert.equal(
+    miningBlockedNotice("Mining is blocked: Mining blocked: sync request is still in progress."),
+    "Mining blocked: sync request is still in progress.",
+  );
 });
 
 test("active retrying and unsafe states are distinct", () => {

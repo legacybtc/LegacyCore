@@ -29,6 +29,22 @@ func TestCheckSafeToMineAllowsSyncedWithGoodPeers(t *testing.T) {
 	}
 }
 
+func TestCheckSafeToMineAllowsCurrentWithRecentSyncRequest(t *testing.T) {
+	input := safeMiningInput()
+	input.LocalHeight = 100
+	input.BestPeerHeight = 100
+	input.BlocksBehind = 0
+	input.GoodPeerCount = 4
+	input.RequestInFlight = true
+	status := CheckSafeToMine(input)
+	if !status.Safe {
+		t.Fatalf("current healthy node with old/recent sync request should be safe: %+v", status)
+	}
+	if status.Reason != "" {
+		t.Fatalf("safe status should not have blocked reason: %q", status.Reason)
+	}
+}
+
 func TestCheckSafeToMineBlocksNoPeers(t *testing.T) {
 	input := safeMiningInput()
 	input.PeerCount = 0
@@ -85,10 +101,14 @@ func TestCheckSafeToMineBlocksRPCTimeoutAndOffline(t *testing.T) {
 
 func TestCheckSafeToMineBlocksActiveSyncRequest(t *testing.T) {
 	input := safeMiningInput()
+	input.SyncState = "requesting_blocks"
+	input.LocalHeight = 100
+	input.BestPeerHeight = 102
+	input.BlocksBehind = 2
 	input.RequestInFlight = true
 	status := CheckSafeToMine(input)
-	if status.Safe || status.Reason != "Mining blocked: sync request is still in progress." {
-		t.Fatalf("expected sync-request block, got %+v", status)
+	if status.Safe {
+		t.Fatalf("active sync request while behind must block mining: %+v", status)
 	}
 }
 

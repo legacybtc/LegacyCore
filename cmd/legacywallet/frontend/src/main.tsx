@@ -30,6 +30,7 @@ import {
 import "./styles/app.css";
 import {
   buildImmatureRewardSummary,
+  buildMiningStartState,
   buildWalletSyncState as deriveWalletSyncState,
   describeSyncWatchdogAction,
   buildMinerDashboardState,
@@ -1750,10 +1751,8 @@ function MiningPage({ snap, run }: PageProps) {
   const immatureSummary = buildImmatureRewardSummary(snap.wallet || {}, snap.blockchain?.height ?? snap.wallet?.height);
   const rpcOffline = Boolean(mining.rpc_offline);
   const activeMining = minerView.activeMining;
-  const unownedPayoutBlocksMining = Boolean((minerView.activeRewardHash || minerView.resolvedRewardAddress) && !minerView.rewardOwnedByWallet && !minerView.externalPayoutMode);
-  const safeToMine = Boolean(mining.safe_to_mine ?? mining.mining_safe ?? mining.can_start);
-  const canStartMining = !rpcOffline && Boolean(mining.can_start ?? (!activeMining && safeToMine)) && !unownedPayoutBlocksMining;
-  const blockedReason = minerView.payoutWarning || minerView.blockedReasonLabel || minerView.displayLastError || mining.mining_paused_reason || "";
+  const miningStart = buildMiningStartState(mining, snap.wallet || {}, minerView);
+  const canStartMining = miningStart.canStartMining;
   const emergencyStopEnabled = rpcOffline || activeMining || startAttempted || Number(mining.local_hashps || 0) > 0 || Number(mining.session_hashes || 0) > 0 || Boolean(mining.miner_loop_running);
   const miningStatusLabel = startAttempted && !activeMining && minerView.status === "stopped" ? "starting" : minerView.statusLabel;
   const miningSafetyLabel = minerView.safetyLabel;
@@ -1837,7 +1836,7 @@ function MiningPage({ snap, run }: PageProps) {
         {minerView.payoutWarning && <Notice tone={minerView.externalPayoutMode ? "warn" : "danger"} text={minerView.payoutWarning} />}
         {minerView.staleRateWarning && <Notice tone="warn" text={minerView.staleRateWarning} />}
         {startError && <Notice tone="danger" text={startError} />}
-        {!startError && !rpcOffline && !activeMining && !canStartMining && <Notice tone="warn" text={`Mining is blocked: ${blockedReason || "safety checks are preventing miner start"}`} />}
+        {!startError && !rpcOffline && !activeMining && !canStartMining && <Notice tone="warn" text={miningStart.blockedNotice} />}
         {!startError && minerView.displayLastError && <Notice tone="warn" text={`Last miner error: ${minerView.displayLastError}`} />}
         {!startError && !minerView.displayLastError && minerView.lastActionLabel !== "-" && <Notice tone="info" text={`Last action: ${minerView.lastActionLabel}`} />}
         {(usesAllThreads || minerView.threadWarningLabel) && <Notice tone="warn" text={minerView.threadWarningLabel || "Using all CPU threads may make the wallet/RPC less responsive. For desktop wallet mining, leave 1-2 threads free for Windows, the GUI, and RPC."} />}

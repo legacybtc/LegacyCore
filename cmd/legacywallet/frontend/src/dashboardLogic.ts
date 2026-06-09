@@ -71,6 +71,12 @@ export type MinerDashboardState = {
   activityThreadsLabel: string;
 };
 
+export type MiningStartState = {
+  canStartMining: boolean;
+  blockedReason: string;
+  blockedNotice: string;
+};
+
 export type WalletSyncView = {
   status: "synced" | "catching_up" | "requesting_blocks" | "possibly_stalled" | "stalled" | "no_peers" | "offline";
   label: string;
@@ -158,6 +164,33 @@ export function normalizePeerRows(raw: any): DashboardDict[] {
 
 export function knownPeersLabel(chain: DashboardDict = {}): string {
   return boolValue(chain.known_peers_available) ? String(safeNumber(chain.known_peer_count, 0)) : "not reported by this node";
+}
+
+export function cleanMiningBlockedReason(reason: any): string {
+  const raw = cleanString(reason);
+  if (!raw || raw === "-") return "";
+  return raw.replace(/^(mining\s+(?:is\s+)?blocked:\s*)+/i, "Mining blocked: ").trim();
+}
+
+export function miningBlockedNotice(reason: any): string {
+  const clean = cleanMiningBlockedReason(reason);
+  if (!clean) return "Mining blocked: safety checks are preventing miner start.";
+  if (/^mining blocked:/i.test(clean)) return clean;
+  return `Mining blocked: ${clean}`;
+}
+
+export function buildMiningStartState(mining: DashboardDict = {}, wallet: DashboardDict = {}, minerView: MinerDashboardState = buildMinerDashboardState(mining, wallet)): MiningStartState {
+  const rpcOffline = minerRPCOffline(mining);
+  const activeMining = minerView.activeMining;
+  const safeToMine = boolValue(mining.safe_to_mine ?? mining.mining_safe ?? mining.can_start);
+  const unownedPayoutBlocksMining = Boolean((minerView.activeRewardHash || minerView.resolvedRewardAddress) && !minerView.rewardOwnedByWallet && !minerView.externalPayoutMode);
+  const canStartMining = !rpcOffline && boolValue(mining.can_start ?? (!activeMining && safeToMine)) && !unownedPayoutBlocksMining;
+  const blockedReason = cleanMiningBlockedReason(minerView.payoutWarning || minerView.blockedReasonLabel || minerView.displayLastError || mining.mining_paused_reason || "");
+  return {
+    canStartMining,
+    blockedReason,
+    blockedNotice: miningBlockedNotice(blockedReason),
+  };
 }
 
 export function buildWalletSyncState(snap: DashboardDict | null): WalletSyncView {
@@ -302,8 +335,8 @@ export function peerStatusLabel(peer: DashboardDict, chain: DashboardDict = {}):
 }
 
 export function buildMinerDashboardState(mining: DashboardDict = {}, wallet: DashboardDict = {}): MinerDashboardState {
-  const rpcHealth = cleanString(mining.rpc_health || mining.rpc_reachability).toLowerCase();
-  const rpcOffline = boolValue(mining.rpc_offline) || rpcHealth === "timeout" || rpcHealth === "offline" || boolValue(mining.data_unavailable);
+  const rpcHealth = minerRPCHealth(mining);
+  const rpcOffline = minerRPCOffline(mining);
   const dataFresh = mining.dashboard_data_fresh === undefined && mining.status_fresh === undefined
     ? !rpcOffline && !boolValue(mining.fallback_stale)
     : boolValue(mining.dashboard_data_fresh ?? mining.status_fresh);
@@ -386,6 +419,15 @@ export function buildMinerDashboardState(mining: DashboardDict = {}, wallet: Das
     activityStatusLabel: rpcOffline ? "Miner status unavailable (RPC offline / last known)" : activeMining ? "Mining active" : miningEnabled ? "Mining retrying / waiting" : "Miner stopped",
     activityThreadsLabel: activeMining ? `${liveActiveThreads} active thread workers` : `0 active workers; ${configuredThreads} configured for next start${lastSessionThreads > 0 ? ` (last session used ${lastSessionThreads})` : ""}`,
   };
+}
+
+function minerRPCHealth(mining: DashboardDict = {}): string {
+  return cleanString(mining.rpc_health || mining.rpc_reachability).toLowerCase();
+}
+
+function minerRPCOffline(mining: DashboardDict = {}): boolean {
+  const rpcHealth = minerRPCHealth(mining);
+  return boolValue(mining.rpc_offline) || rpcHealth === "timeout" || rpcHealth === "offline" || boolValue(mining.data_unavailable);
 }
 
 function deriveMinerStatus(opts: { rpcOffline: boolean; activeMining: boolean; miningEnabled: boolean; miningSafe: boolean; pausedReason: string; displayLastError: string }): MinerDashboardState["status"] {
