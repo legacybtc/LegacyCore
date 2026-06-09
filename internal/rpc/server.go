@@ -49,23 +49,27 @@ type Server struct {
 	policy     config.LaunchPolicy
 	configPath string
 
-	minerMu              sync.Mutex
-	minerActive          bool
-	minerCancel          context.CancelFunc
-	minerThreads         int
-	minerBlocks          int64
-	minerLastHash        string
-	minerLastError       string
-	minerStartedAt       time.Time
-	minerStopAfterBlocks int64
-	minerRewardHash      string
-	minerPeerRequired    bool
-	minerLocalHashPS     float64
-	minerSessionHashes   uint64
-	minerLastNonce       uint32
-	minerStaleBlocks     int64
-	minerRejectedBlocks  int64
-	defaultTxFee         int64
+	minerMu                 sync.Mutex
+	minerActive             bool
+	minerCancel             context.CancelFunc
+	minerThreads            int
+	minerBlocks             int64
+	minerLastHash           string
+	minerLastError          string
+	minerStartedAt          time.Time
+	minerStopAfterBlocks    int64
+	minerRewardHash         string
+	minerPeerRequired       bool
+	minerLocalHashPS        float64
+	minerSessionHashes      uint64
+	minerLastNonce          uint32
+	minerStaleBlocks        int64
+	minerRejectedBlocks     int64
+	minerLastStaleTime      time.Time
+	minerLastStaleReason    string
+	minerLastTemplateTime   time.Time
+	minerLastTemplateHeight int32
+	defaultTxFee            int64
 }
 
 type request struct {
@@ -105,6 +109,8 @@ var rpcHelpEntries = []rpcHelpEntry{
 	{Method: "getblockheader", Usage: "getblockheader <hash>", Category: "chain", Description: "Return a decoded block header by hash."},
 	{Method: "getblockchaininfo", Usage: "getblockchaininfo", Category: "chain", Description: "Return chain status and sync summary."},
 	{Method: "getnetworkinfo", Usage: "getnetworkinfo", Category: "network", Description: "Return network and connection summary."},
+	{Method: "getchainstatus", Usage: "getchainstatus", Category: "network", Description: "Return support-ready chain, sync, fork, RPC, and safe-mining status."},
+	{Method: "getforkstatus", Usage: "getforkstatus", Category: "network", Description: "Return fork/reorg and peer-tip diagnostics for support."},
 	{Method: "getpeerinfo", Usage: "getpeerinfo", Category: "network", Description: "Return connected peer diagnostics."},
 	{Method: "getknownpeers", Usage: "getknownpeers", Category: "network", Description: "Return locally cached known-peer diagnostics."},
 	{Method: "getsyncstatus", Usage: "getsyncstatus", Category: "network", Description: "Return sync watchdog and peer sync health."},
@@ -1676,14 +1682,14 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 	case "getmininginfo":
 		cfg, _ := config.LoadMiningConfig(s.miningConfigPath())
 		storage := s.chain.StorageHealth()
-		peerOK := !cfg.PeerRequired || s.p2p.PeerCount() > 0
+		peerOK := !cfg.PeerRequired || (s.p2p != nil && s.p2p.PeerCount() > 0)
 		dest := s.miningDestinationStatus(cfg)
 		miningReady := storage.OK && peerOK && (dest.Owned || dest.External)
 		return s.minerStatus(cfg, storage, miningReady), nil
 	case "getminerstatus":
 		cfg, _ := config.LoadMiningConfig(s.miningConfigPath())
 		storage := s.chain.StorageHealth()
-		peerOK := !cfg.PeerRequired || s.p2p.PeerCount() > 0
+		peerOK := !cfg.PeerRequired || (s.p2p != nil && s.p2p.PeerCount() > 0)
 		dest := s.miningDestinationStatus(cfg)
 		miningReady := storage.OK && peerOK && (dest.Owned || dest.External)
 		return s.minerStatus(cfg, storage, miningReady), nil
@@ -1701,6 +1707,10 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 	case "stopminer":
 		return s.stopMiner("rpc stopminer"), nil
 	case "restartminer":
+		cfg, _ := config.LoadMiningConfig(s.miningConfigPath())
+		if safety := s.checkSafeToMine(cfg, true); !safety.Safe {
+			return nil, &rpcError{Code: -32603, Message: safety.Reason}
+		}
 		_ = s.stopMiner("rpc restartminer")
 		return s.startMiner(ctx, params)
 	case "getpeerinfo":
@@ -1709,6 +1719,10 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		return map[string]any{"count": s.p2p.KnownAddressCount(), "known_peers_available": true, "peers": s.p2p.KnownPeerInfos()}, nil
 	case "getsyncstatus":
 		return s.p2p.SyncStatus(), nil
+	case "getchainstatus":
+		return s.chainStatus(), nil
+	case "getforkstatus":
+		return s.forkStatus(), nil
 	case "getconnectioncount":
 		return s.p2p.ConnectionCount(), nil
 	case "addnode":
@@ -3212,6 +3226,11 @@ func (s *Server) getBlockTemplate(ctx context.Context, params json.RawMessage) (
 	if req.LongPollID != "" {
 		s.waitForTemplateChange(ctx, req.LongPollID, 30*time.Second)
 	}
+	cfg, _ := config.LoadMiningConfig(s.miningConfigPath())
+	safety := s.checkSafeToMine(cfg, false)
+	if !safety.Safe && cfg.RejectUnsafeGBT {
+		return nil, &rpcError{Code: -32010, Message: safety.Reason}
+	}
 	block, height, err := mining.NewBlockTemplate(s.chain, s.pool, pubHash)
 	if err != nil {
 		return nil, &rpcError{Code: -32603, Message: err.Error()}
@@ -3264,6 +3283,9 @@ func (s *Server) getBlockTemplate(ctx context.Context, params json.RawMessage) (
 		"rules":             req.Rules,
 		"vbavailable":       map[string]any{},
 		"vbrequired":        0,
+	}
+	for key, value := range safety.Fields() {
+		result[key] = value
 	}
 	if hasCapability(req.Capabilities, "coinbasetxn") || hasCapability(req.Capabilities, "coinbasevalue") {
 		result["coinbasetxn"] = buildCoinbaseTxnField(block, height, coinbaseValue)
@@ -4362,6 +4384,10 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 	lastNonce := s.minerLastNonce
 	staleBlocks := s.minerStaleBlocks
 	rejectedBlocks := s.minerRejectedBlocks
+	lastStaleTime := s.minerLastStaleTime
+	lastStaleReason := s.minerLastStaleReason
+	lastTemplateTime := s.minerLastTemplateTime
+	lastTemplateHeight := s.minerLastTemplateHeight
 	s.minerMu.Unlock()
 	uptime := int64(0)
 	startedAt := ""
@@ -4373,6 +4399,8 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 	if stopAfter > 0 && minerBlocks < stopAfter {
 		blocksRemaining = stopAfter - minerBlocks
 	}
+	safety := s.checkSafeToMine(cfg, true)
+	miningReady = miningReady && safety.Safe
 	canStart := miningReady && !activeMining
 	currentBits := ""
 	if tip := s.chain.Tip(); tip != nil {
@@ -4417,19 +4445,31 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 		currentMiningState = "running"
 	}
 	currentSafetyState := "idle / ready, miner stopped"
-	if activeMining && miningReady {
+	if !safety.Safe {
+		currentSafetyState = safety.Reason
+	} else if activeMining && miningReady {
 		currentSafetyState = "safe"
 	} else if activeMining && !miningReady {
 		currentSafetyState = "unsafe"
 	} else if dest.Error != "" {
 		currentSafetyState = dest.Error
 	}
-	return map[string]any{
+	lastStaleTimeValue := int64(0)
+	if !lastStaleTime.IsZero() {
+		lastStaleTimeValue = lastStaleTime.Unix()
+	}
+	lastTemplateAge := float64(-1)
+	lastTemplateTimeValue := int64(0)
+	if !lastTemplateTime.IsZero() {
+		lastTemplateTimeValue = lastTemplateTime.Unix()
+		lastTemplateAge = time.Since(lastTemplateTime).Seconds()
+	}
+	out := map[string]any{
 		"mining_ready":        miningReady,
 		"can_start":           canStart,
 		"mining_enabled":      cfg.Enabled || activeMining,
 		"active_mining":       activeMining,
-		"mining_safe":         miningReady,
+		"mining_safe":         safety.Safe,
 		"threads":             cfg.Threads,
 		"configured_threads":  cfg.Threads,
 		"max_threads":         cfg.MaxThreads,
@@ -4493,21 +4533,30 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 			}
 			return localHashPS / 1000
 		}(),
-		"live_active_threads_note":        "active_threads and local_khps are live-only; use last_session_* for stopped miner history",
-		"session_hashes":                  sessionHashes,
-		"hashes_per_thread":               hashesPerThread(localHashPS, minerThreads),
-		"last_nonce":                      lastNonce,
-		"current_bits":                    currentBits,
-		"estimated_time_to_block_seconds": estimatedSeconds,
-		"accepted_blocks":                 minerBlocks,
-		"stale_blocks":                    staleBlocks,
-		"rejected_blocks":                 rejectedBlocks,
-		"mining_reward_address":           displayRewardAddress,
-		"configured_mining_address":       strings.TrimSpace(cfg.RewardAddress),
-		"mining_address_wallet_owned":     dest.Owned,
-		"owned_by_wallet":                 dest.Owned,
-		"external_payout_mode":            dest.External,
-		"mining_destination_error":        dest.Error,
+		"live_active_threads_note":          "active_threads and local_khps are live-only; use last_session_* for stopped miner history",
+		"session_hashes":                    sessionHashes,
+		"hashes_per_thread":                 hashesPerThread(localHashPS, minerThreads),
+		"last_nonce":                        lastNonce,
+		"current_bits":                      currentBits,
+		"estimated_time_to_block_seconds":   estimatedSeconds,
+		"accepted_blocks":                   minerBlocks,
+		"stale_blocks":                      staleBlocks,
+		"rejected_blocks":                   rejectedBlocks,
+		"stale_rate":                        safety.StaleRate,
+		"stale_rate_warning":                safety.StaleRateWarning,
+		"last_stale_time":                   lastStaleTimeValue,
+		"last_stale_reason":                 lastStaleReason,
+		"last_template_refresh_time":        lastTemplateTimeValue,
+		"last_template_refresh_ago_seconds": lastTemplateAge,
+		"last_mined_template_height":        lastTemplateHeight,
+		"current_template_height":           safety.CurrentTemplateHeight,
+		"current_tip_height":                safety.CurrentTipHeight,
+		"mining_reward_address":             displayRewardAddress,
+		"configured_mining_address":         strings.TrimSpace(cfg.RewardAddress),
+		"mining_address_wallet_owned":       dest.Owned,
+		"owned_by_wallet":                   dest.Owned,
+		"external_payout_mode":              dest.External,
+		"mining_destination_error":          dest.Error,
 		"payout_warning": func() string {
 			if dest.External {
 				return "External payout mode: rewards will not appear in this wallet unless you own or import that address."
@@ -4526,6 +4575,10 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 		"config":             s.miningConfigPath(),
 		"control_rpcs":       []string{"startminer", "stopminer", "restartminer", "getminerstatus", "benchmarkminer", "autotuneminer", "setminerthreads", "setminingaddress", "configureminer"},
 	}
+	for key, value := range safety.Fields() {
+		out[key] = value
+	}
+	return out
 }
 
 func isNormalMinerStopReason(s string) bool {
@@ -4600,8 +4653,12 @@ func (s *Server) startMiner(parent context.Context, params json.RawMessage) (any
 	if health := s.chain.StorageHealth(); !health.OK {
 		return nil, &rpcError{Code: -32603, Message: "mining refused: storage health failed: " + health.Error}
 	}
-	if peerRequired && s.p2p.PeerCount() == 0 {
+	if peerRequired && (s.p2p == nil || s.p2p.PeerCount() == 0) {
 		return nil, &rpcError{Code: -32603, Message: "mining refused: mining_peer_required=true and no peers are connected"}
+	}
+	safety := s.checkSafeToMine(cfg, true)
+	if !safety.Safe {
+		return nil, &rpcError{Code: -32603, Message: safety.Reason}
 	}
 	s.minerMu.Lock()
 	if s.minerActive {
@@ -4632,7 +4689,7 @@ func (s *Server) startMiner(parent context.Context, params json.RawMessage) (any
 	_ = config.AppendConfigLine(s.miningConfigPath(), "mining_peer_required", fmt.Sprint(peerRequired))
 
 	go s.minerLoop(minerCtx, pubHash, threads)
-	return map[string]any{
+	out := map[string]any{
 		"active_mining":               true,
 		"threads":                     threads,
 		"stop_after_blocks":           stopAfter,
@@ -4644,7 +4701,11 @@ func (s *Server) startMiner(parent context.Context, params json.RawMessage) (any
 		"mining_address_wallet_owned": dest.Owned,
 		"owned_by_wallet":             dest.Owned,
 		"external_payout_mode":        dest.External,
-	}, nil
+	}
+	for key, value := range safety.Fields() {
+		out[key] = value
+	}
+	return out, nil
 }
 
 func (s *Server) stopMiner(reason string) map[string]any {
@@ -4834,6 +4895,32 @@ func (s *Server) configureMiner(params json.RawMessage) (any, *rpcError) {
 			b := boolFromAny(v)
 			_ = config.AppendConfigLine(s.miningConfigPath(), "mining_peer_required", fmt.Sprint(b))
 			set["peer_required"] = b
+		case "safe_required", "mining_safe_required":
+			b := boolFromAny(v)
+			_ = config.AppendConfigLine(s.miningConfigPath(), "mining_safe_required", fmt.Sprint(b))
+			set["safe_required"] = b
+		case "allow_unsafe", "mining_allow_unsafe":
+			b := boolFromAny(v)
+			_ = config.AppendConfigLine(s.miningConfigPath(), "mining_allow_unsafe", fmt.Sprint(b))
+			set["allow_unsafe"] = b
+		case "min_good_peers", "mining_min_good_peers":
+			n := intFromAny(v)
+			if n < 0 {
+				return nil, &rpcError{Code: -32602, Message: "min_good_peers cannot be negative"}
+			}
+			_ = config.AppendConfigLine(s.miningConfigPath(), "mining_min_good_peers", fmt.Sprint(n))
+			set["min_good_peers"] = n
+		case "blocks_behind_allowed", "mining_blocks_behind_allowed":
+			n := intFromAny(v)
+			if n < 0 {
+				return nil, &rpcError{Code: -32602, Message: "blocks_behind_allowed cannot be negative"}
+			}
+			_ = config.AppendConfigLine(s.miningConfigPath(), "mining_blocks_behind_allowed", fmt.Sprint(n))
+			set["blocks_behind_allowed"] = n
+		case "reject_unsafe_templates", "mining_reject_unsafe_templates":
+			b := boolFromAny(v)
+			_ = config.AppendConfigLine(s.miningConfigPath(), "mining_reject_unsafe_templates", fmt.Sprint(b))
+			set["reject_unsafe_templates"] = b
 		case "stop_after_blocks", "mining_stop_after_blocks":
 			n := intFromAny(v)
 			if n < 0 {
@@ -4897,7 +4984,7 @@ func (s *Server) configureMiner(params json.RawMessage) (any, *rpcError) {
 	}
 	cfg, _ := config.LoadMiningConfig(s.miningConfigPath())
 	dest := s.miningDestinationStatus(cfg)
-	return map[string]any{"updated": set, "config": s.miningConfigPath(), "miner": map[string]any{"threads": cfg.Threads, "max_threads": cfg.MaxThreads, "auto_start": cfg.AutoStart, "peer_required": cfg.PeerRequired, "stop_after_blocks": cfg.StopAfterBlocks, "address": dest.Address, "pubkey_hash": dest.PubKeyHashHex, "wallet_owned": dest.Owned, "external_payout": dest.External, "destination_error": dest.Error}}, nil
+	return map[string]any{"updated": set, "config": s.miningConfigPath(), "miner": map[string]any{"threads": cfg.Threads, "max_threads": cfg.MaxThreads, "auto_start": cfg.AutoStart, "peer_required": cfg.PeerRequired, "safe_required": cfg.SafeRequired, "allow_unsafe": cfg.AllowUnsafe, "min_good_peers": cfg.MinGoodPeers, "blocks_behind_allowed": cfg.BlocksBehindOK, "reject_unsafe_templates": cfg.RejectUnsafeGBT, "stop_after_blocks": cfg.StopAfterBlocks, "address": dest.Address, "pubkey_hash": dest.PubKeyHashHex, "wallet_owned": dest.Owned, "external_payout": dest.External, "destination_error": dest.Error}}, nil
 }
 
 func hashesPerThread(total float64, threads int) float64 {
@@ -4959,7 +5046,7 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 			s.minerMu.Unlock()
 			return
 		}
-		if peerRequired && s.p2p.PeerCount() == 0 {
+		if peerRequired && (s.p2p == nil || s.p2p.PeerCount() == 0) {
 			s.minerMu.Lock()
 			s.minerLastError = "paused/stopped: peer required but no peers connected"
 			s.minerMu.Unlock()
@@ -4971,6 +5058,28 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 			s.minerMu.Unlock()
 			return
 		}
+		cfg, _ := config.LoadMiningConfig(s.miningConfigPath())
+		if safety := s.checkSafeToMine(cfg, false); !safety.Safe {
+			s.minerMu.Lock()
+			s.minerLastError = safety.Reason
+			s.minerMu.Unlock()
+			timer := time.NewTimer(15 * time.Second)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			continue
+		}
+		templateHeight := int32(-1)
+		if tip := s.chain.Tip(); tip != nil {
+			templateHeight = tip.Height + 1
+		}
+		s.minerMu.Lock()
+		s.minerLastTemplateTime = time.Now()
+		s.minerLastTemplateHeight = templateHeight
+		s.minerMu.Unlock()
 		result, err := mining.MineBlock(ctx, s.chain, s.pool, pow.YespowerHasher{Personalization: s.chain.Params().YespowerPers}, pubHash, threads, func(p mining.Progress) {
 			s.minerMu.Lock()
 			s.minerLocalHashPS = p.Rate
@@ -4986,6 +5095,8 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 				s.minerMu.Lock()
 				s.minerLastError = "stale tip retry"
 				s.minerStaleBlocks++
+				s.minerLastStaleTime = time.Now()
+				s.minerLastStaleReason = "stale tip retry"
 				s.minerMu.Unlock()
 				continue
 			}

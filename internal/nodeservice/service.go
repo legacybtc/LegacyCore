@@ -80,6 +80,13 @@ type Service struct {
 	lastRPCProbeAt      time.Time
 	lastRPCProbeDataDir string
 	lastRPCProbeOwned   bool
+
+	rpcHealthMu     sync.Mutex
+	rpcLastSuccess  time.Time
+	rpcLastError    string
+	rpcTimeoutCount int64
+	rpcLastLatency  time.Duration
+	rpcHealthState  string
 }
 
 const (
@@ -349,6 +356,94 @@ func callLocalRPC(dataDir, method string, params []any, timeout time.Duration) (
 		return nil, fmt.Errorf("rpc error: %v", payload.Error)
 	}
 	return payload.Result, nil
+}
+
+func (s *Service) callRPC(method string, params []any, timeout time.Duration) (any, error) {
+	start := time.Now()
+	result, err := callLocalRPC(s.dataDir, method, params, timeout)
+	s.recordRPCHealth(err, time.Since(start), timeout)
+	return result, err
+}
+
+func (s *Service) recordRPCHealth(err error, latency, timeout time.Duration) {
+	state := "ok"
+	errText := ""
+	if err != nil {
+		errText = err.Error()
+		if isRPCTimeoutError(err) {
+			state = "timeout"
+		} else {
+			state = "offline"
+		}
+	} else if latency > 1200*time.Millisecond || (timeout > 0 && latency > timeout*3/4) {
+		state = "slow"
+	}
+	s.rpcHealthMu.Lock()
+	defer s.rpcHealthMu.Unlock()
+	s.rpcLastLatency = latency
+	s.rpcHealthState = state
+	if err == nil {
+		s.rpcLastSuccess = time.Now()
+		s.rpcLastError = ""
+		return
+	}
+	s.rpcLastError = errText
+	if state == "timeout" {
+		s.rpcTimeoutCount++
+	}
+}
+
+func (s *Service) rpcHealthSnapshot() map[string]any {
+	s.rpcHealthMu.Lock()
+	defer s.rpcHealthMu.Unlock()
+	state := s.rpcHealthState
+	if state == "" {
+		state = "unknown"
+	}
+	out := map[string]any{
+		"rpc_online":            state == "ok" || state == "slow",
+		"rpc_health":            state,
+		"rpc_last_success_time": unixTimeOrZero(s.rpcLastSuccess),
+		"rpc_last_error":        s.rpcLastError,
+		"rpc_timeout_count":     s.rpcTimeoutCount,
+		"rpc_latency_ms":        float64(s.rpcLastLatency.Microseconds()) / 1000,
+	}
+	return out
+}
+
+func addRPCHealthFields(out map[string]any, health map[string]any, fresh bool) {
+	for key, value := range health {
+		out[key] = value
+	}
+	out["dashboard_data_fresh"] = fresh
+	out["status_fresh"] = fresh
+	if fresh {
+		out["last_successful_miner_status_time"] = health["rpc_last_success_time"]
+		out["miner_status_age_seconds"] = float64(0)
+		return
+	}
+	lastSuccess, _ := health["rpc_last_success_time"].(int64)
+	out["last_successful_miner_status_time"] = lastSuccess
+	if lastSuccess > 0 {
+		out["miner_status_age_seconds"] = time.Since(time.Unix(lastSuccess, 0)).Seconds()
+	} else {
+		out["miner_status_age_seconds"] = float64(-1)
+	}
+}
+
+func isRPCTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline exceeded") || strings.Contains(msg, "awaiting headers")
+}
+
+func unixTimeOrZero(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.Unix()
 }
 
 // RunRPCMethod sends a direct JSON-RPC command to the local Legacy Core endpoint.
@@ -1762,9 +1857,10 @@ func (s *Service) CheckStorage() (map[string]any, error) {
 }
 
 func (s *Service) GetMinerStatus() (map[string]any, error) {
-	result, err := callLocalRPC(s.dataDir, "getminerstatus", []any{}, 1800*time.Millisecond)
+	result, err := s.callRPC("getminerstatus", []any{}, 1800*time.Millisecond)
 	if err == nil {
 		if out, ok := result.(map[string]any); ok {
+			addRPCHealthFields(out, s.rpcHealthSnapshot(), true)
 			nh, source, nhErr := s.resolveNetworkHashPS()
 			if nhErr != nil {
 				nh = map[string]any{
@@ -1808,16 +1904,23 @@ func (s *Service) GetMinerStatus() (map[string]any, error) {
 		threadState = "running"
 		liveHashPS = s.minerLocalHashPS
 	}
-	return map[string]any{
+	out := map[string]any{
 		"status_source":               "local_fallback",
 		"status_fresh":                false,
+		"dashboard_data_fresh":        false,
 		"data_unavailable":            true,
 		"fallback_stale":              true,
 		"fallback_note":               "RPC timed out; local miner counters are shown only as stale diagnostics.",
 		"rpc_offline":                 true,
 		"rpc_error":                   fmt.Sprint(err),
 		"rpc_reachability":            "timeout",
+		"safe_to_mine":                false,
+		"mining_safe":                 false,
+		"mining_safety_state":         "unknown",
+		"mining_blocked_reason":       "Mining blocked: RPC is not responding.",
+		"mining_safety_reason":        "Mining blocked: RPC is not responding.",
 		"active_mining":               miningNow,
+		"last_known_active_mining":    miningNow,
 		"mining_enabled":              s.minerEnabled,
 		"active_threads":              activeThreads,
 		"live_active_threads":         activeThreads,
@@ -1869,7 +1972,9 @@ func (s *Service) GetMinerStatus() (map[string]any, error) {
 		"network_hashps_source": source,
 		"miner_state":           friendlyFallbackMinerState(miningNow, s.minerPausedReason),
 		"status_text":           friendlyMinerStateLabel(friendlyFallbackMinerState(miningNow, s.minerPausedReason)),
-	}, nil
+	}
+	addRPCHealthFields(out, s.rpcHealthSnapshot(), false)
+	return out, nil
 }
 
 func (s *Service) MiningDestinationStatus() map[string]any {
@@ -2290,7 +2395,7 @@ func (s *Service) StartMiner(threads int) (map[string]any, error) {
 		"stop_after_blocks": 0,
 		"peer_required":     cfg.PeerRequired,
 	}
-	result, err := callLocalRPC(s.dataDir, "startminer", []any{opts}, 2500*time.Millisecond)
+	result, err := s.callRPC("startminer", []any{opts}, 2500*time.Millisecond)
 	if err != nil {
 		return nil, fmt.Errorf("mining cannot start: %w", err)
 	}
