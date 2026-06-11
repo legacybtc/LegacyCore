@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -164,6 +165,7 @@ func MineBlock(ctx context.Context, chain *blockchain.Chain, pool *mempool.Pool,
 			block := *template
 			block.Transactions = template.Transactions
 			step := uint32(workers)
+			var yieldCounter uint32
 			for nonce := uint32(worker); ; nonce += step {
 				select {
 				case <-ctx.Done():
@@ -182,6 +184,10 @@ func MineBlock(ctx context.Context, chain *blockchain.Chain, pool *mempool.Pool,
 				}
 				attempts.Add(1)
 				lastNonce.Store(nonce)
+				yieldCounter++
+				if yieldCounter&0xff == 0 {
+					runtime.Gosched()
+				}
 				if consensus.CheckProofOfWork(hash, block.Header.Bits) == nil {
 					found := block
 					select {
@@ -286,6 +292,7 @@ func BenchmarkHashrate(ctx context.Context, chain *blockchain.Chain, pool *mempo
 			block := *template
 			block.Transactions = template.Transactions
 			step := uint32(workers)
+			var yieldCounter uint32
 			for nonce := uint32(worker); ; nonce += step {
 				select {
 				case <-ctx.Done():
@@ -299,6 +306,10 @@ func BenchmarkHashrate(ctx context.Context, chain *blockchain.Chain, pool *mempo
 				}
 				attempts.Add(1)
 				lastNonce.Store(nonce)
+				yieldCounter++
+				if yieldCounter&0xff == 0 {
+					runtime.Gosched()
+				}
 				if nonce > math.MaxUint32-step {
 					return
 				}

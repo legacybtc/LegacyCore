@@ -32,16 +32,20 @@ import {
   buildImmatureRewardSummary,
   buildMiningStartState,
   buildWalletSyncState as deriveWalletSyncState,
+  cleanMiningBlockedReason,
+  desktopPerformanceThreads,
   describeSyncWatchdogAction,
   buildMinerDashboardState,
   formatBaseUnitsLBTC,
   formatHumanLBTC as formatDashboardHumanLBTC,
   knownPeersLabel,
+  miningBlockedNotice,
   normalizePeerRows,
   peerAddress,
   peerDirection,
   peerHeight,
   peerStatusLabel,
+  shouldClearMiningStartNotice,
   syncAlertTone,
 } from "./dashboardLogic";
 
@@ -166,6 +170,11 @@ type UIMessage = {
   ts: number;
 };
 
+type RunOptions = {
+  successText?: string | false;
+  errorCritical?: boolean;
+};
+
 function App() {
   const [snap, setSnap] = useState<Dict | null>(null);
   const [tab, setTab] = useState("overview");
@@ -228,15 +237,17 @@ function App() {
     }
   }
 
-  async function run<T>(label: string, fn: () => Promise<T>) {
+  async function run<T>(label: string, fn: () => Promise<T>, options: RunOptions = {}) {
     setBusy(true);
     try {
       const result = await fn();
-      pushMessage("success", `${label}`, "Completed successfully.");
+      if (options.successText !== false) {
+        pushMessage("success", `${label}`, options.successText || "Completed successfully.");
+      }
       void refresh();
       return result;
     } catch (e) {
-      pushMessage("danger", `${label} failed`, cleanError(e), true);
+      pushMessage("danger", `${label} failed`, cleanError(e), options.errorCritical ?? true);
       throw e;
     } finally {
       setBusy(false);
@@ -334,7 +345,7 @@ function App() {
   const page = useMemo(() => {
     if (!snap) return <Loading />;
     if (!snap.wallet_exists) return <FirstRun run={run} />;
-    const p = { snap, run, refresh };
+    const p = { snap, run, refresh, notify: pushMessage };
     const ui = {
       busy,
       lastUpdated,
@@ -1737,14 +1748,14 @@ function BackupPage({ snap, run, refresh }: PageProps) {
   );
 }
 
-function MiningPage({ snap, run }: PageProps) {
+function MiningPage({ snap, run, refresh, notify }: PageProps) {
   const mining = snap.mining || {};
   const netHash = networkHashDiagnostics(mining.network_hashps);
   const netSource = String(mining.network_hashps_source || "unavailable");
   const avgBlockTimeSeconds = Number(snap.chain_timing?.average_block_time_seconds || 0);
   const [threads, setThreads] = useState<number>(mining.configured_threads || snap.settings?.defaultThreads || 1);
   const [selectedProfile, setSelectedProfile] = useState<string>(() => profileForThreads(mining.configured_threads || snap.settings?.defaultThreads || 1, snap.settings?.defaultThreads || 4));
-  const [startError, setStartError] = useState("");
+  const [startNotice, setStartNotice] = useState<{ tone: AlertTone; text: string } | null>(null);
   const [benchmark, setBenchmark] = useState<Dict | null>(null);
   const [startAttempted, setStartAttempted] = useState(false);
   const minerView = buildMinerDashboardState(mining, snap.wallet || {});
@@ -1753,43 +1764,90 @@ function MiningPage({ snap, run }: PageProps) {
   const activeMining = minerView.activeMining;
   const miningStart = buildMiningStartState(mining, snap.wallet || {}, minerView);
   const canStartMining = miningStart.canStartMining;
+  const clearStartNotice = shouldClearMiningStartNotice(mining, snap.wallet || {}, minerView, miningStart);
   const emergencyStopEnabled = rpcOffline || activeMining || startAttempted || Number(mining.local_hashps || 0) > 0 || Number(mining.session_hashes || 0) > 0 || Boolean(mining.miner_loop_running);
   const miningStatusLabel = startAttempted && !activeMining && minerView.status === "stopped" ? "starting" : minerView.statusLabel;
   const miningSafetyLabel = minerView.safetyLabel;
   const cpuThreads = Math.max(1, Number(navigator.hardwareConcurrency || snap.settings?.defaultThreads || 1));
   const usesAllThreads = threads >= cpuThreads && cpuThreads > 1;
+  const threadWarningText = usesAllThreads
+    ? `Stress/aggressive mining: using ${threads}/${cpuThreads} CPU threads can make wallet RPC unresponsive. For desktop mining, use Performance (${desktopPerformanceThreads(cpuThreads, snap.settings?.defaultThreads || 6)} threads) or leave 1-2 threads free.`
+    : minerView.threadWarningLabel;
   const networkRateLabel = netHash.primaryLabel === "Unavailable" ? `Unavailable - ${netHash.unavailableReason || "not enough safe data"}` : netHash.primaryLabel;
   const profiles = [
     { id: "eco", label: "Eco", threads: 1, note: "low heat" },
     { id: "balanced", label: "Balanced", threads: 4, note: "recommended" },
-    { id: "performance", label: "Performance", threads: Math.max(6, snap.settings?.defaultThreads || 6), note: "strong mining" },
-    { id: "stress", label: "Stress", threads: Math.max(12, (snap.settings?.defaultThreads || 6) * 2), note: "testing only" },
+    { id: "performance", label: "Performance", threads: desktopPerformanceThreads(cpuThreads, snap.settings?.defaultThreads || 6), note: "strong mining; leaves RPC headroom" },
+    { id: "stress", label: "Stress", threads: Math.max(cpuThreads, snap.settings?.defaultThreads || cpuThreads), note: "testing only; may make RPC unresponsive" },
   ] as const;
+  useEffect(() => {
+    if (!clearStartNotice) return;
+    setStartNotice(null);
+    setStartAttempted(false);
+  }, [clearStartNotice]);
   async function chooseProfile(profile: typeof profiles[number]) {
     setSelectedProfile(profile.id);
     setThreads(profile.threads);
     await run("Set miner profile", () => api().SetMinerThreads(profile.threads));
   }
+  function minerStatusUnavailable(status: Dict | null) {
+    const health = String(status?.rpc_health || status?.rpc_reachability || "").toLowerCase();
+    return !status || Boolean(status.rpc_offline || status.data_unavailable) || health === "timeout" || health === "offline";
+  }
+  function minerBlockedReason(status: Dict | null) {
+    return cleanMiningBlockedReason(status?.mining_blocked_reason || status?.mining_safety_reason || status?.mining_paused_reason || status?.last_error || "");
+  }
+  async function confirmMinerStart() {
+    const deadline = Date.now() + 8500;
+    let lastStatus: Dict | null = null;
+    let lastError = "";
+    while (Date.now() <= deadline) {
+      try {
+        lastStatus = await api().GetMinerStatus();
+        if (!minerStatusUnavailable(lastStatus)) {
+          if (lastStatus?.active_mining) return { state: "running", status: lastStatus, reason: "" };
+          const reason = minerBlockedReason(lastStatus);
+          if (reason) return { state: "blocked", status: lastStatus, reason };
+          if (lastStatus?.active_mining === false && lastStatus?.mining_enabled === false) return { state: "stopped", status: lastStatus, reason: "miner is stopped" };
+        }
+      } catch (e) {
+        lastError = cleanError(e);
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 750));
+    }
+    return { state: "unknown", status: lastStatus, reason: lastError || String(lastStatus?.rpc_error || "RPC timed out while confirming miner status") };
+  }
   async function startMining() {
-    setStartError("");
+    setStartNotice({ tone: "info", text: "Start miner command sent. Confirming miner status..." });
     setStartAttempted(true);
     try {
-      await run("Start miner", () => api().StartMiner(threads));
-      const status = await api().GetMinerStatus();
-      if (status?.rpc_offline) {
-        setStartError(`Mining status is unavailable: RPC offline (${status?.rpc_error || "no RPC response"})`);
+      await run("Start miner", () => api().StartMiner(threads), { successText: false });
+      const confirmed = await confirmMinerStart();
+      await refresh();
+      if (confirmed.state === "running") {
+        setStartNotice({ tone: "success", text: "Miner started successfully." });
+        notify("success", "Start miner", "Miner started successfully.");
+        setStartAttempted(false);
         return;
       }
-      if (!status?.active_mining) {
-        const reason = status?.mining_paused_reason || status?.last_error || "backend did not report active mining";
-        setStartError(`Mining did not enter active state: ${reason}`);
+      if (confirmed.state === "blocked") {
+        setStartNotice({ tone: "warn", text: miningBlockedNotice(confirmed.reason) });
+        setStartAttempted(false);
+        return;
       }
+      if (confirmed.state === "stopped") {
+        setStartNotice({ tone: "warn", text: "Start miner command was accepted, but miner is stopped." });
+        setStartAttempted(false);
+        return;
+      }
+      setStartNotice({ tone: "warn", text: `Start command was sent, but miner status could not be confirmed because RPC timed out.${confirmed.reason ? ` (${confirmed.reason})` : ""}` });
     } catch (e) {
-      setStartError(cleanError(e));
+      setStartNotice({ tone: "danger", text: cleanError(e) });
+      setStartAttempted(false);
     }
   }
   async function stopMining() {
-    setStartError("");
+    setStartNotice(null);
     try {
       await run("Stop miner", () => api().StopMiner());
       const status = await api().GetMinerStatus();
@@ -1797,16 +1855,16 @@ function MiningPage({ snap, run }: PageProps) {
         setStartAttempted(false);
       }
     } catch (e) {
-      setStartError(cleanError(e));
+      setStartNotice({ tone: "danger", text: cleanError(e) });
     }
   }
   async function forceStopMining() {
-    setStartError("");
+    setStartNotice(null);
     try {
       await run("Force stop miner", () => api().ForceStopMiner());
       setStartAttempted(false);
     } catch (e) {
-      setStartError(cleanError(e));
+      setStartNotice({ tone: "danger", text: cleanError(e) });
     }
   }
   return (
@@ -1832,15 +1890,15 @@ function MiningPage({ snap, run }: PageProps) {
       </div>
       <section className="panel minerControls">
         <h3>Miner controls</h3>
-        {mining.rpc_offline && <Notice tone="warn" text={`Miner data unavailable / RPC timeout (${mining.rpc_error || "no RPC response"}). Mining safety is unknown/unsafe until RPC responds; reduce miner threads if this repeats.`} />}
+        {mining.rpc_offline && !startNotice && <Notice tone="warn" text={`Miner data unavailable / RPC timeout (${mining.rpc_error || "no RPC response"}). Mining safety is unknown/unsafe until RPC responds; reduce miner threads if this repeats.`} />}
         {minerView.payoutWarning && <Notice tone={minerView.externalPayoutMode ? "warn" : "danger"} text={minerView.payoutWarning} />}
         {minerView.staleRateWarning && <Notice tone="warn" text={minerView.staleRateWarning} />}
-        {startError && <Notice tone="danger" text={startError} />}
-        {!startError && !rpcOffline && !activeMining && !canStartMining && <Notice tone="warn" text={miningStart.blockedNotice} />}
-        {!startError && minerView.displayLastError && <Notice tone="warn" text={`Last miner error: ${minerView.displayLastError}`} />}
-        {!startError && !minerView.displayLastError && minerView.lastActionLabel !== "-" && <Notice tone="info" text={`Last action: ${minerView.lastActionLabel}`} />}
-        {(usesAllThreads || minerView.threadWarningLabel) && <Notice tone="warn" text={minerView.threadWarningLabel || "Using all CPU threads may make the wallet/RPC less responsive. For desktop wallet mining, leave 1-2 threads free for Windows, the GUI, and RPC."} />}
-        {!usesAllThreads && !minerView.threadWarningLabel && <Notice tone="info" text="For desktop wallet mining, leave CPU headroom for Windows, the GUI, and RPC. You can override threads manually." />}
+        {startNotice && <Notice tone={startNotice.tone} text={startNotice.text} />}
+        {!startNotice && !rpcOffline && !activeMining && !canStartMining && <Notice tone="warn" text={miningStart.blockedNotice} />}
+        {!startNotice && minerView.displayLastError && <Notice tone="warn" text={`Last miner error: ${minerView.displayLastError}`} />}
+        {!startNotice && !minerView.displayLastError && minerView.lastActionLabel !== "-" && <Notice tone="info" text={`Last action: ${minerView.lastActionLabel}`} />}
+        {threadWarningText && <Notice tone="warn" text={threadWarningText} />}
+        {!threadWarningText && <Notice tone="info" text="For desktop wallet mining, leave CPU headroom for Windows, the GUI, and RPC. You can override threads manually." />}
         <div className="profileGrid">
           {profiles.map((profile) => <button key={profile.id} onClick={() => chooseProfile(profile)} className={selectedProfile === profile.id ? "active profileCard" : "profileCard"}><strong>{profile.label}</strong><span>{profile.threads} threads</span><small>{profile.note}</small></button>)}
         </div>
@@ -2742,8 +2800,9 @@ function AboutPage({ snap }: { snap: Dict }) {
 
 type PageProps = {
   snap: Dict;
-  run: <T>(label: string, fn: () => Promise<T>) => Promise<T>;
+  run: <T>(label: string, fn: () => Promise<T>, options?: RunOptions) => Promise<T>;
   refresh: () => Promise<void>;
+  notify: (tone: AlertTone, title: string, text: string, critical?: boolean) => void;
 };
 
 function Loading() {

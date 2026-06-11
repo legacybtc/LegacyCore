@@ -401,11 +401,6 @@ func (a *App) StartMiner(threads int) (map[string]any, error) {
 		activeThreads = t
 	}
 	a.lifecycleLogf("miner started active=%t threads=%d", active, activeThreads)
-	if status, serr := a.service.GetMinerStatus(); serr == nil {
-		sActive, _ := status["active_mining"].(bool)
-		sThreads := asInt(status["active_threads"])
-		a.lifecycleLogf("miner state after start active_mining=%t active_threads=%d", sActive, sThreads)
-	}
 	return out, nil
 }
 

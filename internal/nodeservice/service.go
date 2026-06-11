@@ -75,6 +75,10 @@ type Service struct {
 	minerRewardAddress      string
 	minerSessionHashes      uint64
 	minerStopReason         string
+	minerStartCommandTime   time.Time
+	minerStartAccepted      bool
+	minerStartConfirmStatus string
+	minerStatusLastSuccess  time.Time
 
 	lastRPCProbe        rpcPortProbe
 	lastRPCProbeAt      time.Time
@@ -1876,6 +1880,8 @@ func (s *Service) GetMinerStatus() (map[string]any, error) {
 			out["network_hashps_source"] = source
 			out["status_source"] = "rpc"
 			normalizeMinerStatusForDashboard(out)
+			s.recordMinerStatusSuccess(out)
+			s.addMinerStatusDiagnostics(out, true)
 			out["miner_state"] = deriveMinerState(out, false)
 			out["status_text"] = friendlyMinerStateLabel(fmt.Sprint(out["miner_state"]))
 			return out, nil
@@ -1894,7 +1900,6 @@ func (s *Service) GetMinerStatus() (map[string]any, error) {
 	}
 	destination := s.miningDestinationStatus()
 	s.minerMu.Lock()
-	defer s.minerMu.Unlock()
 	miningNow := s.minerEnabled && s.minerLoopRunning
 	activeThreads := 0
 	threadState := "stopped"
@@ -1904,41 +1909,57 @@ func (s *Service) GetMinerStatus() (map[string]any, error) {
 		threadState = "running"
 		liveHashPS = s.minerLocalHashPS
 	}
+	configuredThreads := s.minerThreads
+	sessionHashes := s.minerSessionHashes
+	lastNonce := s.minerLastNonce
+	pausedReason := s.minerPausedReason
+	lastStartCommandTime := s.minerStartCommandTime
+	startAccepted := s.minerStartAccepted
+	startConfirmStatus := s.minerStartConfirmStatus
+	lastStatusSuccess := s.minerStatusLastSuccess
+	s.minerMu.Unlock()
 	out := map[string]any{
-		"status_source":               "local_fallback",
-		"status_fresh":                false,
-		"dashboard_data_fresh":        false,
-		"data_unavailable":            true,
-		"fallback_stale":              true,
-		"fallback_note":               "RPC timed out; local miner counters are shown only as stale diagnostics.",
-		"rpc_offline":                 true,
-		"rpc_error":                   fmt.Sprint(err),
-		"rpc_reachability":            "timeout",
-		"safe_to_mine":                false,
-		"mining_safe":                 false,
-		"mining_safety_state":         "unknown",
-		"mining_blocked_reason":       "Mining blocked: RPC is not responding.",
-		"mining_safety_reason":        "Mining blocked: RPC is not responding.",
-		"active_mining":               miningNow,
-		"last_known_active_mining":    miningNow,
-		"mining_enabled":              s.minerEnabled,
-		"active_threads":              activeThreads,
-		"live_active_threads":         activeThreads,
-		"last_session_active_threads": map[bool]int{true: 0, false: s.minerThreads}[miningNow],
-		"configured_threads":          s.minerThreads,
-		"thread_state":                threadState,
-		"miner_loop_running":          s.minerLoopRunning,
-		"local_hashps":                liveHashPS,
-		"local_khps":                  liveHashPS / 1000,
-		"local_hashps_live":           liveHashPS,
-		"local_khps_live":             liveHashPS / 1000,
-		"last_session_hashps":         map[bool]float64{true: 0, false: s.minerLocalHashPS}[miningNow],
-		"last_session_khps":           map[bool]float64{true: 0, false: s.minerLocalHashPS / 1000}[miningNow],
-		"session_hashes":              s.minerSessionHashes,
-		"last_nonce":                  s.minerLastNonce,
-		"last_error":                  "",
-		"last_historical_event":       "RPC offline: miner status is local fallback",
-		"current_mining_state":        map[bool]string{true: "running (fallback)", false: "unavailable"}[miningNow],
+		"status_source":                 "local_fallback",
+		"status_fresh":                  false,
+		"dashboard_data_fresh":          false,
+		"status_data_fresh":             false,
+		"data_unavailable":              true,
+		"fallback_stale":                true,
+		"fallback_note":                 "RPC timed out; local miner counters are shown only as stale diagnostics.",
+		"rpc_offline":                   true,
+		"rpc_error":                     fmt.Sprint(err),
+		"rpc_reachability":              "timeout",
+		"safe_to_mine":                  false,
+		"mining_safe":                   false,
+		"mining_safety_state":           "unknown",
+		"mining_blocked_reason":         "Mining blocked: RPC is not responding.",
+		"mining_safety_reason":          "Mining blocked: RPC is not responding.",
+		"active_mining":                 false,
+		"last_known_active_mining":      miningNow,
+		"mining_enabled":                false,
+		"last_known_mining_enabled":     miningNow,
+		"active_threads":                0,
+		"live_active_threads":           0,
+		"active_threads_last_known":     activeThreads,
+		"last_session_active_threads":   activeThreads,
+		"configured_threads":            configuredThreads,
+		"configured_threads_last_known": configuredThreads,
+		"thread_state":                  threadState,
+		"miner_loop_running":            false,
+		"last_known_miner_loop_running": miningNow,
+		"local_hashps":                  0.0,
+		"local_khps":                    0.0,
+		"local_hashps_live":             0.0,
+		"local_khps_live":               0.0,
+		"local_hashps_last_known":       liveHashPS,
+		"local_khps_last_known":         liveHashPS / 1000,
+		"last_session_hashps":           liveHashPS,
+		"last_session_khps":             liveHashPS / 1000,
+		"session_hashes":                sessionHashes,
+		"last_nonce":                    lastNonce,
+		"last_error":                    "",
+		"last_historical_event":         "RPC offline: miner status is local fallback",
+		"current_mining_state":          map[bool]string{true: "running (fallback)", false: "unavailable"}[miningNow],
 		"current_safety_state": func() string {
 			if errText := strings.TrimSpace(fmt.Sprint(destination["error"])); errText != "" {
 				return errText
@@ -1963,18 +1984,98 @@ func (s *Service) GetMinerStatus() (map[string]any, error) {
 			return ""
 		}(),
 		"mining_paused_reason": func() string {
-			if strings.TrimSpace(s.minerPausedReason) != "" {
-				return s.minerPausedReason
+			if strings.TrimSpace(pausedReason) != "" {
+				return pausedReason
 			}
 			return "rpc offline"
 		}(),
 		"network_hashps":        nh,
 		"network_hashps_source": source,
-		"miner_state":           friendlyFallbackMinerState(miningNow, s.minerPausedReason),
-		"status_text":           friendlyMinerStateLabel(friendlyFallbackMinerState(miningNow, s.minerPausedReason)),
+		"miner_state":           friendlyFallbackMinerState(miningNow, pausedReason),
+		"status_text":           friendlyMinerStateLabel(friendlyFallbackMinerState(miningNow, pausedReason)),
 	}
 	addRPCHealthFields(out, s.rpcHealthSnapshot(), false)
+	out["last_start_command_time"] = unixOrZero(lastStartCommandTime)
+	out["start_command_accepted"] = startAccepted
+	out["start_confirmation_status"] = startConfirmStatus
+	out["last_miner_status_success_time"] = unixOrZero(lastStatusSuccess)
+	out["miner_status_age_seconds"] = secondsSince(lastStatusSuccess)
 	return out, nil
+}
+
+func (s *Service) recordMinerStatusSuccess(status map[string]any) {
+	now := time.Now()
+	active := boolFromAny(status["active_mining"])
+	enabled := boolFromAny(status["mining_enabled"])
+	threads := intFromAny(status["configured_threads"])
+	if threads <= 0 {
+		threads = intFromAny(status["threads"])
+	}
+	activeThreads := intFromAny(status["active_threads"])
+	if activeThreads <= 0 && active {
+		activeThreads = threads
+	}
+	hashPS := asFloat(status["local_hashps"])
+	if hashPS <= 0 {
+		hashPS = asFloat(status["live_hashps"])
+	}
+	sessionHashes := uint64FromAny(status["session_hashes"])
+	lastNonce := uint32FromAny(status["last_nonce"])
+	confirmStatus := "stopped"
+	if active {
+		confirmStatus = "running"
+	} else if reason := strings.TrimSpace(fmt.Sprint(status["mining_blocked_reason"])); reason != "" {
+		confirmStatus = "blocked"
+	} else if enabled {
+		confirmStatus = "starting"
+	}
+	s.minerMu.Lock()
+	defer s.minerMu.Unlock()
+	if threads > 0 {
+		s.minerThreads = threads
+	}
+	s.minerActive = active
+	s.minerEnabled = enabled || active
+	s.minerLoopRunning = active
+	if active && s.minerStarted.IsZero() {
+		s.minerStarted = now
+	}
+	if hashPS > 0 {
+		s.minerLocalHashPS = hashPS
+	}
+	if activeThreads > 0 && threads <= 0 {
+		s.minerThreads = activeThreads
+	}
+	if sessionHashes > 0 {
+		s.minerSessionHashes = sessionHashes
+	}
+	if lastNonce > 0 {
+		s.minerLastNonce = lastNonce
+	}
+	s.minerStatusLastSuccess = now
+	s.minerStartConfirmStatus = confirmStatus
+}
+
+func (s *Service) addMinerStatusDiagnostics(out map[string]any, fresh bool) {
+	s.minerMu.Lock()
+	lastStart := s.minerStartCommandTime
+	startAccepted := s.minerStartAccepted
+	startStatus := s.minerStartConfirmStatus
+	lastStatusSuccess := s.minerStatusLastSuccess
+	configuredThreads := s.minerThreads
+	activeThreads := 0
+	if s.minerEnabled && s.minerLoopRunning {
+		activeThreads = s.minerThreads
+	}
+	s.minerMu.Unlock()
+	out["last_start_command_time"] = unixOrZero(lastStart)
+	out["start_command_accepted"] = startAccepted
+	out["start_confirmation_status"] = startStatus
+	out["last_miner_status_success_time"] = unixOrZero(lastStatusSuccess)
+	out["miner_status_age_seconds"] = secondsSince(lastStatusSuccess)
+	out["configured_threads_last_known"] = configuredThreads
+	out["active_threads_last_known"] = activeThreads
+	out["status_data_fresh"] = fresh
 }
 
 func (s *Service) MiningDestinationStatus() map[string]any {
@@ -2389,6 +2490,13 @@ func (s *Service) StartMiner(threads int) (map[string]any, error) {
 	if threads <= 0 {
 		threads = 1
 	}
+	started := time.Now()
+	s.minerMu.Lock()
+	s.minerStartCommandTime = started
+	s.minerStartAccepted = false
+	s.minerStartConfirmStatus = "command_sent"
+	s.minerThreads = threads
+	s.minerMu.Unlock()
 	cfg, _ := config.LoadMiningConfig(config.DefaultConfigPath())
 	opts := map[string]any{
 		"threads":           threads,
@@ -2397,15 +2505,31 @@ func (s *Service) StartMiner(threads int) (map[string]any, error) {
 	}
 	result, err := s.callRPC("startminer", []any{opts}, 2500*time.Millisecond)
 	if err != nil {
+		s.minerMu.Lock()
+		s.minerStartAccepted = false
+		s.minerStartConfirmStatus = "start_rpc_error"
+		s.minerMu.Unlock()
 		return nil, fmt.Errorf("mining cannot start: %w", err)
 	}
+	s.minerMu.Lock()
+	s.minerStartAccepted = true
+	s.minerStartConfirmStatus = "accepted_pending_confirmation"
+	s.minerEnabled = true
+	s.minerLoopRunning = true
+	s.minerActive = true
+	s.minerThreads = threads
+	s.minerStarted = started
+	s.minerMu.Unlock()
 	if out, ok := result.(map[string]any); ok {
 		out["status_source"] = "rpc"
 		out["miner_state"] = "starting"
 		out["status_text"] = friendlyMinerStateLabel("starting")
+		s.addMinerStatusDiagnostics(out, false)
 		return out, nil
 	}
-	return map[string]any{"active_mining": true, "threads": threads, "status_source": "rpc", "miner_state": "starting", "status_text": friendlyMinerStateLabel("starting")}, nil
+	out := map[string]any{"active_mining": true, "threads": threads, "configured_threads": threads, "status_source": "rpc", "miner_state": "starting", "status_text": friendlyMinerStateLabel("starting")}
+	s.addMinerStatusDiagnostics(out, false)
+	return out, nil
 }
 
 func (s *Service) StopMiner() (map[string]any, error) {
@@ -3299,6 +3423,75 @@ func asInt32(v any) int32 {
 		return int32(n)
 	default:
 		return -1
+	}
+}
+
+func intFromAny(v any) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int32:
+		return int(n)
+	case int64:
+		return int(n)
+	case uint32:
+		return int(n)
+	case uint64:
+		return int(n)
+	case float64:
+		return int(n)
+	case json.Number:
+		i, _ := n.Int64()
+		return int(i)
+	default:
+		return 0
+	}
+}
+
+func uint64FromAny(v any) uint64 {
+	switch n := v.(type) {
+	case uint64:
+		return n
+	case uint32:
+		return uint64(n)
+	case int:
+		if n > 0 {
+			return uint64(n)
+		}
+	case int64:
+		if n > 0 {
+			return uint64(n)
+		}
+	case float64:
+		if n > 0 {
+			return uint64(n)
+		}
+	case json.Number:
+		i, _ := n.Int64()
+		if i > 0 {
+			return uint64(i)
+		}
+	}
+	return 0
+}
+
+func uint32FromAny(v any) uint32 {
+	n := uint64FromAny(v)
+	if n > uint64(^uint32(0)) {
+		return ^uint32(0)
+	}
+	return uint32(n)
+}
+
+func boolFromAny(v any) bool {
+	switch b := v.(type) {
+	case bool:
+		return b
+	case string:
+		parsed, _ := strconv.ParseBool(strings.TrimSpace(b))
+		return parsed
+	default:
+		return false
 	}
 }
 

@@ -4514,13 +4514,24 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 		"last_historical_event": lastHistoricalEvent,
 		"current_mining_state":  currentMiningState,
 		"current_safety_state":  currentSafetyState,
-		"live_hashrate":         liveHashPS,
-		"live_hashps":           liveHashPS,
-		"live_khps":             liveHashPS / 1000,
-		"local_hashps":          liveHashPS,
-		"local_khps":            liveHashPS / 1000,
-		"local_hashps_live":     liveHashPS,
-		"local_khps_live":       liveHashPS / 1000,
+		"last_start_command_time": func() int64 {
+			if minerStartedAt.IsZero() {
+				return 0
+			}
+			return minerStartedAt.Unix()
+		}(),
+		"start_command_accepted":         activeMining,
+		"start_confirmation_status":      currentMiningState,
+		"last_miner_status_success_time": time.Now().Unix(),
+		"miner_status_age_seconds":       0.0,
+		"status_data_fresh":              true,
+		"live_hashrate":                  liveHashPS,
+		"live_hashps":                    liveHashPS,
+		"live_khps":                      liveHashPS / 1000,
+		"local_hashps":                   liveHashPS,
+		"local_khps":                     liveHashPS / 1000,
+		"local_hashps_live":              liveHashPS,
+		"local_khps_live":                liveHashPS / 1000,
 		"last_session_hashps": func() float64 {
 			if activeMining {
 				return 0
