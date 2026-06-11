@@ -6,6 +6,7 @@ const {
   buildImmatureRewardSummary,
   buildMinerDashboardState,
   buildMiningStartState,
+  desktopPerformanceThreads,
   describeSyncWatchdogAction,
   formatBaseUnitsLBTC,
   knownPeersLabel,
@@ -15,6 +16,7 @@ const {
   peerDirection,
   peerHeight,
   peerStatusLabel,
+  shouldClearMiningStartNotice,
 } = await import("../.dashboard-test/dashboardLogic.js");
 
 const overnightWalletSummary = {
@@ -154,6 +156,59 @@ test("current healthy miner state enables start mining", () => {
   assert.equal(view.blockedReasonLabel, "-");
   assert.equal(start.canStartMining, true);
   assert.equal(start.blockedReason, "");
+  assert.equal(shouldClearMiningStartNotice(mining, overnightWalletSummary, view, start), true);
+});
+
+test("running safe miner with slow RPC clears stale start timeout notice", () => {
+  const mining = {
+    ...stoppedMinerStatus,
+    active_mining: true,
+    last_known_active_mining: true,
+    mining_enabled: true,
+    mining_safe: true,
+    safe_to_mine: true,
+    can_start: false,
+    active_threads: 12,
+    configured_threads: 12,
+    local_khps: 0.871,
+    rpc_health: "slow",
+    dashboard_data_fresh: true,
+    fallback_stale: false,
+    sync_state: "current",
+    blocks_behind: 0,
+    good_peer_count: 4,
+    mining_blocked_reason: "",
+    mining_paused_reason: "",
+    last_error: "",
+  };
+  const view = buildMinerDashboardState(mining, overnightWalletSummary);
+  const start = buildMiningStartState(mining, overnightWalletSummary, view);
+  assert.equal(view.status, "running");
+  assert.equal(view.safetyLabel, "safe");
+  assert.equal(view.rpcHealthLabel, "RPC slow");
+  assert.equal(view.dataFreshnessLabel, "fresh");
+  assert.equal(shouldClearMiningStartNotice(mining, overnightWalletSummary, view, start), true);
+});
+
+test("RPC timeout does not clear start notice while miner status is unavailable", () => {
+  const mining = {
+    ...stoppedMinerStatus,
+    status_source: "local_fallback",
+    rpc_offline: true,
+    rpc_health: "timeout",
+    data_unavailable: true,
+    fallback_stale: true,
+    dashboard_data_fresh: false,
+    active_mining: true,
+    mining_enabled: true,
+    mining_safe: true,
+    safe_to_mine: true,
+    mining_blocked_reason: "Mining blocked: RPC is not responding.",
+  };
+  const view = buildMinerDashboardState(mining, overnightWalletSummary);
+  const start = buildMiningStartState(mining, overnightWalletSummary, view);
+  assert.equal(view.status, "last_known_running");
+  assert.equal(shouldClearMiningStartNotice(mining, overnightWalletSummary, view, start), false);
 });
 
 test("mining blocked notice does not duplicate prefix", () => {
@@ -205,9 +260,10 @@ test("RPC fallback is shown as unavailable, not fake fresh mining", () => {
     last_error: "",
     mining_paused_reason: "rpc offline",
   }, overnightWalletSummary);
-  assert.equal(state.status, "error");
+  assert.equal(state.status, "last_known_stopped");
   assert.equal(state.safetyLabel, "unknown — RPC timeout");
   assert.equal(state.liveActiveThreads, 0);
+  assert.equal(state.threadMetricLabel, "status unknown / 12 configured last known");
   assert.match(state.hashrateMetricLabel, /last known 0[.,]946 KH\/s \(stale\)/);
   assert.equal(state.hashrateFeedMode, "last-known/stale");
   assert.equal(state.dataFreshnessLabel, "last known / stale");
@@ -227,18 +283,30 @@ test("RPC timeout cannot render mining safety as safe even with stale running da
     mining_safe: true,
     safe_to_mine: true,
     active_threads: 12,
+    active_threads_last_known: 12,
     configured_threads: 12,
+    configured_threads_last_known: 12,
     max_threads: 12,
-    local_khps: 5.2,
+    local_khps: 0,
+    local_khps_last_known: 5.2,
     last_session_khps: 5.2,
+    last_known_active_mining: true,
     mining_blocked_reason: "Mining blocked: RPC is not responding.",
   }, overnightWalletSummary);
-  assert.equal(state.status, "error");
+  assert.equal(state.status, "last_known_running");
   assert.equal(state.activeMining, false);
+  assert.equal(state.statusLabel, "status unavailable (last known running)");
   assert.equal(state.safetyLabel, "unknown — RPC timeout");
   assert.equal(state.blockedReasonLabel, "Mining blocked: RPC is not responding.");
+  assert.equal(state.threadMetricLabel, "status unknown / 12 configured last known");
   assert.match(state.hashrateMetricLabel, /last known 5[.,]2 KH\/s \(stale\)/);
   assert.match(state.threadWarningLabel, /all CPU threads/);
+});
+
+test("desktop performance profile leaves RPC headroom on 12-thread CPU", () => {
+  assert.equal(desktopPerformanceThreads(12, 12), 10);
+  assert.equal(desktopPerformanceThreads(12, 6), 6);
+  assert.equal(desktopPerformanceThreads(4, 6), 2);
 });
 
 test("high stale rate warning is surfaced in miner dashboard state", () => {

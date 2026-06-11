@@ -2,7 +2,9 @@ package mining
 
 import (
 	"bytes"
+	"context"
 	"testing"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 
@@ -113,5 +115,36 @@ func TestMultiOutputCoinbaseBlockAccepted(t *testing.T) {
 	}
 	if len(coinbase.TxOut) != 2 {
 		t.Fatalf("coinbase outputs=%d want 2", len(coinbase.TxOut))
+	}
+}
+
+func TestBenchmarkHashrateReturnsPromptlyWithManyWorkers(t *testing.T) {
+	params := chaincfg.MainNet
+	genesisBlock, err := genesis.NewBlock(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	genesisHash, err := lowHashTestHasher{}.HashHeader(genesisBlock.Header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params.GenesisHash = genesisHash.String()
+	chain, err := blockchain.New(params, lowHashTestHasher{}, storage.NewFileStore(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.EnsureGenesis(); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	result, err := BenchmarkHashrate(context.Background(), chain, mempool.New(), lowHashTestHasher{}, bytes.Repeat([]byte{0x33}, 20), 12, 25*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Threads != 12 {
+		t.Fatalf("threads=%d want 12", result.Threads)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("benchmark miner status loop returned too slowly: %s", elapsed)
 	}
 }

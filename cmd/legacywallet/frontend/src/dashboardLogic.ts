@@ -26,7 +26,7 @@ export type ImmatureRewardSummary = {
 
 export type MinerDashboardState = {
   activeMining: boolean;
-  status: "running" | "retrying" | "unsafe" | "stopped" | "error" | "starting";
+  status: "running" | "retrying" | "unsafe" | "stopped" | "starting" | "status_unknown_rpc_timeout" | "last_known_running" | "last_known_stopped";
   statusLabel: string;
   safetyLabel: string;
   reasonLabel: string;
@@ -179,6 +179,13 @@ export function miningBlockedNotice(reason: any): string {
   return `Mining blocked: ${clean}`;
 }
 
+export function desktopPerformanceThreads(cpuThreads: any, fallbackThreads: any = 6): number {
+  const cpus = Math.max(1, safeNumber(cpuThreads, 1));
+  const requested = Math.max(6, safeNumber(fallbackThreads, 6));
+  const cap = cpus >= 4 ? cpus - 2 : Math.max(1, cpus - 1);
+  return Math.max(1, Math.min(requested, cap));
+}
+
 export function buildMiningStartState(mining: DashboardDict = {}, wallet: DashboardDict = {}, minerView: MinerDashboardState = buildMinerDashboardState(mining, wallet)): MiningStartState {
   const rpcOffline = minerRPCOffline(mining);
   const activeMining = minerView.activeMining;
@@ -191,6 +198,14 @@ export function buildMiningStartState(mining: DashboardDict = {}, wallet: Dashbo
     blockedReason,
     blockedNotice: miningBlockedNotice(blockedReason),
   };
+}
+
+export function shouldClearMiningStartNotice(mining: DashboardDict = {}, wallet: DashboardDict = {}, minerView: MinerDashboardState = buildMinerDashboardState(mining, wallet), startState: MiningStartState = buildMiningStartState(mining, wallet, minerView)): boolean {
+  const rpcOffline = minerRPCOffline(mining);
+  const dataFresh = minerDataFresh(mining, rpcOffline);
+  if (rpcOffline || !dataFresh) return false;
+  if (minerView.activeMining && minerView.status === "running" && minerView.safetyLabel === "safe") return true;
+  return !minerView.activeMining && startState.canStartMining && !startState.blockedReason;
 }
 
 export function buildWalletSyncState(snap: DashboardDict | null): WalletSyncView {
@@ -337,11 +352,10 @@ export function peerStatusLabel(peer: DashboardDict, chain: DashboardDict = {}):
 export function buildMinerDashboardState(mining: DashboardDict = {}, wallet: DashboardDict = {}): MinerDashboardState {
   const rpcHealth = minerRPCHealth(mining);
   const rpcOffline = minerRPCOffline(mining);
-  const dataFresh = mining.dashboard_data_fresh === undefined && mining.status_fresh === undefined
-    ? !rpcOffline && !boolValue(mining.fallback_stale)
-    : boolValue(mining.dashboard_data_fresh ?? mining.status_fresh);
+  const dataFresh = minerDataFresh(mining, rpcOffline);
   const staleData = rpcOffline || boolValue(mining.fallback_stale) || !dataFresh;
   const activeMining = !rpcOffline && boolValue(mining.active_mining);
+  const lastKnownActiveMining = boolValue(mining.last_known_active_mining ?? mining.active_mining);
   const miningEnabled = boolValue(mining.mining_enabled);
   const miningSafe = !rpcOffline && dataFresh && (mining.mining_safe === undefined ? false : boolValue(mining.mining_safe));
   const blockedReason = cleanString(mining.mining_blocked_reason || mining.mining_safety_reason);
@@ -350,12 +364,12 @@ export function buildMinerDashboardState(mining: DashboardDict = {}, wallet: Das
   const normalStop = isNormalStop(rawLastError);
   const historicalRetry = !activeMining && !miningEnabled && isRetryEvent(rawLastError);
   const displayLastError = normalStop || historicalRetry ? "" : rawLastError;
-  const status = deriveMinerStatus({ rpcOffline, activeMining, miningEnabled, miningSafe, pausedReason, displayLastError });
-  const configuredThreads = safeNumber(mining.configured_threads ?? mining.threads, 0);
+  const status = deriveMinerStatus({ rpcOffline, activeMining, lastKnownActiveMining, miningEnabled, miningSafe, pausedReason, displayLastError });
+  const configuredThreads = safeNumber(mining.configured_threads ?? mining.configured_threads_last_known ?? mining.threads ?? mining.last_session_active_threads, 0);
   const maxThreads = safeNumber(mining.detected_cpu_threads ?? mining.max_threads, 0);
   const liveActiveThreads = activeMining ? safeNumber(mining.active_threads, configuredThreads) : 0;
-  const lastSessionThreads = safeNumber(mining.last_session_active_threads ?? mining.active_threads, 0);
-  const lastSessionKHPS = safeNumber(mining.last_session_khps ?? mining.local_khps, 0);
+  const lastSessionThreads = safeNumber(mining.last_session_active_threads ?? mining.active_threads_last_known ?? mining.active_threads, 0);
+  const lastSessionKHPS = safeNumber(mining.last_session_khps ?? mining.local_khps_last_known ?? mining.local_khps, 0);
   const liveKHPS = activeMining ? safeNumber(mining.local_khps_live ?? mining.local_khps, 0) : 0;
   const activeRewardHash = cleanString(mining.active_reward_hash || mining.mining_pubkey_hash);
   const currentDefaultMiningAddress = cleanString(wallet.default_mining_address);
@@ -395,7 +409,11 @@ export function buildMinerDashboardState(mining: DashboardDict = {}, wallet: Das
     liveActiveThreads,
     configuredThreads,
     effectiveThreadsLabel: activeMining ? String(safeNumber(mining.effective_threads ?? liveActiveThreads, liveActiveThreads)) : `${configuredThreads} configured for next start`,
-    threadMetricLabel: activeMining ? `${liveActiveThreads} active / ${configuredThreads} configured` : `not currently mining / ${configuredThreads} configured`,
+    threadMetricLabel: activeMining
+      ? `${liveActiveThreads} active / ${configuredThreads} configured`
+      : staleData
+        ? `status unknown / ${configuredThreads > 0 ? `${configuredThreads} configured last known` : "configured threads unknown"}`
+        : `not currently mining / ${configuredThreads} configured`,
     hashrateMetricLabel: activeMining ? `${fmtNumber(liveKHPS)} KH/s live` : staleData && lastSessionKHPS > 0 ? `last known ${fmtNumber(lastSessionKHPS)} KH/s (stale)` : lastSessionKHPS > 0 ? `0 KH/s (last session ${fmtNumber(lastSessionKHPS)} KH/s)` : "0 KH/s",
     hashrateFeedLabel: activeMining ? `${fmtNumber(safeNumber(mining.local_hashps, 0))} H/s (${fmtNumber(liveKHPS)} KH/s)` : staleData && lastSessionKHPS > 0 ? `last known ${fmtNumber(lastSessionKHPS)} KH/s; RPC data stale` : lastSessionKHPS > 0 ? `0 H/s live; last session ${fmtNumber(lastSessionKHPS)} KH/s` : "0 H/s live",
     hashrateFeedMode: activeMining ? "live" : staleData ? "last-known/stale" : "stopped",
@@ -416,8 +434,12 @@ export function buildMinerDashboardState(mining: DashboardDict = {}, wallet: Das
     miningDestinationError,
     miningToLabel,
     lastAcceptedPaidToLabel: safeNumber(mining.accepted_blocks, 0) > 0 ? (resolvedRewardAddress || activeRewardHash || "recorded reward destination") : "-",
-    activityStatusLabel: rpcOffline ? "Miner status unavailable (RPC offline / last known)" : activeMining ? "Mining active" : miningEnabled ? "Mining retrying / waiting" : "Miner stopped",
-    activityThreadsLabel: activeMining ? `${liveActiveThreads} active thread workers` : `0 active workers; ${configuredThreads} configured for next start${lastSessionThreads > 0 ? ` (last session used ${lastSessionThreads})` : ""}`,
+    activityStatusLabel: rpcOffline ? (lastKnownActiveMining ? "Miner status unavailable (last known running)" : "Miner status unavailable (RPC offline / last known)") : activeMining ? "Mining active" : miningEnabled ? "Mining retrying / waiting" : "Miner stopped",
+    activityThreadsLabel: activeMining
+      ? `${liveActiveThreads} active thread workers`
+      : staleData
+        ? `status unknown; ${configuredThreads > 0 ? `${configuredThreads} configured last known` : "configured threads unknown"}${lastSessionThreads > 0 ? `; ${lastSessionThreads} active last known` : ""}`
+        : `0 active workers; ${configuredThreads} configured for next start${lastSessionThreads > 0 ? ` (last session used ${lastSessionThreads})` : ""}`,
   };
 }
 
@@ -430,8 +452,14 @@ function minerRPCOffline(mining: DashboardDict = {}): boolean {
   return boolValue(mining.rpc_offline) || rpcHealth === "timeout" || rpcHealth === "offline" || boolValue(mining.data_unavailable);
 }
 
-function deriveMinerStatus(opts: { rpcOffline: boolean; activeMining: boolean; miningEnabled: boolean; miningSafe: boolean; pausedReason: string; displayLastError: string }): MinerDashboardState["status"] {
-  if (opts.rpcOffline) return "error";
+function minerDataFresh(mining: DashboardDict = {}, rpcOffline = minerRPCOffline(mining)): boolean {
+  return mining.dashboard_data_fresh === undefined && mining.status_fresh === undefined
+    ? !rpcOffline && !boolValue(mining.fallback_stale)
+    : boolValue(mining.dashboard_data_fresh ?? mining.status_fresh);
+}
+
+function deriveMinerStatus(opts: { rpcOffline: boolean; activeMining: boolean; lastKnownActiveMining: boolean; miningEnabled: boolean; miningSafe: boolean; pausedReason: string; displayLastError: string }): MinerDashboardState["status"] {
+  if (opts.rpcOffline) return opts.lastKnownActiveMining ? "last_known_running" : "last_known_stopped";
   if (opts.activeMining && isRetryEvent(opts.pausedReason)) return "retrying";
   if (opts.activeMining && !opts.miningSafe) return "unsafe";
   if (opts.activeMining) return "running";
@@ -451,7 +479,11 @@ function statusLabel(status: MinerDashboardState["status"]): string {
       return "unsafe / paused";
     case "starting":
       return "starting";
-    case "error":
+    case "last_known_running":
+      return "status unavailable (last known running)";
+    case "last_known_stopped":
+      return "status unavailable (last known stopped)";
+    case "status_unknown_rpc_timeout":
       return "status unavailable";
     default:
       return "stopped";

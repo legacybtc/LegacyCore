@@ -26,14 +26,23 @@ func TestGetMinerStatusFallsBackWhenRPCOffline(t *testing.T) {
 	if status["rpc_offline"] != true {
 		t.Fatalf("expected rpc_offline true, got %v", status["rpc_offline"])
 	}
-	if status["active_mining"] != true {
-		t.Fatalf("expected active_mining true in fallback, got %v", status["active_mining"])
+	if status["active_mining"] != false {
+		t.Fatalf("expected active_mining false while RPC status is stale, got %v", status["active_mining"])
+	}
+	if status["last_known_active_mining"] != true {
+		t.Fatalf("expected last_known_active_mining true in fallback, got %v", status["last_known_active_mining"])
 	}
 	if status["mining_safe"] != false || status["safe_to_mine"] != false {
 		t.Fatalf("fallback status must be unsafe/unknown, got mining_safe=%v safe_to_mine=%v", status["mining_safe"], status["safe_to_mine"])
 	}
 	if status["dashboard_data_fresh"] != false {
 		t.Fatalf("fallback status must be marked stale, got %v", status["dashboard_data_fresh"])
+	}
+	if status["configured_threads"] != 12 || status["configured_threads_last_known"] != 12 {
+		t.Fatalf("expected configured threads to remain 12 last-known, got configured=%v last_known=%v", status["configured_threads"], status["configured_threads_last_known"])
+	}
+	if status["active_threads"] != 0 || status["active_threads_last_known"] != 12 {
+		t.Fatalf("expected live active threads 0 and last-known active threads 12, got active=%v last_known=%v", status["active_threads"], status["active_threads_last_known"])
 	}
 	if status["mining_blocked_reason"] != "Mining blocked: RPC is not responding." {
 		t.Fatalf("unexpected mining blocked reason: %v", status["mining_blocked_reason"])
@@ -63,6 +72,34 @@ func TestStopMinerFallsBackWhenRPCOffline(t *testing.T) {
 	}
 	if out["active_mining"] != false {
 		t.Fatalf("expected active_mining false, got %v", out["active_mining"])
+	}
+}
+
+func TestRecordMinerStatusSuccessPreservesLastKnownConfig(t *testing.T) {
+	s := New(t.TempDir())
+	status := map[string]any{
+		"active_mining":      true,
+		"mining_enabled":     true,
+		"configured_threads": float64(12),
+		"active_threads":     float64(12),
+		"local_hashps":       float64(871),
+		"session_hashes":     float64(12345),
+		"last_nonce":         float64(99),
+	}
+	s.recordMinerStatusSuccess(status)
+	out := map[string]any{}
+	s.addMinerStatusDiagnostics(out, true)
+	if out["configured_threads_last_known"] != 12 {
+		t.Fatalf("expected configured_threads_last_known 12, got %v", out["configured_threads_last_known"])
+	}
+	if out["active_threads_last_known"] != 12 {
+		t.Fatalf("expected active_threads_last_known 12, got %v", out["active_threads_last_known"])
+	}
+	if out["status_data_fresh"] != true {
+		t.Fatalf("expected status_data_fresh true, got %v", out["status_data_fresh"])
+	}
+	if out["last_miner_status_success_time"] == int64(0) {
+		t.Fatalf("expected last miner status success timestamp")
 	}
 }
 
