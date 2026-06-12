@@ -319,6 +319,41 @@ test("high stale rate warning is surfaced in miner dashboard state", () => {
   assert.match(state.staleRateWarning, /High stale rate/);
 });
 
+test("stale active template is visible while miner loop is paused", () => {
+  const state = buildMinerDashboardState({
+    ...stoppedMinerStatus,
+    active_mining: false,
+    mining_enabled: true,
+    mining_safe: false,
+    safe_to_mine: false,
+    mining_paused_reason: "Mining paused: template is stale; waiting for fresh block template.",
+    active_template_height: 3136,
+    current_tip_height: 3177,
+    active_template_age_seconds: 4.9 * 60 * 60,
+    active_template_is_fresh: false,
+    active_template_stale_reason: "template height is not current tip height + 1",
+    stale_template_skip_count: 4,
+  }, overnightWalletSummary);
+  assert.equal(state.activeMining, false);
+  assert.equal(state.status, "unsafe");
+  assert.equal(state.miningLoopLabel, "paused / waiting for safe template");
+  assert.equal(state.templateHeightLabel, "3136");
+  assert.equal(state.templateRefreshLabel, "stale / refreshing");
+  assert.equal(state.templateFreshnessLabel, "stale / refresh required");
+  assert.equal(state.templateStaleReasonLabel, "template height is not current tip height + 1");
+  assert.match(state.safetyLabel, /template is stale/);
+});
+
+test("peer status uses good-peer reason when peer is not suitable", () => {
+  const peer = {
+    address: "10.0.0.9:19555",
+    reported_height: 3100,
+    good_peer: false,
+    good_peer_reason: "height too low",
+  };
+  assert.equal(peerStatusLabel(peer, { height: 3177 }), "height too low");
+});
+
 test("unowned payout hash is rendered as a blocking wallet safety warning", () => {
   const state = buildMinerDashboardState({
     ...stoppedMinerStatus,

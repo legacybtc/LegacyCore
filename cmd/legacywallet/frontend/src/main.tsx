@@ -1762,6 +1762,7 @@ function MiningPage({ snap, run, refresh, notify }: PageProps) {
   const immatureSummary = buildImmatureRewardSummary(snap.wallet || {}, snap.blockchain?.height ?? snap.wallet?.height);
   const rpcOffline = Boolean(mining.rpc_offline);
   const activeMining = minerView.activeMining;
+  const miningEnabled = Boolean(mining.mining_enabled);
   const miningStart = buildMiningStartState(mining, snap.wallet || {}, minerView);
   const canStartMining = miningStart.canStartMining;
   const clearStartNotice = shouldClearMiningStartNotice(mining, snap.wallet || {}, minerView, miningStart);
@@ -1893,6 +1894,7 @@ function MiningPage({ snap, run, refresh, notify }: PageProps) {
         {mining.rpc_offline && !startNotice && <Notice tone="warn" text={`Miner data unavailable / RPC timeout (${mining.rpc_error || "no RPC response"}). Mining safety is unknown/unsafe until RPC responds; reduce miner threads if this repeats.`} />}
         {minerView.payoutWarning && <Notice tone={minerView.externalPayoutMode ? "warn" : "danger"} text={minerView.payoutWarning} />}
         {minerView.staleRateWarning && <Notice tone="warn" text={minerView.staleRateWarning} />}
+        {minerView.templateStaleReasonLabel !== "-" && <Notice tone="warn" text={`Mining template: ${minerView.templateStaleReasonLabel}`} />}
         {startNotice && <Notice tone={startNotice.tone} text={startNotice.text} />}
         {!startNotice && !rpcOffline && !activeMining && !canStartMining && <Notice tone="warn" text={miningStart.blockedNotice} />}
         {!startNotice && minerView.displayLastError && <Notice tone="warn" text={`Last miner error: ${minerView.displayLastError}`} />}
@@ -1941,9 +1943,17 @@ function MiningPage({ snap, run, refresh, notify }: PageProps) {
           ["Reason", minerView.reasonLabel],
           ["Session mode", minerView.sessionModeLabel],
           ["Paused reason", minerView.pausedReasonLabel],
+          ["Current tip height", mining.current_tip_height ?? "-"],
+          ["Current tip hash", mining.current_tip_hash || "-"],
           ["Template height", minerView.templateHeightLabel],
-          ["Last template refresh", activeMining && mining.last_template_refresh_time ? dateTime(mining.last_template_refresh_time) : minerView.templateRefreshLabel],
-          ["Template age", activeMining ? seconds(mining.last_template_refresh_ago_seconds) : minerView.templateAgeLabel],
+          ["Template prev hash", mining.active_template_prev_hash || "-"],
+          ["Template freshness", minerView.templateFreshnessLabel],
+          ["Template stale reason", minerView.templateStaleReasonLabel],
+          ["Last template refresh", miningEnabled && mining.last_template_refresh_time ? dateTime(mining.last_template_refresh_time) : minerView.templateRefreshLabel],
+          ["Template age", miningEnabled ? seconds(mining.active_template_age_seconds ?? mining.last_template_refresh_ago_seconds) : minerView.templateAgeLabel],
+          ["Template refresh count", mining.template_refresh_count ?? "-"],
+          ["Stale template skips", mining.stale_template_skip_count ?? "-"],
+          ["Last template refresh error", mining.last_template_refresh_error || "-"],
           ["Watchdog action", minerView.watchdogLabel],
           ["Active reward hash used by miner", minerView.activeRewardHash || "-"],
           ["Mining to", minerView.miningToLabel],
@@ -1962,12 +1972,17 @@ function MiningPage({ snap, run, refresh, notify }: PageProps) {
           ["Network H/s", netHash.hpsLabel],
           ["Network KH/s", netHash.khsLabel !== "-" ? netHash.khsLabel : `Unavailable - ${netHash.unavailableReason || "not enough safe data"}`],
           ["Network MH/s", netHash.mhsLabel],
+          ["Network hash window", netHash.windowLabel],
+          ["Network hash confidence", netHash.confidenceLabel],
+          ["Network hash formula", netHash.formulaLabel],
           ["Network source", friendlyNetworkSource(netHash.sourceLabel || netSource)],
           ["Network status", netHash.statusLabel],
           ["Network note", netHash.note || netHash.unavailableReason || "-"],
           ["Average block time", avgBlockTimeSeconds > 0 ? `${Math.round(avgBlockTimeSeconds)}s` : "-"],
           ["Hashrate updated", netHash.updatedAt],
           ["Session blocks", mining.session_blocks || 0],
+          ["Accepted active-chain blocks", mining.accepted_blocks_active_chain ?? mining.accepted_blocks ?? 0],
+          ["Accepted orphaned/reorged blocks", mining.accepted_blocks_orphaned ?? 0],
           ["Stale rate", minerView.staleRateLabel],
           ["Stale rate warning", minerView.staleRateWarning || "-"],
           ["Last stale reason", mining.last_stale_reason || "-"],
@@ -2109,7 +2124,7 @@ function NetworkPage({ snap, run, refresh }: PageProps) {
               <span>{peerDirection(p)}</span>
               <span>{p.last_ping_ms ? `${Number(p.last_ping_ms).toFixed(1)} ms` : "-"}</span>
               <span>{peerHeight(p) || "-"}</span>
-              <span className={`peerStatus ${p.peer_status_tone || "good"}`}>{peerStatusLabel(p, chain)}</span>
+              <span className={`peerStatus ${p.peer_status_tone || (p.good_peer === false ? "warn" : "good")}`}>{peerStatusLabel(p, chain)}</span>
               <span>{seconds(p.connected_for_seconds)}</span>
             </div>
           ))}
@@ -2175,6 +2190,10 @@ function NetworkPage({ snap, run, refresh }: PageProps) {
                 <span>Last peer message: {seconds(p.last_seen_ago_seconds)}</span>
                 <span>Last sync request: {seconds(p.last_sync_request_ago_seconds)}</span>
                 <span>Last sync error: {p.last_sync_error || "-"}</span>
+                <span>Good peer: {p.good_peer === undefined ? "not reported" : yesNo(p.good_peer)}</span>
+                <span>Good-peer reason: {p.good_peer_reason || "-"}</span>
+                <span>Lag from local height: {p.lag_from_local_height ?? p.peer_height_gap ?? "-"}</span>
+                <span>Blocks requested / served: {p.blocks_requested ?? 0} / {p.blocks_served ?? 0}</span>
               </div>
             ))}
             {peers.length === 0 && <p className="muted">No active peer diagnostics.</p>}
@@ -3139,12 +3158,17 @@ function friendlyNetworkSource(source: string) {
 
 function networkHashDiagnostics(v: any) {
   const status = String(v?.status || "").toLowerCase();
-  const sourceLabel = String(v?.source || "");
+  const sourceLabel = String(v?.network_hashps_source || v?.source || "");
   const note = String(v?.note || "");
   const hps = Number(v?.hps || 0);
   const khs = Number(v?.khps || (hps > 0 ? hps / 1000 : 0));
   const mhs = Number(v?.mhps || (hps > 0 ? hps / 1_000_000 : 0));
   const updatedAt = Number(v?.updated_at || v?.updated || 0);
+  const window = Number(v?.network_hashps_window || v?.window || 0);
+  const blocksUsed = Number(v?.network_hashps_blocks_used || v?.blocks_used || v?.blocks || 0);
+  const timespan = Number(v?.network_hashps_timespan_seconds || v?.timespan_seconds || v?.total_time_seconds || 0);
+  const confidence = String(v?.network_hashps_confidence || v?.confidence || "");
+  const formula = String(v?.network_hashps_formula || v?.formula || "");
   const unavailableReason =
     note ||
     (status === "unavailable" ? "node offline or unsupported RPC" : "") ||
@@ -3156,12 +3180,20 @@ function networkHashDiagnostics(v: any) {
     unavailableReason,
     primaryLabel,
     sourceLabel,
+    window,
+    blocksUsed,
+    timespan,
+    confidence,
+    formula,
     hps,
     khs,
     mhs,
     hpsLabel: Number.isFinite(hps) && hps > 0 ? fmtNumber(hps) : "-",
     khsLabel: Number.isFinite(khs) && khs > 0 ? `${fmtNumber(khs)} KH/s` : "-",
     mhsLabel: Number.isFinite(mhs) && mhs > 0 ? `${fmtNumber(mhs)} MH/s` : "-",
+    windowLabel: blocksUsed > 0 ? `${blocksUsed} block${blocksUsed === 1 ? "" : "s"}${window > 0 ? ` / requested ${window}` : ""}${timespan > 0 ? ` over ${seconds(timespan)}` : ""}` : "-",
+    confidenceLabel: confidence ? title(confidence.replace(/_/g, " ")) : "-",
+    formulaLabel: formula || "-",
     statusLabel: khs > 0 ? (status || "estimated") : "unavailable",
     updatedAt: updatedAt > 0 ? new Date(updatedAt * 1000).toLocaleTimeString() : "-",
   };

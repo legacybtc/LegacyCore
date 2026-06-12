@@ -123,14 +123,62 @@ func TestCheckSafeToMineBlocksRecentReorg(t *testing.T) {
 
 func TestCheckSafeToMineBlocksHighStaleRate(t *testing.T) {
 	input := safeMiningInput()
-	input.AcceptedBlocks = 2
-	input.StaleBlocks = 3
+	input.AcceptedBlocks = 1
+	input.StaleBlocks = 2
 	status := CheckSafeToMine(input)
 	if status.Safe {
 		t.Fatalf("high stale rate must block mining: %+v", status)
 	}
 	if status.StaleRate < 0.5 || status.StaleRateWarning == "" {
 		t.Fatalf("expected stale-rate diagnostics, got %+v", status)
+	}
+}
+
+func TestCheckSafeToMineWarnsAtLowerStaleRates(t *testing.T) {
+	input := safeMiningInput()
+	input.AcceptedBlocks = 9
+	input.StaleBlocks = 1
+	status := CheckSafeToMine(input)
+	if !status.Safe {
+		t.Fatalf("10%% stale rate should warn before hard pause: %+v", status)
+	}
+	if status.StaleRateWarning == "" {
+		t.Fatalf("expected non-empty stale warning: %+v", status)
+	}
+}
+
+func TestCheckSafeToMineBlocksStaleActiveTemplate(t *testing.T) {
+	input := safeMiningInput()
+	input.HasActiveTemplate = true
+	input.ActiveTemplateFresh = false
+	input.ActiveTemplateStaleReason = "template height is not current tip height + 1"
+	input.CurrentTipHeight = 3177
+	input.CurrentTemplateHeight = 3136
+	input.TemplateAgeSeconds = 4.9 * 60 * 60
+	input.TemplateMaxAgeSeconds = 120
+	status := CheckSafeToMine(input)
+	if status.Safe {
+		t.Fatalf("stale active template must block mining: %+v", status)
+	}
+	if status.CurrentTemplateHeight != 3136 || status.CurrentTipHeight != 3177 {
+		t.Fatalf("template diagnostics not preserved: %+v", status)
+	}
+	if status.Reason == "" || status.StaleRateWarning != "" {
+		t.Fatalf("expected template block reason without stale-rate warning: %+v", status)
+	}
+}
+
+func TestCheckSafeToMineBlocksPrevHashMismatch(t *testing.T) {
+	input := safeMiningInput()
+	input.HasActiveTemplate = true
+	input.ActiveTemplateFresh = true
+	input.CurrentTemplateHeight = 102
+	input.CurrentTipHeight = 101
+	input.ActiveTemplatePrevHash = "old"
+	input.CurrentTipHash = "new"
+	status := CheckSafeToMine(input)
+	if status.Safe || status.Reason != "Mining paused: template prev hash does not match current tip." {
+		t.Fatalf("expected prev hash mismatch block, got %+v", status)
 	}
 }
 

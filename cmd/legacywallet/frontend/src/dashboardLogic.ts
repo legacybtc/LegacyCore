@@ -42,6 +42,8 @@ export type MinerDashboardState = {
   templateHeightLabel: string;
   templateRefreshLabel: string;
   templateAgeLabel: string;
+  templateFreshnessLabel: string;
+  templateStaleReasonLabel: string;
   watchdogLabel: string;
   liveActiveThreads: number;
   configuredThreads: number;
@@ -337,6 +339,7 @@ export function peerHeight(peer: DashboardDict): number {
 }
 
 export function peerStatusLabel(peer: DashboardDict, chain: DashboardDict = {}): string {
+  if (boolValue(peer.good_peer) === false && cleanString(peer.good_peer_reason)) return cleanString(peer.good_peer_reason);
   if (peer.peer_status) return String(peer.peer_status);
   if (peer.last_block_reject) return "block rejected";
   if (peer.last_sync_error) return "sync error";
@@ -379,6 +382,12 @@ export function buildMinerDashboardState(mining: DashboardDict = {}, wallet: Das
   const externalPayoutMode = boolValue(mining.external_payout_mode);
   const miningDestinationError = cleanString(mining.mining_destination_error);
   const payoutWarning = cleanString(mining.payout_warning) || (miningDestinationError ? miningDestinationError : externalPayoutMode ? "External payout mode: rewards will not appear in this wallet unless you own or import that address." : "");
+  const templateVisible = activeMining || miningEnabled || boolValue(mining.has_active_template);
+  const templateHeight = mining.active_template_height ?? mining.last_mined_template_height ?? mining.current_template_height;
+  const templateFresh = boolValue(mining.active_template_is_fresh);
+  const templateStaleReason = cleanString(mining.active_template_stale_reason);
+  const templateAge = safeNumber(mining.active_template_age_seconds ?? mining.last_template_refresh_ago_seconds, -1);
+  const templateRefreshTime = mining.last_template_refresh_success_time ?? mining.last_template_refresh_time;
   const payoutOwnershipLabel = activeRewardHash || resolvedRewardAddress
     ? externalPayoutMode
       ? "external payout mode"
@@ -401,10 +410,12 @@ export function buildMinerDashboardState(mining: DashboardDict = {}, wallet: Das
     staleRateWarning: cleanString(mining.stale_rate_warning),
     sessionModeLabel: activeMining ? "running" : miningEnabled ? "retrying / waiting for safe template" : "stopped; ready for next start",
     pausedReasonLabel: activeMining || miningEnabled ? (pausedReason || "-") : "none (miner stopped)",
-    miningLoopLabel: activeMining ? "active" : "inactive (miner stopped)",
-    templateHeightLabel: activeMining ? labelOrDash(mining.last_mined_template_height) : "not currently mining",
-    templateRefreshLabel: activeMining && mining.last_template_refresh_time ? "live" : activeMining ? "-" : "not currently mining",
-    templateAgeLabel: activeMining ? labelOrDash(mining.last_template_refresh_ago_seconds) : "not currently mining",
+    miningLoopLabel: activeMining ? "active" : miningEnabled ? "paused / waiting for safe template" : "inactive (miner stopped)",
+    templateHeightLabel: templateVisible ? labelOrDash(templateHeight) : "not currently mining",
+    templateRefreshLabel: templateVisible && (!templateFresh || templateStaleReason) ? "stale / refreshing" : templateVisible && templateRefreshTime ? "fresh" : templateVisible ? "refreshing" : "not currently mining",
+    templateAgeLabel: templateVisible && templateAge >= 0 ? labelOrDash(templateAge) : templateVisible ? "unknown" : "not currently mining",
+    templateFreshnessLabel: templateVisible ? (templateFresh ? "fresh" : "stale / refresh required") : "not currently mining",
+    templateStaleReasonLabel: templateStaleReason || (templateVisible && !templateFresh ? "waiting for fresh block template" : "-"),
     watchdogLabel: activeMining || miningEnabled ? labelOrDash(mining.watchdog_last_recovery_action) : historicalRetry ? `previous: ${rawLastError}` : "-",
     liveActiveThreads,
     configuredThreads,
