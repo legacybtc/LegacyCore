@@ -6,9 +6,14 @@ import (
 	"math"
 	"testing"
 
+	"legacycoin/legacy-go/internal/blockchain"
+	"legacycoin/legacy-go/internal/chaincfg"
 	"legacycoin/legacy-go/internal/chainhash"
 	"legacycoin/legacy-go/internal/consensus"
+	"legacycoin/legacy-go/internal/genesis"
 	"legacycoin/legacy-go/internal/mempool"
+	"legacycoin/legacy-go/internal/mining"
+	"legacycoin/legacy-go/internal/storage"
 	"legacycoin/legacy-go/internal/wire"
 )
 
@@ -70,6 +75,88 @@ func TestCompactTargetHex(t *testing.T) {
 	if compactTargetHex(0) != "0000000000000000000000000000000000000000000000000000000000000000" {
 		t.Fatalf("zero bits should return zero target")
 	}
+}
+
+func TestNetworkHashEstimateReportsWindowDiagnostics(t *testing.T) {
+	params := chaincfg.MainNet
+	genesisBlock, err := genesis.NewBlock(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	genesisHash, err := rpcLowHashHasher{}.HashHeader(genesisBlock.Header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params.GenesisHash = genesisHash.String()
+	chain, err := blockchain.New(params, rpcLowHashHasher{}, storage.NewFileStore(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.EnsureGenesis(); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		if err := connectRPCSyntheticBlock(chain, params); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := &Server{chain: chain}
+	estimate := s.estimateNetworkHashPS(100)
+	if estimate["genesis_excluded"] != true {
+		t.Fatalf("genesis must be excluded: %+v", estimate)
+	}
+	if estimate["network_hashps_blocks_used"] != int32(4) {
+		t.Fatalf("blocks used = %#v want 4 post-startup intervals", estimate["network_hashps_blocks_used"])
+	}
+	if estimate["network_hashps_window"] != int32(100) {
+		t.Fatalf("window = %#v want 100", estimate["network_hashps_window"])
+	}
+	if estimate["network_hashps_timespan_seconds"] == int64(0) {
+		t.Fatalf("timespan should be non-zero: %+v", estimate)
+	}
+	if estimate["network_hashps_formula"] == "" || estimate["network_hashps_confidence"] == "" || estimate["units"] != "H/s" {
+		t.Fatalf("missing hashrate diagnostics: %+v", estimate)
+	}
+}
+
+type rpcLowHashHasher struct{}
+
+func (rpcLowHashHasher) HashHeader(header wire.BlockHeader) (chainhash.Hash, error) {
+	var h chainhash.Hash
+	h[0] = byte(header.Timestamp)
+	if h[0] == 0 {
+		h[0] = 1
+	}
+	return h, nil
+}
+
+func connectRPCSyntheticBlock(chain *blockchain.Chain, params chaincfg.Params) error {
+	tip := chain.Tip()
+	prev, err := chainhash.FromString(tip.Hash)
+	if err != nil {
+		return err
+	}
+	height := tip.Height + 1
+	coinbase, err := mining.NewCoinbaseTx(height, []byte{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, chaincfg.BlockSubsidy(height))
+	if err != nil {
+		return err
+	}
+	block := &wire.MsgBlock{
+		Header: wire.BlockHeader{
+			Version:   1,
+			PrevBlock: prev,
+			Timestamp: tip.Time + uint32(chaincfg.TargetSpacing.Seconds()),
+			Bits:      params.PostGenesisBits,
+			Nonce:     uint32(height),
+		},
+		Transactions: []*wire.MsgTx{coinbase},
+	}
+	root, err := block.BuildMerkleRoot()
+	if err != nil {
+		return err
+	}
+	block.Header.MerkleRoot = root
+	return chain.ConnectBlock(block)
 }
 
 func simpleTemplateTx(tag byte) *wire.MsgTx {

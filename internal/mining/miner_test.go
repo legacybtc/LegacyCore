@@ -118,6 +118,49 @@ func TestMultiOutputCoinbaseBlockAccepted(t *testing.T) {
 	}
 }
 
+func TestTemplateFreshnessRejectsBehindHeightPrevHashAndAge(t *testing.T) {
+	params := chaincfg.MainNet
+	genesisBlock, err := genesis.NewBlock(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	genesisHash, err := lowHashTestHasher{}.HashHeader(genesisBlock.Header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params.GenesisHash = genesisHash.String()
+	chain, err := blockchain.New(params, lowHashTestHasher{}, storage.NewFileStore(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.EnsureGenesis(); err != nil {
+		t.Fatal(err)
+	}
+	pubHash := bytes.Repeat([]byte{0x44}, 20)
+	template, height, err := NewBlockTemplate(chain, mempool.New(), pubHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh := CheckTemplateFreshness(chain, template, height, time.Now(), DefaultMaxTemplateAge)
+	if !fresh.ActiveTemplateIsFresh {
+		t.Fatalf("fresh template rejected: %+v", fresh)
+	}
+	behind := CheckTemplateFreshness(chain, template, height-1, time.Now(), DefaultMaxTemplateAge)
+	if behind.ActiveTemplateIsFresh || behind.ActiveTemplateStaleReason != "template height is not current tip height + 1" {
+		t.Fatalf("behind template should be stale, got %+v", behind)
+	}
+	mismatch := *template
+	mismatch.Header.PrevBlock = chainhash.Hash{0x99}
+	prevMismatch := CheckTemplateFreshness(chain, &mismatch, height, time.Now(), DefaultMaxTemplateAge)
+	if prevMismatch.ActiveTemplateIsFresh || prevMismatch.ActiveTemplateStaleReason != "template prev hash does not match current tip" {
+		t.Fatalf("prev-hash mismatch should be stale, got %+v", prevMismatch)
+	}
+	old := CheckTemplateFreshness(chain, template, height, time.Now().Add(-DefaultMaxTemplateAge-time.Second), DefaultMaxTemplateAge)
+	if old.ActiveTemplateIsFresh || old.ActiveTemplateStaleReason != "template age exceeds freshness limit" {
+		t.Fatalf("old template should be stale, got %+v", old)
+	}
+}
+
 func TestBenchmarkHashrateReturnsPromptlyWithManyWorkers(t *testing.T) {
 	params := chaincfg.MainNet
 	genesisBlock, err := genesis.NewBlock(params)

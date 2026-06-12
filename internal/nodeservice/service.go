@@ -3575,13 +3575,27 @@ func (s *Service) estimateNetworkHashPS(n *node.Node, window int32) map[string]a
 	tip := n.Chain().Tip()
 	if tip == nil || tip.Height < 3 {
 		return map[string]any{
-			"estimate":         "difficulty_time_estimate",
-			"hps":              0,
-			"khps":             0,
-			"window":           0,
-			"genesis_excluded": true,
-			"status":           "estimating",
-			"note":             "not enough post-genesis blocks for a reliable network hashrate estimate",
+			"estimate":                        "difficulty_time_estimate",
+			"hps":                             0,
+			"khps":                            0,
+			"mhps":                            0,
+			"network_hash_ps":                 0,
+			"network_hashps_window":           0,
+			"network_hashps_blocks_used":      0,
+			"network_hashps_timespan_seconds": 0,
+			"network_hashps_formula":          "sum(expected_hashes_for_bits[post-genesis blocks]) / elapsed_seconds",
+			"network_hashps_confidence":       "very_low",
+			"network_hashps_source":           "difficulty_time_estimate",
+			"window":                          0,
+			"blocks_used":                     0,
+			"timespan_seconds":                0,
+			"formula":                         "sum(expected_hashes_for_bits[post-genesis blocks]) / elapsed_seconds",
+			"confidence":                      "very_low",
+			"source":                          "difficulty_time_estimate",
+			"units":                           "H/s",
+			"genesis_excluded":                true,
+			"status":                          "estimating",
+			"note":                            "not enough post-genesis blocks for a reliable network hashrate estimate",
 		}
 	}
 	start := tip.Height - window
@@ -3616,19 +3630,48 @@ func (s *Service) estimateNetworkHashPS(n *node.Node, window int32) map[string]a
 	if blocks > 0 && totalTime > 0 {
 		avgSpacing = float64(totalTime) / float64(blocks)
 	}
+	confidence := networkHashConfidence(blocks)
 	return map[string]any{
-		"estimate":                "difficulty_time_estimate",
-		"hps":                     hps,
-		"khps":                    hps / 1000,
-		"start_height":            start,
-		"tip_height":              tip.Height,
-		"blocks":                  blocks,
-		"total_time_seconds":      totalTime,
-		"average_spacing_seconds": avgSpacing,
-		"target_spacing_seconds":  int64(chaincfg.TargetSpacing.Seconds()),
-		"expected_hashes":         totalExpected,
-		"genesis_excluded":        true,
-		"status":                  "estimated",
+		"estimate":                        "difficulty_time_estimate",
+		"hps":                             hps,
+		"khps":                            hps / 1000,
+		"mhps":                            hps / 1_000_000,
+		"network_hash_ps":                 hps,
+		"network_hashps_window":           window,
+		"network_hashps_blocks_used":      blocks,
+		"network_hashps_timespan_seconds": totalTime,
+		"network_hashps_formula":          "sum(expected_hashes_for_bits[post-genesis blocks]) / elapsed_seconds",
+		"network_hashps_confidence":       confidence,
+		"network_hashps_source":           "difficulty_time_estimate",
+		"start_height":                    start,
+		"tip_height":                      tip.Height,
+		"blocks":                          blocks,
+		"blocks_used":                     blocks,
+		"window":                          window,
+		"total_time_seconds":              totalTime,
+		"timespan_seconds":                totalTime,
+		"average_spacing_seconds":         avgSpacing,
+		"target_spacing_seconds":          int64(chaincfg.TargetSpacing.Seconds()),
+		"expected_hashes":                 totalExpected,
+		"formula":                         "sum(expected_hashes_for_bits[post-genesis blocks]) / elapsed_seconds",
+		"confidence":                      confidence,
+		"source":                          "difficulty_time_estimate",
+		"units":                           "H/s",
+		"genesis_excluded":                true,
+		"status":                          "estimated",
+	}
+}
+
+func networkHashConfidence(blocks int32) string {
+	switch {
+	case blocks >= 100:
+		return "high"
+	case blocks >= 50:
+		return "medium"
+	case blocks >= 10:
+		return "low"
+	default:
+		return "very_low"
 	}
 }
 
@@ -3952,6 +3995,8 @@ func (s *Service) minerLoop(ctx context.Context, n *node.Node, pubHash []byte, t
 			s.minerMu.Lock()
 			s.minerPausedReason = reason
 			s.minerLastRecovery = "paused mining: " + reason
+			s.minerLoopRunning = false
+			s.minerLocalHashPS = 0
 			s.minerMu.Unlock()
 			select {
 			case <-ctx.Done():
@@ -3964,7 +4009,7 @@ func (s *Service) minerLoop(ctx context.Context, n *node.Node, pubHash []byte, t
 		s.minerPausedReason = ""
 		s.minerLastTemplate = time.Now()
 		if tip := n.Chain().Tip(); tip != nil {
-			s.minerLastTemplateHeight = tip.Height
+			s.minerLastTemplateHeight = tip.Height + 1
 		}
 		s.minerLoopRunning = true
 		s.minerMu.Unlock()
@@ -3974,6 +4019,9 @@ func (s *Service) minerLoop(ctx context.Context, n *node.Node, pubHash []byte, t
 			s.minerLocalHashPS = p.Rate
 			s.minerSessionHashes = p.Attempts
 			s.minerLastNonce = p.Nonce
+			if p.TemplateHeight > 0 {
+				s.minerLastTemplateHeight = p.TemplateHeight
+			}
 			s.minerMu.Unlock()
 		})
 		cancelEpoch()
@@ -3989,6 +4037,17 @@ func (s *Service) minerLoop(ctx context.Context, n *node.Node, pubHash []byte, t
 			if errors.Is(err, context.DeadlineExceeded) {
 				s.minerMu.Lock()
 				s.minerLastRecovery = "refreshed mining template after watchdog interval"
+				s.minerLoopRunning = false
+				s.minerLocalHashPS = 0
+				s.minerMu.Unlock()
+				continue
+			}
+			if errors.Is(err, mining.ErrStaleTemplate) {
+				s.minerMu.Lock()
+				s.minerPausedReason = "Mining paused: template is stale; waiting for fresh block template."
+				s.minerLastRecovery = "refreshed mining template after stale-template guard"
+				s.minerLoopRunning = false
+				s.minerLocalHashPS = 0
 				s.minerMu.Unlock()
 				continue
 			}
@@ -3996,10 +4055,16 @@ func (s *Service) minerLoop(ctx context.Context, n *node.Node, pubHash []byte, t
 			s.minerLastError = err.Error()
 			s.minerStopReason = ""
 			s.minerRejectBlocks++
+			s.minerLoopRunning = false
+			s.minerLocalHashPS = 0
 			s.minerMu.Unlock()
 			time.Sleep(1500 * time.Millisecond)
 			continue
 		}
+		s.minerMu.Lock()
+		s.minerLoopRunning = false
+		s.minerLocalHashPS = 0
+		s.minerMu.Unlock()
 		n.P2P().AnnounceBlock(result.Hash)
 		s.minerMu.Lock()
 		s.minerBlocks++

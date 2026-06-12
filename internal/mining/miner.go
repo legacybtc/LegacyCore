@@ -2,6 +2,7 @@ package mining
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"runtime"
@@ -20,9 +21,14 @@ import (
 )
 
 type Progress struct {
-	Attempts uint64
-	Nonce    uint32
-	Rate     float64
+	Attempts            uint64
+	Nonce               uint32
+	Rate                float64
+	TemplateHeight      int32
+	TemplatePrevHash    string
+	TemplateAgeSeconds  float64
+	TemplateFresh       bool
+	TemplateStaleReason string
 }
 
 type Result struct {
@@ -34,6 +40,65 @@ type Result struct {
 type CoinbaseOutput struct {
 	PubKeyHash []byte
 	Value      int64
+}
+
+const DefaultMaxTemplateAge = 2 * time.Minute
+
+var ErrStaleTemplate = errors.New("stale mining template")
+
+type TemplateStatus struct {
+	CurrentTipHeight          int32
+	CurrentTipHash            string
+	ActiveTemplateHeight      int32
+	ActiveTemplatePrevHash    string
+	ActiveTemplateAgeSeconds  float64
+	ActiveTemplateIsFresh     bool
+	ActiveTemplateStaleReason string
+}
+
+func CheckTemplateFreshness(chain *blockchain.Chain, template *wire.MsgBlock, height int32, createdAt time.Time, maxAge time.Duration) TemplateStatus {
+	status := TemplateStatus{
+		CurrentTipHeight:          -1,
+		ActiveTemplateHeight:      height,
+		ActiveTemplateIsFresh:     false,
+		ActiveTemplateStaleReason: "template unavailable",
+	}
+	if template == nil {
+		return status
+	}
+	status.ActiveTemplatePrevHash = template.Header.PrevBlock.String()
+	if !createdAt.IsZero() {
+		status.ActiveTemplateAgeSeconds = time.Since(createdAt).Seconds()
+	}
+	if chain == nil {
+		status.ActiveTemplateStaleReason = "chain unavailable"
+		return status
+	}
+	tip := chain.Tip()
+	if tip == nil || tip.Hash == "" {
+		status.ActiveTemplateStaleReason = "chain tip unavailable"
+		return status
+	}
+	status.CurrentTipHeight = tip.Height
+	status.CurrentTipHash = tip.Hash
+	if status.ActiveTemplatePrevHash != tip.Hash {
+		status.ActiveTemplateStaleReason = "template prev hash does not match current tip"
+		return status
+	}
+	if height != tip.Height+1 {
+		status.ActiveTemplateStaleReason = "template height is not current tip height + 1"
+		return status
+	}
+	if maxAge <= 0 {
+		maxAge = DefaultMaxTemplateAge
+	}
+	if !createdAt.IsZero() && time.Since(createdAt) > maxAge {
+		status.ActiveTemplateStaleReason = "template age exceeds freshness limit"
+		return status
+	}
+	status.ActiveTemplateIsFresh = true
+	status.ActiveTemplateStaleReason = ""
+	return status
 }
 
 func NewBlockTemplate(chain *blockchain.Chain, pool *mempool.Pool, pubKeyHash []byte) (*wire.MsgBlock, int32, error) {
@@ -144,6 +209,23 @@ func MineBlock(ctx context.Context, chain *blockchain.Chain, pool *mempool.Pool,
 	if err != nil {
 		return Result{}, err
 	}
+	templateCreatedAt := time.Now()
+	templateStatus := CheckTemplateFreshness(chain, template, height, templateCreatedAt, DefaultMaxTemplateAge)
+	if !templateStatus.ActiveTemplateIsFresh {
+		return Result{}, fmt.Errorf("%w: %s", ErrStaleTemplate, templateStatus.ActiveTemplateStaleReason)
+	}
+	if progress != nil {
+		progress(Progress{
+			Attempts:            0,
+			Nonce:               0,
+			Rate:                0,
+			TemplateHeight:      height,
+			TemplatePrevHash:    template.Header.PrevBlock.String(),
+			TemplateAgeSeconds:  templateStatus.ActiveTemplateAgeSeconds,
+			TemplateFresh:       templateStatus.ActiveTemplateIsFresh,
+			TemplateStaleReason: templateStatus.ActiveTemplateStaleReason,
+		})
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -157,6 +239,7 @@ func MineBlock(ctx context.Context, chain *blockchain.Chain, pool *mempool.Pool,
 	var lastNonce atomic.Uint32
 	var wg sync.WaitGroup
 	start := time.Now()
+	templatePrevHash := template.Header.PrevBlock.String()
 
 	for worker := 0; worker < workers; worker++ {
 		wg.Add(1)
@@ -209,6 +292,8 @@ func MineBlock(ctx context.Context, chain *blockchain.Chain, pool *mempool.Pool,
 		wg.Wait()
 		close(done)
 	}()
+	staleTicker := time.NewTicker(time.Second)
+	defer staleTicker.Stop()
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -217,6 +302,9 @@ func MineBlock(ctx context.Context, chain *blockchain.Chain, pool *mempool.Pool,
 			wg.Wait()
 			if res.err != nil {
 				return Result{}, res.err
+			}
+			if status := CheckTemplateFreshness(chain, res.block, height, templateCreatedAt, DefaultMaxTemplateAge); !status.ActiveTemplateIsFresh {
+				return Result{}, fmt.Errorf("%w: %s", ErrStaleTemplate, status.ActiveTemplateStaleReason)
 			}
 			if err := chain.ConnectBlock(res.block); err != nil {
 				return Result{}, err
@@ -233,13 +321,34 @@ func MineBlock(ctx context.Context, chain *blockchain.Chain, pool *mempool.Pool,
 				if elapsed > 0 {
 					rate = float64(count) / elapsed
 				}
-				progress(Progress{Attempts: count, Nonce: lastNonce.Load(), Rate: rate})
+				status := CheckTemplateFreshness(chain, template, height, templateCreatedAt, DefaultMaxTemplateAge)
+				progress(Progress{
+					Attempts:            count,
+					Nonce:               lastNonce.Load(),
+					Rate:                rate,
+					TemplateHeight:      height,
+					TemplatePrevHash:    templatePrevHash,
+					TemplateAgeSeconds:  status.ActiveTemplateAgeSeconds,
+					TemplateFresh:       status.ActiveTemplateIsFresh,
+					TemplateStaleReason: status.ActiveTemplateStaleReason,
+				})
+			}
+		case <-staleTicker.C:
+			if status := CheckTemplateFreshness(chain, template, height, templateCreatedAt, DefaultMaxTemplateAge); !status.ActiveTemplateIsFresh {
+				select {
+				case resultc <- mineResult{err: fmt.Errorf("%w: %s", ErrStaleTemplate, status.ActiveTemplateStaleReason)}:
+					cancel()
+				default:
+				}
 			}
 		case <-done:
 			select {
 			case res := <-resultc:
 				if res.err != nil {
 					return Result{}, res.err
+				}
+				if status := CheckTemplateFreshness(chain, res.block, height, templateCreatedAt, DefaultMaxTemplateAge); !status.ActiveTemplateIsFresh {
+					return Result{}, fmt.Errorf("%w: %s", ErrStaleTemplate, status.ActiveTemplateStaleReason)
 				}
 				if err := chain.ConnectBlock(res.block); err != nil {
 					return Result{}, err

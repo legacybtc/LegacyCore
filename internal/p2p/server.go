@@ -697,6 +697,9 @@ type PeerInfo struct {
 	SyncFailures                     int     `json:"sync_failures"`
 	SyncSuccesses                    int     `json:"sync_successes"`
 	BestSyncCandidate                bool    `json:"best_sync_candidate"`
+	GoodPeer                         bool    `json:"good_peer"`
+	GoodPeerReason                   string  `json:"good_peer_reason"`
+	LagFromLocalHeight               int32   `json:"lag_from_local_height"`
 }
 
 func (s *Server) PeerInfos() []PeerInfo {
@@ -768,6 +771,11 @@ func (s *Server) PeerInfos() []PeerInfo {
 		case rtt > time.Second:
 			quality = "degraded"
 		}
+		lagFromLocal := int32(0)
+		if localHeight >= 0 && height > 0 {
+			lagFromLocal = localHeight - height
+		}
+		goodPeer, goodPeerReason := classifyGoodPeer(localHeight, height, stale, missedPongs, quality, chainID, s.chainID, lastSyncError, lastBlockReject, rtt)
 		out = append(out, PeerInfo{
 			Addr:                             p.remote,
 			Direction:                        direction,
@@ -816,9 +824,43 @@ func (s *Server) PeerInfos() []PeerInfo {
 			SyncFailures:                     syncFailures,
 			SyncSuccesses:                    syncSuccesses,
 			BestSyncCandidate:                p == bestPeer,
+			GoodPeer:                         goodPeer,
+			GoodPeerReason:                   goodPeerReason,
+			LagFromLocalHeight:               lagFromLocal,
 		})
 	}
 	return out
+}
+
+func classifyGoodPeer(localHeight, peerHeight int32, stale bool, missedPongs int, quality, chainID, expectedChainID, lastSyncError, lastBlockReject string, rtt time.Duration) (bool, string) {
+	if strings.TrimSpace(chainID) != "" && strings.TrimSpace(expectedChainID) != "" && chainID != expectedChainID {
+		return false, "wrong chain/genesis"
+	}
+	if strings.TrimSpace(lastBlockReject) != "" {
+		return false, "block rejected"
+	}
+	if strings.TrimSpace(lastSyncError) != "" {
+		return false, "sync error"
+	}
+	if stale {
+		return false, "stale data"
+	}
+	if missedPongs >= 3 {
+		return false, "timeout"
+	}
+	if strings.EqualFold(quality, "poor") {
+		return false, "poor peer quality"
+	}
+	if localHeight > 0 && peerHeight <= 0 {
+		return false, "unknown height"
+	}
+	if localHeight > 0 && peerHeight > 0 && peerHeight+1 < localHeight {
+		return false, "height too low"
+	}
+	if rtt > 5*time.Second {
+		return false, "poor ping"
+	}
+	return true, "current enough"
 }
 
 func (s *Server) BestPeerHeight() int32 {

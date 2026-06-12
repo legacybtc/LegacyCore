@@ -49,27 +49,47 @@ type Server struct {
 	policy     config.LaunchPolicy
 	configPath string
 
-	minerMu                 sync.Mutex
-	minerActive             bool
-	minerCancel             context.CancelFunc
-	minerThreads            int
-	minerBlocks             int64
-	minerLastHash           string
-	minerLastError          string
-	minerStartedAt          time.Time
-	minerStopAfterBlocks    int64
-	minerRewardHash         string
-	minerPeerRequired       bool
-	minerLocalHashPS        float64
-	minerSessionHashes      uint64
-	minerLastNonce          uint32
-	minerStaleBlocks        int64
-	minerRejectedBlocks     int64
-	minerLastStaleTime      time.Time
-	minerLastStaleReason    string
-	minerLastTemplateTime   time.Time
-	minerLastTemplateHeight int32
-	defaultTxFee            int64
+	minerMu                       sync.Mutex
+	minerActive                   bool
+	minerHashing                  bool
+	minerCancel                   context.CancelFunc
+	minerThreads                  int
+	minerBlocks                   int64
+	minerLastHash                 string
+	minerLastError                string
+	minerPausedReason             string
+	minerStartedAt                time.Time
+	minerStopAfterBlocks          int64
+	minerRewardHash               string
+	minerPeerRequired             bool
+	minerLocalHashPS              float64
+	minerSessionHashes            uint64
+	minerLastNonce                uint32
+	minerStaleBlocks              int64
+	minerRejectedBlocks           int64
+	minerLastStaleTime            time.Time
+	minerLastStaleReason          string
+	minerLastTemplateTime         time.Time
+	minerLastTemplateHeight       int32
+	minerLastTemplatePrevHash     string
+	minerLastTemplateTipHeight    int32
+	minerLastTemplateTipHash      string
+	minerLastTemplateFresh        bool
+	minerLastTemplateStaleReason  string
+	minerTemplateRefreshCount     int64
+	minerStaleTemplateSkips       int64
+	minerLastTemplateRefreshError string
+	minerStaleRatePauseActive     bool
+	minerAcceptedRecords          []minerAcceptedRecord
+	defaultTxFee                  int64
+}
+
+type minerAcceptedRecord struct {
+	Hash         string
+	Height       int32
+	AcceptedAt   time.Time
+	PayoutHash   string
+	CoinbaseTxID string
 }
 
 type request struct {
@@ -4101,13 +4121,27 @@ func (s *Server) estimateNetworkHashPS(window int32) map[string]any {
 	tip := s.chain.Tip()
 	if tip == nil || tip.Height < 3 {
 		return map[string]any{
-			"estimate":         "difficulty_time_estimate",
-			"hps":              0,
-			"khps":             0,
-			"window":           0,
-			"genesis_excluded": true,
-			"status":           "estimating",
-			"note":             "not enough post-genesis blocks for a reliable network hashrate estimate",
+			"estimate":                        "difficulty_time_estimate",
+			"hps":                             0,
+			"khps":                            0,
+			"mhps":                            0,
+			"network_hash_ps":                 0,
+			"network_hashps_window":           0,
+			"network_hashps_blocks_used":      0,
+			"network_hashps_timespan_seconds": 0,
+			"network_hashps_formula":          "sum(expected_hashes_for_bits[post-genesis blocks]) / elapsed_seconds",
+			"network_hashps_confidence":       "very_low",
+			"network_hashps_source":           "difficulty_time_estimate",
+			"window":                          0,
+			"blocks_used":                     0,
+			"timespan_seconds":                0,
+			"formula":                         "sum(expected_hashes_for_bits[post-genesis blocks]) / elapsed_seconds",
+			"confidence":                      "very_low",
+			"source":                          "difficulty_time_estimate",
+			"units":                           "H/s",
+			"genesis_excluded":                true,
+			"status":                          "estimating",
+			"note":                            "not enough post-genesis blocks for a reliable network hashrate estimate",
 		}
 	}
 	start := tip.Height - window
@@ -4143,19 +4177,48 @@ func (s *Server) estimateNetworkHashPS(window int32) map[string]any {
 	if blocks > 0 && totalTime > 0 {
 		avgSpacing = float64(totalTime) / float64(blocks)
 	}
+	confidence := networkHashConfidence(blocks)
 	return map[string]any{
-		"estimate":                "difficulty_time_estimate",
-		"hps":                     hps,
-		"khps":                    hps / 1000,
-		"start_height":            start,
-		"tip_height":              tip.Height,
-		"blocks":                  blocks,
-		"total_time_seconds":      totalTime,
-		"average_spacing_seconds": avgSpacing,
-		"target_spacing_seconds":  int64(chaincfg.TargetSpacing.Seconds()),
-		"expected_hashes":         totalExpected,
-		"genesis_excluded":        true,
-		"status":                  "estimated",
+		"estimate":                        "difficulty_time_estimate",
+		"hps":                             hps,
+		"khps":                            hps / 1000,
+		"mhps":                            hps / 1_000_000,
+		"network_hash_ps":                 hps,
+		"network_hashps_window":           window,
+		"network_hashps_blocks_used":      blocks,
+		"network_hashps_timespan_seconds": totalTime,
+		"network_hashps_formula":          "sum(expected_hashes_for_bits[post-genesis blocks]) / elapsed_seconds",
+		"network_hashps_confidence":       confidence,
+		"network_hashps_source":           "difficulty_time_estimate",
+		"start_height":                    start,
+		"tip_height":                      tip.Height,
+		"blocks":                          blocks,
+		"blocks_used":                     blocks,
+		"window":                          window,
+		"total_time_seconds":              totalTime,
+		"timespan_seconds":                totalTime,
+		"average_spacing_seconds":         avgSpacing,
+		"target_spacing_seconds":          int64(chaincfg.TargetSpacing.Seconds()),
+		"expected_hashes":                 totalExpected,
+		"formula":                         "sum(expected_hashes_for_bits[post-genesis blocks]) / elapsed_seconds",
+		"confidence":                      confidence,
+		"source":                          "difficulty_time_estimate",
+		"units":                           "H/s",
+		"genesis_excluded":                true,
+		"status":                          "estimated",
+	}
+}
+
+func networkHashConfidence(blocks int32) string {
+	switch {
+	case blocks >= 100:
+		return "high"
+	case blocks >= 50:
+		return "medium"
+	case blocks >= 10:
+		return "low"
+	default:
+		return "very_low"
 	}
 }
 
@@ -4370,11 +4433,13 @@ func timingTrend(avg float64) string {
 
 func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady bool) map[string]any {
 	s.minerMu.Lock()
-	activeMining := s.minerActive
+	minerEnabled := s.minerActive
+	activeMining := s.minerHashing
 	minerThreads := s.minerThreads
 	minerBlocks := s.minerBlocks
 	minerLastHash := s.minerLastHash
 	minerLastError := s.minerLastError
+	minerPausedReason := s.minerPausedReason
 	minerStartedAt := s.minerStartedAt
 	stopAfter := s.minerStopAfterBlocks
 	rewardHash := s.minerRewardHash
@@ -4388,10 +4453,19 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 	lastStaleReason := s.minerLastStaleReason
 	lastTemplateTime := s.minerLastTemplateTime
 	lastTemplateHeight := s.minerLastTemplateHeight
+	lastTemplatePrevHash := s.minerLastTemplatePrevHash
+	lastTemplateTipHeight := s.minerLastTemplateTipHeight
+	lastTemplateTipHash := s.minerLastTemplateTipHash
+	lastTemplateFresh := s.minerLastTemplateFresh
+	lastTemplateStaleReason := s.minerLastTemplateStaleReason
+	templateRefreshCount := s.minerTemplateRefreshCount
+	staleTemplateSkips := s.minerStaleTemplateSkips
+	lastTemplateRefreshError := s.minerLastTemplateRefreshError
+	acceptedRecords := append([]minerAcceptedRecord(nil), s.minerAcceptedRecords...)
 	s.minerMu.Unlock()
 	uptime := int64(0)
 	startedAt := ""
-	if activeMining && !minerStartedAt.IsZero() {
+	if minerEnabled && !minerStartedAt.IsZero() {
 		uptime = int64(time.Since(minerStartedAt).Seconds())
 		startedAt = minerStartedAt.Format(time.RFC3339)
 	}
@@ -4401,7 +4475,7 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 	}
 	safety := s.checkSafeToMine(cfg, true)
 	miningReady = miningReady && safety.Safe
-	canStart := miningReady && !activeMining
+	canStart := miningReady && !minerEnabled
 	currentBits := ""
 	if tip := s.chain.Tip(); tip != nil {
 		currentBits = fmt.Sprintf("%08x", tip.Bits)
@@ -4443,12 +4517,20 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 	currentMiningState := "stopped"
 	if activeMining {
 		currentMiningState = "running"
+	} else if minerEnabled && strings.TrimSpace(minerPausedReason) != "" {
+		currentMiningState = "paused"
+	} else if minerEnabled {
+		currentMiningState = "starting"
 	}
 	currentSafetyState := "idle / ready, miner stopped"
 	if !safety.Safe {
 		currentSafetyState = safety.Reason
 	} else if activeMining && miningReady {
 		currentSafetyState = "safe"
+	} else if minerEnabled && strings.TrimSpace(minerPausedReason) != "" {
+		currentSafetyState = minerPausedReason
+	} else if minerEnabled && !activeMining {
+		currentSafetyState = "starting / refreshing template"
 	} else if activeMining && !miningReady {
 		currentSafetyState = "unsafe"
 	} else if dest.Error != "" {
@@ -4464,11 +4546,17 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 		lastTemplateTimeValue = lastTemplateTime.Unix()
 		lastTemplateAge = time.Since(lastTemplateTime).Seconds()
 	}
+	hasActiveTemplate := minerEnabled && !lastTemplateTime.IsZero() && lastTemplateHeight > 0
+	if hasActiveTemplate {
+		lastTemplateFresh, lastTemplateStaleReason = s.activeTemplateFreshness(lastTemplateHeight, lastTemplatePrevHash, lastTemplateTime)
+	}
+	acceptedBlockStatuses, activeAcceptedBlocks := s.acceptedBlockStatuses(acceptedRecords)
 	out := map[string]any{
 		"mining_ready":        miningReady,
 		"can_start":           canStart,
-		"mining_enabled":      cfg.Enabled || activeMining,
+		"mining_enabled":      cfg.Enabled || minerEnabled,
 		"active_mining":       activeMining,
+		"miner_loop_enabled":  minerEnabled,
 		"mining_safe":         safety.Safe,
 		"threads":             cfg.Threads,
 		"configured_threads":  cfg.Threads,
@@ -4476,7 +4564,7 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 		"active_threads":      liveThreads,
 		"live_active_threads": liveThreads,
 		"last_session_active_threads": func() int {
-			if activeMining {
+			if minerEnabled {
 				return 0
 			}
 			return minerThreads
@@ -4520,7 +4608,7 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 			}
 			return minerStartedAt.Unix()
 		}(),
-		"start_command_accepted":         activeMining,
+		"start_command_accepted":         minerEnabled,
 		"start_confirmation_status":      currentMiningState,
 		"last_miner_status_success_time": time.Now().Unix(),
 		"miner_status_age_seconds":       0.0,
@@ -4544,30 +4632,51 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 			}
 			return localHashPS / 1000
 		}(),
-		"live_active_threads_note":          "active_threads and local_khps are live-only; use last_session_* for stopped miner history",
-		"session_hashes":                    sessionHashes,
-		"hashes_per_thread":                 hashesPerThread(localHashPS, minerThreads),
-		"last_nonce":                        lastNonce,
-		"current_bits":                      currentBits,
-		"estimated_time_to_block_seconds":   estimatedSeconds,
-		"accepted_blocks":                   minerBlocks,
-		"stale_blocks":                      staleBlocks,
-		"rejected_blocks":                   rejectedBlocks,
-		"stale_rate":                        safety.StaleRate,
-		"stale_rate_warning":                safety.StaleRateWarning,
-		"last_stale_time":                   lastStaleTimeValue,
-		"last_stale_reason":                 lastStaleReason,
-		"last_template_refresh_time":        lastTemplateTimeValue,
-		"last_template_refresh_ago_seconds": lastTemplateAge,
-		"last_mined_template_height":        lastTemplateHeight,
-		"current_template_height":           safety.CurrentTemplateHeight,
-		"current_tip_height":                safety.CurrentTipHeight,
-		"mining_reward_address":             displayRewardAddress,
-		"configured_mining_address":         strings.TrimSpace(cfg.RewardAddress),
-		"mining_address_wallet_owned":       dest.Owned,
-		"owned_by_wallet":                   dest.Owned,
-		"external_payout_mode":              dest.External,
-		"mining_destination_error":          dest.Error,
+		"live_active_threads_note":           "active_threads and local_khps are live-only; use last_session_* for stopped miner history",
+		"session_hashes":                     sessionHashes,
+		"hashes_per_thread":                  hashesPerThread(localHashPS, minerThreads),
+		"last_nonce":                         lastNonce,
+		"current_bits":                       currentBits,
+		"estimated_time_to_block_seconds":    estimatedSeconds,
+		"accepted_blocks":                    activeAcceptedBlocks,
+		"accepted_blocks_total":              minerBlocks,
+		"accepted_blocks_active_chain":       activeAcceptedBlocks,
+		"accepted_blocks_orphaned":           int64(len(acceptedBlockStatuses)) - activeAcceptedBlocks,
+		"accepted_block_hashes":              acceptedBlockHashes(acceptedBlockStatuses),
+		"accepted_block_heights":             acceptedBlockHeights(acceptedBlockStatuses),
+		"accepted_mined_blocks":              acceptedBlockStatuses,
+		"stale_blocks":                       staleBlocks,
+		"rejected_blocks":                    rejectedBlocks,
+		"stale_rate":                         safety.StaleRate,
+		"stale_rate_warning":                 safety.StaleRateWarning,
+		"last_stale_time":                    lastStaleTimeValue,
+		"last_stale_reason":                  lastStaleReason,
+		"last_template_refresh_time":         lastTemplateTimeValue,
+		"last_template_refresh_ago_seconds":  lastTemplateAge,
+		"last_template_refresh_success_time": lastTemplateTimeValue,
+		"last_template_refresh_error":        lastTemplateRefreshError,
+		"last_template_refresh_tip_height":   lastTemplateTipHeight,
+		"last_template_refresh_tip_hash":     lastTemplateTipHash,
+		"template_refresh_count":             templateRefreshCount,
+		"stale_template_skip_count":          staleTemplateSkips,
+		"last_mined_template_height":         lastTemplateHeight,
+		"current_template_height":            safety.CurrentTemplateHeight,
+		"current_tip_height":                 safety.CurrentTipHeight,
+		"current_tip_hash":                   safety.CurrentTipHash,
+		"active_template_height":             lastTemplateHeight,
+		"active_template_prev_hash":          lastTemplatePrevHash,
+		"active_template_age_seconds":        lastTemplateAge,
+		"active_template_is_fresh":           hasActiveTemplate && lastTemplateFresh,
+		"active_template_stale_reason":       lastTemplateStaleReason,
+		"has_active_template":                hasActiveTemplate,
+		"template_max_age_seconds":           miningTemplateMaxAgeSeconds(),
+		"mining_paused_reason":               minerPausedReason,
+		"mining_reward_address":              displayRewardAddress,
+		"configured_mining_address":          strings.TrimSpace(cfg.RewardAddress),
+		"mining_address_wallet_owned":        dest.Owned,
+		"owned_by_wallet":                    dest.Owned,
+		"external_payout_mode":               dest.External,
+		"mining_destination_error":           dest.Error,
 		"payout_warning": func() string {
 			if dest.External {
 				return "External payout mode: rewards will not appear in this wallet unless you own or import that address."
@@ -4600,6 +4709,78 @@ func isNormalMinerStopReason(s string) bool {
 func isHistoricalMinerRetryReason(s string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(s))
 	return strings.Contains(normalized, "stale tip") || strings.Contains(normalized, "retry") || strings.Contains(normalized, "refresh")
+}
+
+func unixOrZero(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.Unix()
+}
+
+func (s *Server) acceptedBlockStatuses(records []minerAcceptedRecord) ([]map[string]any, int64) {
+	out := make([]map[string]any, 0, len(records))
+	activeCount := int64(0)
+	tip := s.chain.Tip()
+	tipHeight := int32(-1)
+	if tip != nil {
+		tipHeight = tip.Height
+	}
+	for _, rec := range records {
+		active := false
+		confirmations := int32(0)
+		status := "orphaned/reorged"
+		if idx, err := s.chain.IndexByHeight(rec.Height); err == nil && idx != nil && idx.Hash == rec.Hash {
+			active = true
+			activeCount++
+			if tipHeight >= rec.Height {
+				confirmations = tipHeight - rec.Height + 1
+			}
+			status = "immature"
+			if confirmations >= int32(chaincfg.CoinbaseMaturity) {
+				status = "mature"
+			}
+		}
+		out = append(out, map[string]any{
+			"hash":                  rec.Hash,
+			"height":                rec.Height,
+			"accepted_at":           unixOrZero(rec.AcceptedAt),
+			"accepted_active_chain": active,
+			"active_chain":          active,
+			"confirmations":         confirmations,
+			"status":                status,
+			"orphaned":              !active,
+			"reorged":               !active,
+			"payout_hash":           rec.PayoutHash,
+			"coinbase_txid":         rec.CoinbaseTxID,
+		})
+	}
+	return out, activeCount
+}
+
+func acceptedBlockHashes(records []map[string]any) []string {
+	out := make([]string, 0, len(records))
+	for _, rec := range records {
+		if hash := strings.TrimSpace(fmt.Sprint(rec["hash"])); hash != "" {
+			out = append(out, hash)
+		}
+	}
+	return out
+}
+
+func acceptedBlockHeights(records []map[string]any) []int32 {
+	out := make([]int32, 0, len(records))
+	for _, rec := range records {
+		switch v := rec["height"].(type) {
+		case int32:
+			out = append(out, v)
+		case int:
+			out = append(out, int32(v))
+		case int64:
+			out = append(out, int32(v))
+		}
+	}
+	return out
 }
 
 func (s *Server) parseMinerStartOptions(params json.RawMessage, cfg config.MiningConfig) (threads int, stopAfter int64, peerRequired bool, err error) {
@@ -4679,11 +4860,13 @@ func (s *Server) startMiner(parent context.Context, params json.RawMessage) (any
 	}
 	minerCtx, cancel := context.WithCancel(context.Background())
 	s.minerActive = true
+	s.minerHashing = false
 	s.minerCancel = cancel
 	s.minerThreads = threads
 	s.minerBlocks = 0
 	s.minerLastHash = ""
 	s.minerLastError = ""
+	s.minerPausedReason = ""
 	s.minerStartedAt = time.Now()
 	s.minerStopAfterBlocks = stopAfter
 	s.minerRewardHash = strings.ToLower(dest.PubKeyHashHex)
@@ -4693,6 +4876,20 @@ func (s *Server) startMiner(parent context.Context, params json.RawMessage) (any
 	s.minerLastNonce = 0
 	s.minerStaleBlocks = 0
 	s.minerRejectedBlocks = 0
+	s.minerLastStaleTime = time.Time{}
+	s.minerLastStaleReason = ""
+	s.minerLastTemplateTime = time.Time{}
+	s.minerLastTemplateHeight = 0
+	s.minerLastTemplatePrevHash = ""
+	s.minerLastTemplateTipHeight = 0
+	s.minerLastTemplateTipHash = ""
+	s.minerLastTemplateFresh = false
+	s.minerLastTemplateStaleReason = ""
+	s.minerTemplateRefreshCount = 0
+	s.minerStaleTemplateSkips = 0
+	s.minerLastTemplateRefreshError = ""
+	s.minerStaleRatePauseActive = false
+	s.minerAcceptedRecords = nil
 	s.minerMu.Unlock()
 	_ = config.AppendConfigLine(s.miningConfigPath(), "mining_enabled", "true")
 	_ = config.AppendConfigLine(s.miningConfigPath(), "mining_threads", fmt.Sprint(threads))
@@ -4730,8 +4927,11 @@ func (s *Server) stopMiner(reason string) map[string]any {
 		cancel()
 	}
 	s.minerActive = false
+	s.minerHashing = false
 	s.minerCancel = nil
 	s.minerLastError = reason
+	s.minerPausedReason = ""
+	s.minerLocalHashPS = 0
 	s.minerMu.Unlock()
 	_ = config.AppendConfigLine(s.miningConfigPath(), "mining_enabled", "false")
 	uptime := int64(0)
@@ -5037,7 +5237,9 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 	defer func() {
 		s.minerMu.Lock()
 		s.minerActive = false
+		s.minerHashing = false
 		s.minerCancel = nil
+		s.minerLocalHashPS = 0
 		s.minerMu.Unlock()
 	}()
 	for {
@@ -5054,25 +5256,38 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 		if stopAfter > 0 && blocks >= stopAfter {
 			s.minerMu.Lock()
 			s.minerLastError = "stopped after requested block limit"
+			s.minerPausedReason = ""
+			s.minerHashing = false
+			s.minerLocalHashPS = 0
 			s.minerMu.Unlock()
 			return
 		}
 		if peerRequired && (s.p2p == nil || s.p2p.PeerCount() == 0) {
 			s.minerMu.Lock()
 			s.minerLastError = "paused/stopped: peer required but no peers connected"
+			s.minerPausedReason = s.minerLastError
+			s.minerHashing = false
+			s.minerLocalHashPS = 0
 			s.minerMu.Unlock()
 			return
 		}
 		if health := s.chain.StorageHealth(); !health.OK {
 			s.minerMu.Lock()
 			s.minerLastError = "stopped: storage health failed: " + health.Error
+			s.minerPausedReason = s.minerLastError
+			s.minerHashing = false
+			s.minerLocalHashPS = 0
 			s.minerMu.Unlock()
 			return
 		}
 		cfg, _ := config.LoadMiningConfig(s.miningConfigPath())
 		if safety := s.checkSafeToMine(cfg, false); !safety.Safe {
+			pausedForHighStale := strings.Contains(strings.ToLower(safety.Reason), "high stale rate")
 			s.minerMu.Lock()
 			s.minerLastError = safety.Reason
+			s.minerPausedReason = safety.Reason
+			s.minerHashing = false
+			s.minerLocalHashPS = 0
 			s.minerMu.Unlock()
 			timer := time.NewTimer(15 * time.Second)
 			select {
@@ -5081,26 +5296,79 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 				return
 			case <-timer.C:
 			}
+			if pausedForHighStale {
+				s.minerMu.Lock()
+				s.minerStaleRatePauseActive = false
+				s.minerStaleBlocks = 0
+				s.minerRejectedBlocks = 0
+				s.minerLastTemplateTime = time.Time{}
+				s.minerLastTemplateHeight = 0
+				s.minerLastTemplatePrevHash = ""
+				s.minerLastTemplateFresh = false
+				s.minerLastTemplateStaleReason = "refreshing after high stale rate"
+				s.minerLastTemplateRefreshError = "high stale rate pause completed; refreshing template"
+				s.minerMu.Unlock()
+			}
 			continue
 		}
 		templateHeight := int32(-1)
+		templatePrevHash := ""
+		templateTipHeight := int32(-1)
+		templateTipHash := ""
 		if tip := s.chain.Tip(); tip != nil {
 			templateHeight = tip.Height + 1
+			templatePrevHash = tip.Hash
+			templateTipHeight = tip.Height
+			templateTipHash = tip.Hash
 		}
 		s.minerMu.Lock()
 		s.minerLastTemplateTime = time.Now()
 		s.minerLastTemplateHeight = templateHeight
+		s.minerLastTemplatePrevHash = templatePrevHash
+		s.minerLastTemplateTipHeight = templateTipHeight
+		s.minerLastTemplateTipHash = templateTipHash
+		s.minerLastTemplateFresh = templateHeight == templateTipHeight+1 && templatePrevHash != ""
+		s.minerLastTemplateStaleReason = ""
+		s.minerLastTemplateRefreshError = ""
+		s.minerTemplateRefreshCount++
+		s.minerPausedReason = ""
+		s.minerHashing = true
 		s.minerMu.Unlock()
 		result, err := mining.MineBlock(ctx, s.chain, s.pool, pow.YespowerHasher{Personalization: s.chain.Params().YespowerPers}, pubHash, threads, func(p mining.Progress) {
 			s.minerMu.Lock()
 			s.minerLocalHashPS = p.Rate
 			s.minerSessionHashes = p.Attempts
 			s.minerLastNonce = p.Nonce
+			if p.TemplateHeight > 0 {
+				s.minerLastTemplateHeight = p.TemplateHeight
+			}
+			if strings.TrimSpace(p.TemplatePrevHash) != "" {
+				s.minerLastTemplatePrevHash = p.TemplatePrevHash
+			}
+			s.minerLastTemplateFresh = p.TemplateFresh
+			s.minerLastTemplateStaleReason = p.TemplateStaleReason
 			s.minerMu.Unlock()
 		})
 		if err != nil {
+			s.minerMu.Lock()
+			s.minerHashing = false
+			s.minerLocalHashPS = 0
+			s.minerMu.Unlock()
 			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
 				return
+			}
+			if errors.Is(err, mining.ErrStaleTemplate) {
+				s.minerMu.Lock()
+				s.minerLastError = "Mining paused: template is stale; waiting for fresh block template."
+				s.minerPausedReason = s.minerLastError
+				s.minerStaleTemplateSkips++
+				s.minerLastTemplateRefreshError = err.Error()
+				s.minerLastTemplateFresh = false
+				if s.minerLastTemplateStaleReason == "" {
+					s.minerLastTemplateStaleReason = strings.TrimPrefix(err.Error(), mining.ErrStaleTemplate.Error()+": ")
+				}
+				s.minerMu.Unlock()
+				continue
 			}
 			if errors.Is(err, blockchain.ErrBadPrevBlock) {
 				s.minerMu.Lock()
@@ -5108,6 +5376,10 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 				s.minerStaleBlocks++
 				s.minerLastStaleTime = time.Now()
 				s.minerLastStaleReason = "stale tip retry"
+				if staleRate(s.minerBlocks, s.minerStaleBlocks, s.minerRejectedBlocks) >= minerStalePauseRate {
+					s.minerStaleRatePauseActive = true
+					s.minerPausedReason = "Mining paused: repeated stale-tip retries."
+				}
 				s.minerMu.Unlock()
 				continue
 			}
@@ -5117,6 +5389,10 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 			s.minerMu.Unlock()
 			return
 		}
+		s.minerMu.Lock()
+		s.minerHashing = false
+		s.minerLocalHashPS = 0
+		s.minerMu.Unlock()
 		if s.p2p != nil {
 			s.p2p.AnnounceBlock(result.Hash)
 		}
@@ -5127,6 +5403,34 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 		}
 		s.minerLastHash = result.Hash.String()
 		s.minerLastError = ""
+		s.minerPausedReason = ""
+		s.minerStaleRatePauseActive = false
+		s.minerAcceptedRecords = append(s.minerAcceptedRecords, minerAcceptedRecord{
+			Hash:         result.Hash.String(),
+			Height:       result.Height,
+			AcceptedAt:   time.Now(),
+			PayoutHash:   strings.ToLower(hex.EncodeToString(pubHash)),
+			CoinbaseTxID: coinbaseTxID(result.Block),
+		})
 		s.minerMu.Unlock()
 	}
+}
+
+func staleRate(accepted, stale, rejected int64) float64 {
+	total := accepted + stale + rejected
+	if total <= 0 {
+		return 0
+	}
+	return float64(stale) / float64(total)
+}
+
+func coinbaseTxID(block *wire.MsgBlock) string {
+	if block == nil || len(block.Transactions) == 0 || block.Transactions[0] == nil {
+		return ""
+	}
+	hash, err := block.Transactions[0].TxHash()
+	if err != nil {
+		return ""
+	}
+	return hash.String()
 }

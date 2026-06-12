@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"legacycoin/legacy-go/internal/config"
+	"legacycoin/legacy-go/internal/mining"
 	"legacycoin/legacy-go/internal/p2p"
 	"legacycoin/legacy-go/internal/version"
 )
@@ -31,6 +32,7 @@ func (s *Server) checkSafeToMine(cfg config.MiningConfig, requireDestination boo
 			input.BestPeerHeight = tip.Height
 			input.CurrentTipHeight = tip.Height
 			input.CurrentTemplateHeight = tip.Height + 1
+			input.CurrentTipHash = tip.Hash
 		}
 	}
 	if requireDestination {
@@ -62,19 +64,65 @@ func (s *Server) checkSafeToMine(cfg config.MiningConfig, requireDestination boo
 	accepted := s.minerBlocks
 	stale := s.minerStaleBlocks
 	rejected := s.minerRejectedBlocks
+	minerActive := s.minerActive
 	templateAt := s.minerLastTemplateTime
 	templateHeight := s.minerLastTemplateHeight
+	templatePrevHash := strings.TrimSpace(s.minerLastTemplatePrevHash)
+	templateTipHeight := s.minerLastTemplateTipHeight
+	templateFresh := s.minerLastTemplateFresh
+	templateStaleReason := strings.TrimSpace(s.minerLastTemplateStaleReason)
+	staleRatePauseActive := s.minerStaleRatePauseActive
 	s.minerMu.Unlock()
 	input.AcceptedBlocks = accepted
 	input.StaleBlocks = stale
 	input.RejectedBlocks = rejected
-	input.CurrentTemplateHeight = templateHeight
+	input.HasActiveTemplate = minerActive && !templateAt.IsZero() && templateHeight > 0
+	if templateHeight > 0 {
+		input.CurrentTemplateHeight = templateHeight
+	}
+	input.CurrentTipHeight = maxInt32(input.CurrentTipHeight, templateTipHeight)
+	input.ActiveTemplatePrevHash = templatePrevHash
+	input.ActiveTemplateFresh = templateFresh
+	input.ActiveTemplateStaleReason = templateStaleReason
+	input.TemplateMaxAgeSeconds = miningTemplateMaxAgeSeconds()
+	input.StaleRatePauseActive = staleRatePauseActive
 	if templateAt.IsZero() {
 		input.TemplateAgeSeconds = -1
 	} else {
 		input.TemplateAgeSeconds = time.Since(templateAt).Seconds()
 	}
+	if input.HasActiveTemplate {
+		input.ActiveTemplateFresh, input.ActiveTemplateStaleReason = s.activeTemplateFreshness(input.CurrentTemplateHeight, input.ActiveTemplatePrevHash, templateAt)
+	}
 	return CheckSafeToMine(input)
+}
+
+func (s *Server) activeTemplateFreshness(templateHeight int32, templatePrevHash string, templateAt time.Time) (bool, string) {
+	if templateHeight <= 0 || strings.TrimSpace(templatePrevHash) == "" || templateAt.IsZero() {
+		return false, "template unavailable"
+	}
+	tip := s.chain.Tip()
+	if tip == nil || tip.Hash == "" {
+		return false, "chain tip unavailable"
+	}
+	if templatePrevHash != tip.Hash {
+		return false, "template prev hash does not match current tip"
+	}
+	if templateHeight != tip.Height+1 {
+		return false, "template height is not current tip height + 1"
+	}
+	if time.Since(templateAt) > miningTemplateMaxAge() {
+		return false, "template age exceeds freshness limit"
+	}
+	return true, ""
+}
+
+func miningTemplateMaxAge() time.Duration {
+	return mining.DefaultMaxTemplateAge
+}
+
+func miningTemplateMaxAgeSeconds() float64 {
+	return miningTemplateMaxAge().Seconds()
 }
 
 func goodMiningPeerCount(peers []p2p.PeerInfo, localHeight int32) int {
