@@ -275,6 +275,40 @@ test("false node_shutdown while RPC is ok displays error, not clean stopped", ()
   assert.notEqual(state.reasonLabel, "miner is stopped");
 });
 
+test("supervisor_context_cancelled recovery state does not render as unsafe paused", () => {
+  const state = buildMinerDashboardState({
+    ...stoppedMinerStatus,
+    miner_state: "running",
+    miner_supervisor_action: "resume_workers",
+    active_mining: true,
+    actual_worker_hashing: false,
+    mining_enabled: true,
+    mining_session_active: true,
+    mining_safe: true,
+    safe_to_mine: true,
+    active_threads: 1,
+    configured_threads: 1,
+    last_error: "supervisor_context_cancelled: mining worker epoch cancelled; restarting workers.",
+    mining_paused_reason: "Mining worker epoch cancelled unexpectedly; restarting workers.",
+    rpc_health: "ok",
+    dashboard_data_fresh: true,
+    sync_state: "current",
+    blocks_behind: 0,
+    good_peer_count: 4,
+    active_template_height: 3204,
+    current_tip_height: 3203,
+    active_template_is_fresh: true,
+    active_template_refresh_due: false,
+    active_template_prev_hash: "tip",
+    current_tip_hash: "tip",
+  }, overnightWalletSummary);
+  assert.equal(state.status, "running");
+  assert.equal(state.activeMining, true);
+  assert.equal(state.miningLoopLabel, "active");
+  assert.equal(state.sessionModeLabel, "running");
+  assert.doesNotMatch(`${state.statusLabel} ${state.safetyLabel} ${state.miningLoopLabel}`, /unsafe|paused/i);
+});
+
 test("user stop displays stopped with user_stop reason", () => {
   const state = buildMinerDashboardState({
     ...stoppedMinerStatus,

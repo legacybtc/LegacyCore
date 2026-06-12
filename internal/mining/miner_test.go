@@ -3,6 +3,7 @@ package mining
 import (
 	"bytes"
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -60,6 +61,14 @@ func (lowHashTestHasher) HashHeader(header wire.BlockHeader) (chainhash.Hash, er
 		h[0] = 1
 	}
 	return h, nil
+}
+
+type errorHashTestHasher struct {
+	err error
+}
+
+func (h errorHashTestHasher) HashHeader(header wire.BlockHeader) (chainhash.Hash, error) {
+	return chainhash.Hash{}, h.err
 }
 
 func TestMultiOutputCoinbaseBlockAccepted(t *testing.T) {
@@ -193,5 +202,35 @@ func TestBenchmarkHashrateReturnsPromptlyWithManyWorkers(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("benchmark miner status loop returned too slowly: %s", elapsed)
+	}
+}
+
+func TestMineBlockReturnsWorkerErrorNotInternalContextCanceled(t *testing.T) {
+	params := chaincfg.MainNet
+	genesisBlock, err := genesis.NewBlock(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	genesisHash, err := lowHashTestHasher{}.HashHeader(genesisBlock.Header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params.GenesisHash = genesisHash.String()
+	chain, err := blockchain.New(params, lowHashTestHasher{}, storage.NewFileStore(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.EnsureGenesis(); err != nil {
+		t.Fatal(err)
+	}
+	workerErr := errors.New("synthetic worker hash failure")
+	for i := 0; i < 20; i++ {
+		_, err = MineBlock(context.Background(), chain, mempool.New(), errorHashTestHasher{err: workerErr}, bytes.Repeat([]byte{0x55}, 20), 1, nil)
+		if !errors.Is(err, workerErr) {
+			t.Fatalf("MineBlock returned %v, want worker error %v", err, workerErr)
+		}
+		if errors.Is(err, context.Canceled) {
+			t.Fatalf("internal epoch cancellation leaked as context.Canceled")
+		}
 	}
 }

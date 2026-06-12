@@ -173,10 +173,12 @@ func firstMinerBlockerReason(input MinerRuntimeInput) string {
 		return "Mining blocked: safety gate is not satisfied."
 	}
 	if strings.TrimSpace(input.PausedReason) != "" {
-		return strings.TrimSpace(input.PausedReason)
+		if !isTransientMinerRecoveryReason(input.PausedReason) {
+			return strings.TrimSpace(input.PausedReason)
+		}
 	}
 	lastError := strings.TrimSpace(input.LastError)
-	if lastError != "" && !isNormalMinerStopReason(lastError) && !isHistoricalMinerRetryReason(lastError) {
+	if lastError != "" && !isNormalMinerStopReason(lastError) && !isHistoricalMinerRetryReason(lastError) && !isTransientMinerRecoveryReason(lastError) {
 		return lastError
 	}
 	return ""
@@ -209,4 +211,12 @@ func minerStateCountsAsActive(state string) bool {
 	default:
 		return false
 	}
+}
+
+func isTransientMinerRecoveryReason(s string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(s))
+	return strings.Contains(normalized, MinerStopSupervisorCancelled) ||
+		strings.Contains(normalized, "restarting workers") ||
+		strings.Contains(normalized, "recovering worker epoch") ||
+		strings.Contains(normalized, "soft_reconcile")
 }

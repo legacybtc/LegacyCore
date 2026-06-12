@@ -85,6 +85,10 @@ type Server struct {
 	minerLastTemplateRefreshError  string
 	minerStaleRatePauseActive      bool
 	minerAcceptedRecords           []minerAcceptedRecord
+	minerSupervisorRestartAttempts int64
+	minerLastSupervisorCancelTime  time.Time
+	minerLastRestartSuccessTime    time.Time
+	minerLastRestartFailure        string
 	defaultTxFee                   int64
 }
 
@@ -4445,6 +4449,10 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 	minerLastError := s.minerLastError
 	minerPausedReason := s.minerPausedReason
 	minerLastStopReason := s.minerLastStopReason
+	minerSupervisorRestartAttempts := s.minerSupervisorRestartAttempts
+	minerLastSupervisorCancelTime := s.minerLastSupervisorCancelTime
+	minerLastRestartSuccessTime := s.minerLastRestartSuccessTime
+	minerLastRestartFailure := s.minerLastRestartFailure
 	minerStartedAt := s.minerStartedAt
 	stopAfter := s.minerStopAfterBlocks
 	rewardHash := s.minerRewardHash
@@ -4658,9 +4666,15 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 			}
 			return ""
 		}(),
-		"last_historical_event": lastHistoricalEvent,
-		"current_mining_state":  currentMiningState,
-		"current_safety_state":  currentSafetyState,
+		"supervisor_restart_attempts":     minerSupervisorRestartAttempts,
+		"last_supervisor_cancel_time":     unixOrZero(minerLastSupervisorCancelTime),
+		"last_restart_success_time":       unixOrZero(minerLastRestartSuccessTime),
+		"last_restart_failure":            minerLastRestartFailure,
+		"outer_node_context_cancelled":    false,
+		"supervisor_recovery_max_seconds": 10,
+		"last_historical_event":           lastHistoricalEvent,
+		"current_mining_state":            currentMiningState,
+		"current_safety_state":            currentSafetyState,
 		"last_start_command_time": func() int64 {
 			if minerStartedAt.IsZero() {
 				return 0
@@ -4958,6 +4972,10 @@ func (s *Server) startMiner(parent context.Context, params json.RawMessage) (any
 	s.minerLastTemplateRefreshError = ""
 	s.minerStaleRatePauseActive = false
 	s.minerAcceptedRecords = nil
+	s.minerSupervisorRestartAttempts = 0
+	s.minerLastSupervisorCancelTime = time.Time{}
+	s.minerLastRestartSuccessTime = time.Time{}
+	s.minerLastRestartFailure = ""
 	s.minerMu.Unlock()
 	_ = config.AppendConfigLine(s.miningConfigPath(), "mining_enabled", "true")
 	_ = config.AppendConfigLine(s.miningConfigPath(), "mining_threads", fmt.Sprint(threads))
@@ -5441,8 +5459,14 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 		s.minerLastTemplateRefreshReason = ""
 		s.minerLastTemplateRefreshError = ""
 		s.minerTemplateRefreshCount++
+		if isTransientMinerRecoveryReason(s.minerLastError) || isTransientMinerRecoveryReason(s.minerPausedReason) {
+			s.minerLastError = ""
+			s.minerPausedReason = ""
+		}
 		s.minerPausedReason = ""
 		s.minerHashing = true
+		s.minerLastRestartSuccessTime = time.Now()
+		s.minerLastRestartFailure = ""
 		s.minerMu.Unlock()
 		result, err := mining.MineBlock(ctx, s.chain, s.pool, pow.YespowerHasher{Personalization: s.chain.Params().YespowerPers}, pubHash, threads, func(p mining.Progress) {
 			s.minerMu.Lock()
@@ -5469,6 +5493,9 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 				if !shouldExit {
 					s.minerLastError = MinerStopSupervisorCancelled + ": mining worker epoch cancelled; restarting workers."
 					s.minerPausedReason = "Mining worker epoch cancelled unexpectedly; restarting workers."
+					s.minerSupervisorRestartAttempts++
+					s.minerLastSupervisorCancelTime = time.Now()
+					s.minerLastRestartFailure = ""
 				}
 				s.minerMu.Unlock()
 				if shouldExit {
@@ -5535,6 +5562,8 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 			s.minerLastError = "worker_exit_unexpected: " + err.Error()
 			s.minerPausedReason = "Mining worker exited unexpectedly; restarting workers."
 			s.minerRejectedBlocks++
+			s.minerSupervisorRestartAttempts++
+			s.minerLastRestartFailure = err.Error()
 			s.minerHashing = false
 			s.minerLocalHashPS = 0
 			s.minerMu.Unlock()

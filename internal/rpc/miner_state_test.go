@@ -124,6 +124,23 @@ func TestResolveMinerRuntimeStateRPCTimeoutPauses(t *testing.T) {
 	}
 }
 
+func TestResolveMinerRuntimeStateTransientSupervisorCancelResumesWorkers(t *testing.T) {
+	input := safeMinerRuntimeInput()
+	input.WorkersHashing = false
+	input.LastError = MinerStopSupervisorCancelled + ": mining worker epoch cancelled; restarting workers."
+	input.PausedReason = "Mining worker epoch cancelled unexpectedly; restarting workers."
+	state := ResolveMinerRuntimeState(input)
+	if state.State != MinerStateRunning {
+		t.Fatalf("transient supervisor cancellation should reconcile to running, got %+v", state)
+	}
+	if state.ActiveThreads != 1 || !state.ShouldHaveWorkers || state.SupervisorAction != "resume_workers" {
+		t.Fatalf("expected worker resume action, got %+v", state)
+	}
+	if state.Reason != "" {
+		t.Fatalf("transient recovery should not be a stable blocker: %q", state.Reason)
+	}
+}
+
 func TestResolveMinerRuntimeStateUnexpectedExitIsErrorNotCleanStopped(t *testing.T) {
 	input := safeMinerRuntimeInput()
 	input.SessionActive = false

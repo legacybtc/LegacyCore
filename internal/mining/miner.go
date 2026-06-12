@@ -240,7 +240,8 @@ func MineBlock(ctx context.Context, chain *blockchain.Chain, pool *mempool.Pool,
 			TemplateRefreshReason: templateStatus.ActiveTemplateRefreshReason,
 		})
 	}
-	ctx, cancel := context.WithCancel(ctx)
+	parentCtx := ctx
+	ctx, cancel := context.WithCancel(parentCtx)
 	defer cancel()
 
 	type mineResult struct {
@@ -254,6 +255,21 @@ func MineBlock(ctx context.Context, chain *blockchain.Chain, pool *mempool.Pool,
 	var wg sync.WaitGroup
 	start := time.Now()
 	templatePrevHash := template.Header.PrevBlock.String()
+	handleResult := func(res mineResult) (Result, error) {
+		if res.err != nil {
+			return Result{}, res.err
+		}
+		if status := CheckTemplateFreshness(chain, res.block, height, templateCreatedAt, DefaultHardTemplateStaleAge); !status.ActiveTemplateIsFresh {
+			return Result{}, fmt.Errorf("%w: %s", ErrStaleTemplate, status.ActiveTemplateStaleReason)
+		}
+		if err := chain.ConnectBlock(res.block); err != nil {
+			return Result{}, err
+		}
+		if pool != nil {
+			pool.RemoveForBlock(res.block)
+		}
+		return Result{Block: res.block, Hash: res.hash, Height: height}, nil
+	}
 
 	for worker := 0; worker < workers; worker++ {
 		wg.Add(1)
@@ -314,19 +330,7 @@ func MineBlock(ctx context.Context, chain *blockchain.Chain, pool *mempool.Pool,
 		select {
 		case res := <-resultc:
 			wg.Wait()
-			if res.err != nil {
-				return Result{}, res.err
-			}
-			if status := CheckTemplateFreshness(chain, res.block, height, templateCreatedAt, DefaultHardTemplateStaleAge); !status.ActiveTemplateIsFresh {
-				return Result{}, fmt.Errorf("%w: %s", ErrStaleTemplate, status.ActiveTemplateStaleReason)
-			}
-			if err := chain.ConnectBlock(res.block); err != nil {
-				return Result{}, err
-			}
-			if pool != nil {
-				pool.RemoveForBlock(res.block)
-			}
-			return Result{Block: res.block, Hash: res.hash, Height: height}, nil
+			return handleResult(res)
 		case <-ticker.C:
 			if progress != nil {
 				elapsed := time.Since(start).Seconds()
@@ -367,25 +371,21 @@ func MineBlock(ctx context.Context, chain *blockchain.Chain, pool *mempool.Pool,
 		case <-done:
 			select {
 			case res := <-resultc:
-				if res.err != nil {
-					return Result{}, res.err
-				}
-				if status := CheckTemplateFreshness(chain, res.block, height, templateCreatedAt, DefaultHardTemplateStaleAge); !status.ActiveTemplateIsFresh {
-					return Result{}, fmt.Errorf("%w: %s", ErrStaleTemplate, status.ActiveTemplateStaleReason)
-				}
-				if err := chain.ConnectBlock(res.block); err != nil {
-					return Result{}, err
-				}
-				if pool != nil {
-					pool.RemoveForBlock(res.block)
-				}
-				return Result{Block: res.block, Hash: res.hash, Height: height}, nil
+				return handleResult(res)
 			default:
 				return Result{}, fmt.Errorf("block nonce not found")
 			}
 		case <-ctx.Done():
 			wg.Wait()
-			return Result{}, ctx.Err()
+			if parentCtx.Err() != nil {
+				return Result{}, parentCtx.Err()
+			}
+			select {
+			case res := <-resultc:
+				return handleResult(res)
+			default:
+				return Result{}, fmt.Errorf("miner worker epoch cancelled without result")
+			}
 		}
 	}
 }
