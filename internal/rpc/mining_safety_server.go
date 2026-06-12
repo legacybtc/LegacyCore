@@ -84,7 +84,8 @@ func (s *Server) checkSafeToMine(cfg config.MiningConfig, requireDestination boo
 	input.ActiveTemplatePrevHash = templatePrevHash
 	input.ActiveTemplateFresh = templateFresh
 	input.ActiveTemplateStaleReason = templateStaleReason
-	input.TemplateMaxAgeSeconds = miningTemplateMaxAgeSeconds()
+	input.TemplateSoftRefreshAgeSeconds = miningTemplateSoftRefreshAgeSeconds()
+	input.TemplateMaxAgeSeconds = miningTemplateHardStaleAgeSeconds()
 	input.StaleRatePauseActive = staleRatePauseActive
 	if templateAt.IsZero() {
 		input.TemplateAgeSeconds = -1
@@ -93,6 +94,10 @@ func (s *Server) checkSafeToMine(cfg config.MiningConfig, requireDestination boo
 	}
 	if input.HasActiveTemplate {
 		input.ActiveTemplateFresh, input.ActiveTemplateStaleReason = s.activeTemplateFreshness(input.CurrentTemplateHeight, input.ActiveTemplatePrevHash, templateAt)
+		if input.ActiveTemplateFresh && input.TemplateSoftRefreshAgeSeconds > 0 && input.TemplateAgeSeconds > input.TemplateSoftRefreshAgeSeconds {
+			input.ActiveTemplateRefreshDue = true
+			input.ActiveTemplateRefreshReason = "refreshing template in background; current template still valid"
+		}
 	}
 	return CheckSafeToMine(input)
 }
@@ -111,18 +116,34 @@ func (s *Server) activeTemplateFreshness(templateHeight int32, templatePrevHash 
 	if templateHeight != tip.Height+1 {
 		return false, "template height is not current tip height + 1"
 	}
-	if time.Since(templateAt) > miningTemplateMaxAge() {
-		return false, "template age exceeds freshness limit"
+	if time.Since(templateAt) > miningTemplateHardStaleAge() {
+		return false, "template age exceeds hard stale limit"
 	}
 	return true, ""
 }
 
+func miningTemplateSoftRefreshAge() time.Duration {
+	return mining.DefaultSoftTemplateRefreshAge
+}
+
+func miningTemplateSoftRefreshAgeSeconds() float64 {
+	return miningTemplateSoftRefreshAge().Seconds()
+}
+
+func miningTemplateHardStaleAge() time.Duration {
+	return mining.DefaultHardTemplateStaleAge
+}
+
 func miningTemplateMaxAge() time.Duration {
-	return mining.DefaultMaxTemplateAge
+	return miningTemplateHardStaleAge()
 }
 
 func miningTemplateMaxAgeSeconds() float64 {
-	return miningTemplateMaxAge().Seconds()
+	return miningTemplateHardStaleAgeSeconds()
+}
+
+func miningTemplateHardStaleAgeSeconds() float64 {
+	return miningTemplateHardStaleAge().Seconds()
 }
 
 func goodMiningPeerCount(peers []p2p.PeerInfo, localHeight int32) int {

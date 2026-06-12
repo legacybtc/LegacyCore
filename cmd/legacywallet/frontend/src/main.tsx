@@ -1894,7 +1894,7 @@ function MiningPage({ snap, run, refresh, notify }: PageProps) {
         {mining.rpc_offline && !startNotice && <Notice tone="warn" text={`Miner data unavailable / RPC timeout (${mining.rpc_error || "no RPC response"}). Mining safety is unknown/unsafe until RPC responds; reduce miner threads if this repeats.`} />}
         {minerView.payoutWarning && <Notice tone={minerView.externalPayoutMode ? "warn" : "danger"} text={minerView.payoutWarning} />}
         {minerView.staleRateWarning && <Notice tone="warn" text={minerView.staleRateWarning} />}
-        {minerView.templateStaleReasonLabel !== "-" && <Notice tone="warn" text={`Mining template: ${minerView.templateStaleReasonLabel}`} />}
+        {minerView.templateStaleReasonLabel !== "-" && <Notice tone={mining.active_template_refresh_due && mining.active_template_is_fresh ? "info" : "warn"} text={`Mining template: ${minerView.templateStaleReasonLabel}`} />}
         {startNotice && <Notice tone={startNotice.tone} text={startNotice.text} />}
         {!startNotice && !rpcOffline && !activeMining && !canStartMining && <Notice tone="warn" text={miningStart.blockedNotice} />}
         {!startNotice && minerView.displayLastError && <Notice tone="warn" text={`Last miner error: ${minerView.displayLastError}`} />}
@@ -1948,7 +1948,9 @@ function MiningPage({ snap, run, refresh, notify }: PageProps) {
           ["Template height", minerView.templateHeightLabel],
           ["Template prev hash", mining.active_template_prev_hash || "-"],
           ["Template freshness", minerView.templateFreshnessLabel],
-          ["Template stale reason", minerView.templateStaleReasonLabel],
+          ["Template status reason", minerView.templateStaleReasonLabel],
+          ["Template refresh due", mining.active_template_refresh_due === undefined ? "-" : yesNo(mining.active_template_refresh_due)],
+          ["Template refresh reason", mining.active_template_refresh_reason || "-"],
           ["Last template refresh", miningEnabled && mining.last_template_refresh_time ? dateTime(mining.last_template_refresh_time) : minerView.templateRefreshLabel],
           ["Template age", miningEnabled ? seconds(mining.active_template_age_seconds ?? mining.last_template_refresh_ago_seconds) : minerView.templateAgeLabel],
           ["Template refresh count", mining.template_refresh_count ?? "-"],

@@ -141,23 +141,27 @@ func TestTemplateFreshnessRejectsBehindHeightPrevHashAndAge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fresh := CheckTemplateFreshness(chain, template, height, time.Now(), DefaultMaxTemplateAge)
+	fresh := CheckTemplateFreshness(chain, template, height, time.Now(), DefaultHardTemplateStaleAge)
 	if !fresh.ActiveTemplateIsFresh {
 		t.Fatalf("fresh template rejected: %+v", fresh)
 	}
-	behind := CheckTemplateFreshness(chain, template, height-1, time.Now(), DefaultMaxTemplateAge)
+	behind := CheckTemplateFreshness(chain, template, height-1, time.Now(), DefaultHardTemplateStaleAge)
 	if behind.ActiveTemplateIsFresh || behind.ActiveTemplateStaleReason != "template height is not current tip height + 1" {
 		t.Fatalf("behind template should be stale, got %+v", behind)
 	}
 	mismatch := *template
 	mismatch.Header.PrevBlock = chainhash.Hash{0x99}
-	prevMismatch := CheckTemplateFreshness(chain, &mismatch, height, time.Now(), DefaultMaxTemplateAge)
+	prevMismatch := CheckTemplateFreshness(chain, &mismatch, height, time.Now(), DefaultHardTemplateStaleAge)
 	if prevMismatch.ActiveTemplateIsFresh || prevMismatch.ActiveTemplateStaleReason != "template prev hash does not match current tip" {
 		t.Fatalf("prev-hash mismatch should be stale, got %+v", prevMismatch)
 	}
-	old := CheckTemplateFreshness(chain, template, height, time.Now().Add(-DefaultMaxTemplateAge-time.Second), DefaultMaxTemplateAge)
-	if old.ActiveTemplateIsFresh || old.ActiveTemplateStaleReason != "template age exceeds freshness limit" {
-		t.Fatalf("old template should be stale, got %+v", old)
+	softOld := CheckTemplateFreshness(chain, template, height, time.Now().Add(-DefaultSoftTemplateRefreshAge-time.Second), DefaultHardTemplateStaleAge)
+	if !softOld.ActiveTemplateIsFresh || !softOld.ActiveTemplateRefreshDue {
+		t.Fatalf("soft-old template should stay fresh and request refresh, got %+v", softOld)
+	}
+	hardOld := CheckTemplateFreshness(chain, template, height, time.Now().Add(-DefaultHardTemplateStaleAge-time.Second), DefaultHardTemplateStaleAge)
+	if hardOld.ActiveTemplateIsFresh || hardOld.ActiveTemplateStaleReason != "template age exceeds hard stale limit" {
+		t.Fatalf("hard-old template should be stale, got %+v", hardOld)
 	}
 }
 

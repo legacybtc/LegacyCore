@@ -4042,6 +4042,15 @@ func (s *Service) minerLoop(ctx context.Context, n *node.Node, pubHash []byte, t
 				s.minerMu.Unlock()
 				continue
 			}
+			if errors.Is(err, mining.ErrTemplateRefreshRequired) {
+				s.minerMu.Lock()
+				s.minerPausedReason = ""
+				s.minerLastError = ""
+				s.minerLastRecovery = "refreshed mining template after soft template age"
+				s.minerLoopRunning = true
+				s.minerMu.Unlock()
+				continue
+			}
 			if errors.Is(err, mining.ErrStaleTemplate) {
 				s.minerMu.Lock()
 				s.minerPausedReason = "Mining paused: template is stale; waiting for fresh block template."

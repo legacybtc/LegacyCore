@@ -147,6 +147,48 @@ func TestCheckSafeToMineWarnsAtLowerStaleRates(t *testing.T) {
 	}
 }
 
+func TestCheckSafeToMineAllowsSoftTemplateRefresh(t *testing.T) {
+	input := safeMiningInput()
+	input.HasActiveTemplate = true
+	input.ActiveTemplateFresh = true
+	input.ActiveTemplateRefreshDue = true
+	input.ActiveTemplateRefreshReason = "refreshing template in background; current template still valid"
+	input.CurrentTipHeight = 101
+	input.CurrentTemplateHeight = 102
+	input.CurrentTipHash = "tip"
+	input.ActiveTemplatePrevHash = "tip"
+	input.TemplateAgeSeconds = 2 * 60
+	input.TemplateSoftRefreshAgeSeconds = 30
+	input.TemplateMaxAgeSeconds = 20 * 60
+	status := CheckSafeToMine(input)
+	if !status.Safe {
+		t.Fatalf("soft-refresh template must not block mining: %+v", status)
+	}
+	if !status.ActiveTemplateRefreshDue || status.ActiveTemplateRefreshReason == "" {
+		t.Fatalf("expected refresh diagnostics to be preserved: %+v", status)
+	}
+	if status.Reason != "" {
+		t.Fatalf("soft refresh should not create blocked reason: %q", status.Reason)
+	}
+}
+
+func TestCheckSafeToMineBlocksHardTemplateAge(t *testing.T) {
+	input := safeMiningInput()
+	input.HasActiveTemplate = true
+	input.ActiveTemplateFresh = true
+	input.CurrentTipHeight = 101
+	input.CurrentTemplateHeight = 102
+	input.CurrentTipHash = "tip"
+	input.ActiveTemplatePrevHash = "tip"
+	input.TemplateAgeSeconds = 21 * 60
+	input.TemplateSoftRefreshAgeSeconds = 30
+	input.TemplateMaxAgeSeconds = 20 * 60
+	status := CheckSafeToMine(input)
+	if status.Safe || status.Reason != "Mining paused: template refresh failed; template age exceeds hard stale limit." {
+		t.Fatalf("hard-stale template age must block mining, got %+v", status)
+	}
+}
+
 func TestCheckSafeToMineBlocksStaleActiveTemplate(t *testing.T) {
 	input := safeMiningInput()
 	input.HasActiveTemplate = true
