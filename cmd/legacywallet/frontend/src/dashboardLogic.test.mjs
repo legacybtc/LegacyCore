@@ -344,6 +344,32 @@ test("stale active template is visible while miner loop is paused", () => {
   assert.match(state.safetyLabel, /template is stale/);
 });
 
+test("soft template refresh stays running and reads as still valid", () => {
+  const state = buildMinerDashboardState({
+    ...stoppedMinerStatus,
+    active_mining: true,
+    mining_enabled: true,
+    mining_safe: true,
+    safe_to_mine: true,
+    active_template_height: 3190,
+    current_tip_height: 3189,
+    active_template_age_seconds: 2 * 60,
+    active_template_is_fresh: true,
+    active_template_refresh_due: true,
+    active_template_refresh_reason: "refreshing template in background; current template still valid",
+    active_template_prev_hash: "0000015725e19df418b355",
+    current_tip_hash: "0000015725e19df418b355",
+    active_threads: 1,
+    configured_threads: 1,
+  }, overnightWalletSummary);
+  assert.equal(state.activeMining, true);
+  assert.equal(state.status, "running");
+  assert.equal(state.miningLoopLabel, "active");
+  assert.equal(state.templateRefreshLabel, "refreshing");
+  assert.equal(state.templateFreshnessLabel, "refreshing / still valid");
+  assert.match(state.templateStaleReasonLabel, /current template still valid/);
+});
+
 test("peer status uses good-peer reason when peer is not suitable", () => {
   const peer = {
     address: "10.0.0.9:19555",

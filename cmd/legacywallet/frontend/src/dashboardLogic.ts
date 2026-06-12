@@ -385,7 +385,9 @@ export function buildMinerDashboardState(mining: DashboardDict = {}, wallet: Das
   const templateVisible = activeMining || miningEnabled || boolValue(mining.has_active_template);
   const templateHeight = mining.active_template_height ?? mining.last_mined_template_height ?? mining.current_template_height;
   const templateFresh = boolValue(mining.active_template_is_fresh);
+  const templateRefreshDue = templateFresh && boolValue(mining.active_template_refresh_due);
   const templateStaleReason = cleanString(mining.active_template_stale_reason);
+  const templateRefreshReason = cleanString(mining.active_template_refresh_reason);
   const templateAge = safeNumber(mining.active_template_age_seconds ?? mining.last_template_refresh_ago_seconds, -1);
   const templateRefreshTime = mining.last_template_refresh_success_time ?? mining.last_template_refresh_time;
   const payoutOwnershipLabel = activeRewardHash || resolvedRewardAddress
@@ -412,10 +414,10 @@ export function buildMinerDashboardState(mining: DashboardDict = {}, wallet: Das
     pausedReasonLabel: activeMining || miningEnabled ? (pausedReason || "-") : "none (miner stopped)",
     miningLoopLabel: activeMining ? "active" : miningEnabled ? "paused / waiting for safe template" : "inactive (miner stopped)",
     templateHeightLabel: templateVisible ? labelOrDash(templateHeight) : "not currently mining",
-    templateRefreshLabel: templateVisible && (!templateFresh || templateStaleReason) ? "stale / refreshing" : templateVisible && templateRefreshTime ? "fresh" : templateVisible ? "refreshing" : "not currently mining",
+    templateRefreshLabel: templateVisible && templateRefreshDue ? "refreshing" : templateVisible && (!templateFresh || templateStaleReason) ? "stale / refreshing" : templateVisible && templateRefreshTime ? "fresh" : templateVisible ? "refreshing" : "not currently mining",
     templateAgeLabel: templateVisible && templateAge >= 0 ? labelOrDash(templateAge) : templateVisible ? "unknown" : "not currently mining",
-    templateFreshnessLabel: templateVisible ? (templateFresh ? "fresh" : "stale / refresh required") : "not currently mining",
-    templateStaleReasonLabel: templateStaleReason || (templateVisible && !templateFresh ? "waiting for fresh block template" : "-"),
+    templateFreshnessLabel: templateVisible ? (templateRefreshDue ? "refreshing / still valid" : templateFresh ? "fresh" : "stale / refresh required") : "not currently mining",
+    templateStaleReasonLabel: templateRefreshDue ? (templateRefreshReason || "refreshing template in background; current template still valid") : templateStaleReason || (templateVisible && !templateFresh ? "waiting for fresh block template" : "-"),
     watchdogLabel: activeMining || miningEnabled ? labelOrDash(mining.watchdog_last_recovery_action) : historicalRetry ? `previous: ${rawLastError}` : "-",
     liveActiveThreads,
     configuredThreads,
