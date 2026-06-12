@@ -26,7 +26,7 @@ export type ImmatureRewardSummary = {
 
 export type MinerDashboardState = {
   activeMining: boolean;
-  status: "running" | "retrying" | "unsafe" | "stopped" | "starting" | "status_unknown_rpc_timeout" | "last_known_running" | "last_known_stopped";
+  status: "running" | "retrying" | "unsafe" | "error" | "stopped" | "starting" | "status_unknown_rpc_timeout" | "last_known_running" | "last_known_stopped";
   statusLabel: string;
   safetyLabel: string;
   reasonLabel: string;
@@ -370,7 +370,9 @@ export function buildMinerDashboardState(mining: DashboardDict = {}, wallet: Das
   const normalStop = isNormalStop(rawLastError);
   const historicalRetry = !activeMining && !miningEnabled && isRetryEvent(rawLastError);
   const displayLastError = normalStop || historicalRetry ? "" : rawLastError;
-  const status = deriveMinerStatus({ rpcOffline, activeMining, lastKnownActiveMining, miningEnabled, miningSafe, pausedReason, displayLastError });
+  const status = authoritativeState === "error"
+    ? "error"
+    : deriveMinerStatus({ rpcOffline, activeMining, lastKnownActiveMining, miningEnabled, miningSafe, pausedReason, displayLastError });
   const configuredThreads = safeNumber(mining.configured_threads ?? mining.configured_threads_last_known ?? mining.threads ?? mining.last_session_active_threads, 0);
   const maxThreads = safeNumber(mining.detected_cpu_threads ?? mining.max_threads, 0);
   const liveActiveThreads = activeMining ? safeNumber(mining.active_threads, configuredThreads) : 0;
@@ -403,7 +405,10 @@ export function buildMinerDashboardState(mining: DashboardDict = {}, wallet: Das
   const miningToLabel = resolvedRewardAddress || activeRewardHash || "not configured";
   const supervisorAction = cleanString(mining.miner_supervisor_action);
   const softRefreshingStillMining = authoritativeState === "soft_refreshing_still_mining" || (activeMining && templateRefreshDue);
-  const sessionModeLabel = activeMining
+  const errorReason = pausedReason || displayLastError || cleanString(mining.last_stop_reason);
+  const sessionModeLabel = status === "error"
+    ? `error: ${errorReason || "worker exited unexpectedly"}`
+    : activeMining
     ? softRefreshingStillMining
       ? "soft refreshing / still mining"
       : "running"
@@ -414,7 +419,9 @@ export function buildMinerDashboardState(mining: DashboardDict = {}, wallet: Das
           ? "resuming workers"
           : "starting / confirming"
       : "stopped; ready for next start";
-  const miningLoopLabel = activeMining
+  const miningLoopLabel = status === "error"
+    ? `error: ${errorReason || "worker exited unexpectedly"}`
+    : activeMining
     ? softRefreshingStillMining
       ? "active; refreshing template in background"
       : "active"
@@ -427,6 +434,8 @@ export function buildMinerDashboardState(mining: DashboardDict = {}, wallet: Das
       : "inactive (miner stopped)";
   const activityStatusLabel = rpcOffline
     ? (lastKnownActiveMining ? "Miner status unavailable (last known running)" : "Miner status unavailable (RPC offline / last known)")
+    : status === "error"
+      ? `Mining error: ${errorReason || "worker exited unexpectedly"}`
     : activeMining
       ? softRefreshingStillMining
         ? "Mining active; template refreshing"
@@ -441,7 +450,7 @@ export function buildMinerDashboardState(mining: DashboardDict = {}, wallet: Das
     status,
     statusLabel: statusLabel(status),
     safetyLabel: safetyLabel(status, pausedReason, miningSafe, rpcOffline),
-    reasonLabel: reasonLabel({ status, activeMining, pausedReason: softRefreshingStillMining ? "" : pausedReason, displayLastError, lastAction: normalStop ? "stopped by user/RPC" : cleanString(mining.last_action || mining.last_stop_reason) }),
+    reasonLabel: reasonLabel({ status, activeMining, pausedReason: softRefreshingStillMining ? "" : pausedReason, displayLastError, lastAction: normalStop ? cleanString(mining.last_stop_reason || "stopped by user/RPC") : cleanString(mining.last_action || mining.last_stop_reason) }),
     rpcHealthLabel: rpcOffline ? `RPC ${rpcHealth || "timeout"}` : rpcHealth ? `RPC ${rpcHealth}` : "RPC ok",
     dataFreshnessLabel: dataFresh ? "fresh" : staleData ? "last known / stale" : "unknown",
     blockedReasonLabel: blockedReason || pausedReason || "-",
@@ -472,7 +481,7 @@ export function buildMinerDashboardState(mining: DashboardDict = {}, wallet: Das
     staleLabel: activeMining ? "Stale" : "Last session stale",
     rejectedLabel: activeMining ? "Rejected" : "Last session rejected",
     displayLastError,
-    lastActionLabel: normalStop ? "stopped by user/RPC" : (cleanString(mining.last_action || mining.last_stop_reason) || "-"),
+    lastActionLabel: normalStop ? cleanString(mining.last_stop_reason || "stopped by user/RPC") : (cleanString(mining.last_action || mining.last_stop_reason) || "-"),
     historicalEventLabel: historicalRetry ? rawLastError : cleanString(mining.last_historical_event),
     activeRewardHash,
     currentDefaultMiningAddress,
@@ -528,6 +537,8 @@ function statusLabel(status: MinerDashboardState["status"]): string {
       return "retrying / refreshing template";
     case "unsafe":
       return "unsafe / paused";
+    case "error":
+      return "error";
     case "starting":
       return "starting";
     case "last_known_running":
@@ -545,6 +556,7 @@ function safetyLabel(status: MinerDashboardState["status"], pausedReason: string
   if (rpcOffline) return "unknown — RPC timeout";
   if (status === "stopped") return "idle / ready, miner stopped";
   if (status === "retrying") return `retrying (${pausedReason || "refreshing mining template"})`;
+  if (status === "error") return `error${pausedReason ? ` (${pausedReason})` : ""}`;
   if (status === "unsafe" || !miningSafe) return `unsafe${pausedReason ? ` (${pausedReason})` : ""}`;
   return "safe";
 }
@@ -631,7 +643,8 @@ function labelOrDash(v: any): string {
 
 function isNormalStop(v: string): boolean {
   const s = v.toLowerCase().trim();
-  return s === "rpc stopminer" || s === "stopminer" || s === "stopped" || s === "stopped by user";
+  return s === "rpc stopminer" || s === "stopminer" || s === "stopped" || s === "stopped by user" ||
+    s === "user_stop" || s === "user_force_stop" || s === "rpc_stopminer" || s === "supervisor_shutdown";
 }
 
 function isRetryEvent(v: string): boolean {

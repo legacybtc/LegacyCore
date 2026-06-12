@@ -58,6 +58,8 @@ type Server struct {
 	minerLastHash                  string
 	minerLastError                 string
 	minerPausedReason              string
+	minerLastStopReason            string
+	minerRequestedStopReason       string
 	minerStartedAt                 time.Time
 	minerStopAfterBlocks           int64
 	minerRewardHash                string
@@ -1727,13 +1729,13 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 	case "startminer":
 		return s.startMiner(ctx, params)
 	case "stopminer":
-		return s.stopMiner("rpc stopminer"), nil
+		return s.stopMiner(parseMinerStopReason(params, MinerStopRPCStopMiner)), nil
 	case "restartminer":
 		cfg, _ := config.LoadMiningConfig(s.miningConfigPath())
 		if safety := s.checkSafeToMine(cfg, true); !safety.Safe {
 			return nil, &rpcError{Code: -32603, Message: safety.Reason}
 		}
-		_ = s.stopMiner("rpc restartminer")
+		_ = s.stopMiner(MinerStopSupervisorShutdown)
 		return s.startMiner(ctx, params)
 	case "getpeerinfo":
 		return map[string]any{"count": s.p2p.PeerCount(), "outbound": s.p2p.OutboundCount(), "peers": s.p2p.PeerInfos()}, nil
@@ -4442,6 +4444,7 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 	minerLastHash := s.minerLastHash
 	minerLastError := s.minerLastError
 	minerPausedReason := s.minerPausedReason
+	minerLastStopReason := s.minerLastStopReason
 	minerStartedAt := s.minerStartedAt
 	stopAfter := s.minerStopAfterBlocks
 	rewardHash := s.minerRewardHash
@@ -4555,6 +4558,8 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 		TemplateRefreshError: lastTemplateRefreshError,
 		LastError:            lastError,
 		PausedReason:         minerPausedReason,
+		LastStopReason:       minerLastStopReason,
+		EverStarted:          !minerStartedAt.IsZero(),
 		StaleRatePauseActive: safety.StaleRatePauseActive,
 		RecentReorg:          safety.RecentReorg,
 	})
@@ -4632,18 +4637,27 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 			}
 			return "miner is stopped; configured_threads will be used next time mining starts"
 		}(),
-		"auto_start":            cfg.AutoStart,
-		"peer_required":         cfg.PeerRequired || peerRequired,
-		"safe_required":         cfg.SafeRequired,
-		"stop_after_blocks":     stopAfter,
-		"blocks_remaining":      blocksRemaining,
-		"session_blocks":        minerBlocks,
-		"started_at":            startedAt,
-		"uptime_seconds":        uptime,
-		"last_block_hash":       minerLastHash,
-		"last_error":            lastError,
-		"last_error_raw":        lastErrorRaw,
-		"last_action":           lastAction,
+		"auto_start":        cfg.AutoStart,
+		"peer_required":     cfg.PeerRequired || peerRequired,
+		"safe_required":     cfg.SafeRequired,
+		"stop_after_blocks": stopAfter,
+		"blocks_remaining":  blocksRemaining,
+		"session_blocks":    minerBlocks,
+		"started_at":        startedAt,
+		"uptime_seconds":    uptime,
+		"last_block_hash":   minerLastHash,
+		"last_error":        lastError,
+		"last_error_raw":    lastErrorRaw,
+		"last_action":       lastAction,
+		"last_stop_reason": func() string {
+			if strings.TrimSpace(minerLastStopReason) != "" {
+				return minerLastStopReason
+			}
+			if !minerEnabled && !minerStartedAt.IsZero() {
+				return MinerStopWorkerExitUnexpected
+			}
+			return ""
+		}(),
 		"last_historical_event": lastHistoricalEvent,
 		"current_mining_state":  currentMiningState,
 		"current_safety_state":  currentSafetyState,
@@ -4752,7 +4766,8 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 
 func isNormalMinerStopReason(s string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(s))
-	return normalized == "rpc stopminer" || normalized == "rpc restartminer" || normalized == "stopminer" || normalized == "stopped" || normalized == "stopped by user"
+	return normalized == "rpc stopminer" || normalized == "rpc restartminer" || normalized == "stopminer" || normalized == "stopped" || normalized == "stopped by user" ||
+		normalized == MinerStopUserStop || normalized == MinerStopUserForceStop || normalized == MinerStopRPCStopMiner || normalized == MinerStopSupervisorShutdown
 }
 
 func isHistoricalMinerRetryReason(s string) bool {
@@ -4916,6 +4931,8 @@ func (s *Server) startMiner(parent context.Context, params json.RawMessage) (any
 	s.minerLastHash = ""
 	s.minerLastError = ""
 	s.minerPausedReason = ""
+	s.minerLastStopReason = ""
+	s.minerRequestedStopReason = ""
 	s.minerStartedAt = time.Now()
 	s.minerStopAfterBlocks = stopAfter
 	s.minerRewardHash = strings.ToLower(dest.PubKeyHashHex)
@@ -4968,20 +4985,26 @@ func (s *Server) startMiner(parent context.Context, params json.RawMessage) (any
 }
 
 func (s *Server) stopMiner(reason string) map[string]any {
+	stopReason := normalizeMinerStopReason(reason)
+	if stopReason == "" {
+		stopReason = MinerStopRPCStopMiner
+	}
 	s.minerMu.Lock()
 	active := s.minerActive
 	cancel := s.minerCancel
 	blocks := s.minerBlocks
 	last := s.minerLastHash
 	startedAt := s.minerStartedAt
+	s.minerRequestedStopReason = stopReason
 	if cancel != nil {
 		cancel()
 	}
 	s.minerActive = false
 	s.minerHashing = false
 	s.minerCancel = nil
-	s.minerLastError = reason
+	s.minerLastError = stopReason
 	s.minerPausedReason = ""
+	s.minerLastStopReason = stopReason
 	s.minerLocalHashPS = 0
 	s.minerMu.Unlock()
 	_ = config.AppendConfigLine(s.miningConfigPath(), "mining_enabled", "false")
@@ -4989,7 +5012,7 @@ func (s *Server) stopMiner(reason string) map[string]any {
 	if !startedAt.IsZero() {
 		uptime = int64(time.Since(startedAt).Seconds())
 	}
-	return map[string]any{"active_mining": false, "was_active": active, "session_blocks": blocks, "last_block_hash": last, "uptime_seconds": uptime, "reason": reason}
+	return map[string]any{"active_mining": false, "was_active": active, "session_blocks": blocks, "last_block_hash": last, "uptime_seconds": uptime, "reason": stopReason, "last_stop_reason": stopReason}
 }
 
 func (s *Server) benchmarkMiner(ctx context.Context, params json.RawMessage) (any, *rpcError) {
@@ -5285,17 +5308,33 @@ func boolFromAny(v any) bool {
 }
 
 func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
+	exitStopReason := MinerStopWorkerExitUnexpected
 	defer func() {
 		s.minerMu.Lock()
+		if requested := strings.TrimSpace(s.minerRequestedStopReason); requested != "" {
+			exitStopReason = requested
+		}
+		if exitStopReason == "" {
+			exitStopReason = MinerStopWorkerExitUnexpected
+		}
 		s.minerActive = false
 		s.minerHashing = false
 		s.minerCancel = nil
 		s.minerLocalHashPS = 0
+		s.minerRequestedStopReason = ""
+		s.minerLastStopReason = normalizeMinerStopReason(exitStopReason)
+		if s.minerLastStopReason == "" {
+			s.minerLastStopReason = MinerStopWorkerExitUnexpected
+		}
+		if minerStopReasonIsUnexpected(s.minerLastStopReason) && strings.TrimSpace(s.minerLastError) == "" {
+			s.minerLastError = "Mining stopped unexpectedly: worker exited without an intentional stop request."
+		}
 		s.minerMu.Unlock()
 	}()
 	for {
 		select {
 		case <-ctx.Done():
+			exitStopReason = MinerStopNodeShutdown
 			return
 		default:
 		}
@@ -5308,27 +5347,39 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 			s.minerMu.Lock()
 			s.minerLastError = "stopped after requested block limit"
 			s.minerPausedReason = ""
+			s.minerLastStopReason = MinerStopSupervisorShutdown
 			s.minerHashing = false
 			s.minerLocalHashPS = 0
 			s.minerMu.Unlock()
+			exitStopReason = MinerStopSupervisorShutdown
 			return
 		}
 		if peerRequired && (s.p2p == nil || s.p2p.PeerCount() == 0) {
 			s.minerMu.Lock()
-			s.minerLastError = "paused/stopped: peer required but no peers connected"
+			s.minerLastError = "Mining blocked: node has no peers."
 			s.minerPausedReason = s.minerLastError
 			s.minerHashing = false
 			s.minerLocalHashPS = 0
 			s.minerMu.Unlock()
-			return
+			timer := time.NewTimer(3 * time.Second)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				exitStopReason = MinerStopUnsafePeers
+				return
+			case <-timer.C:
+			}
+			continue
 		}
 		if health := s.chain.StorageHealth(); !health.OK {
 			s.minerMu.Lock()
 			s.minerLastError = "stopped: storage health failed: " + health.Error
 			s.minerPausedReason = s.minerLastError
+			s.minerLastStopReason = MinerStopInternalError
 			s.minerHashing = false
 			s.minerLocalHashPS = 0
 			s.minerMu.Unlock()
+			exitStopReason = MinerStopInternalError
 			return
 		}
 		cfg, _ := config.LoadMiningConfig(s.miningConfigPath())
@@ -5416,6 +5467,7 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 				s.minerHashing = false
 				s.minerLocalHashPS = 0
 				s.minerMu.Unlock()
+				exitStopReason = MinerStopNodeShutdown
 				return
 			}
 			if errors.Is(err, mining.ErrTemplateRefreshRequired) {
@@ -5465,10 +5517,21 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 				continue
 			}
 			s.minerMu.Lock()
-			s.minerLastError = err.Error()
+			s.minerLastError = "worker_exit_unexpected: " + err.Error()
+			s.minerPausedReason = "Mining worker exited unexpectedly; restarting workers."
 			s.minerRejectedBlocks++
+			s.minerHashing = false
+			s.minerLocalHashPS = 0
 			s.minerMu.Unlock()
-			return
+			timer := time.NewTimer(1500 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				exitStopReason = MinerStopWorkerExitUnexpected
+				return
+			case <-timer.C:
+			}
+			continue
 		}
 		s.minerMu.Lock()
 		s.minerHashing = false

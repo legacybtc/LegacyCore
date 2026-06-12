@@ -38,6 +38,8 @@ type MinerRuntimeInput struct {
 	TemplateRefreshError string
 	LastError            string
 	PausedReason         string
+	LastStopReason       string
+	EverStarted          bool
 	StaleRatePauseActive bool
 	RecentReorg          bool
 }
@@ -54,6 +56,13 @@ type MinerRuntimeState struct {
 
 func ResolveMinerRuntimeState(input MinerRuntimeInput) MinerRuntimeState {
 	if !input.SessionActive {
+		stopReason := strings.TrimSpace(input.LastStopReason)
+		if stopReason == "" && input.EverStarted {
+			stopReason = MinerStopWorkerExitUnexpected
+		}
+		if minerStopReasonIsUnexpected(stopReason) {
+			return MinerRuntimeState{State: MinerStateError, Reason: "Mining stopped unexpectedly: " + normalizeMinerStopReason(stopReason)}
+		}
 		return MinerRuntimeState{State: MinerStateStopped, Reason: "miner is stopped"}
 	}
 	configuredThreads := input.ConfiguredThreads

@@ -1,6 +1,9 @@
 package rpc
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func safeMinerRuntimeInput() MinerRuntimeInput {
 	return MinerRuntimeInput{
@@ -116,5 +119,57 @@ func TestResolveMinerRuntimeStateRPCTimeoutPauses(t *testing.T) {
 	}
 	if state.ActiveThreads != 0 || state.LiveHashing {
 		t.Fatalf("rpc timeout must not expose live hashing, got %+v", state)
+	}
+}
+
+func TestResolveMinerRuntimeStateUnexpectedExitIsErrorNotCleanStopped(t *testing.T) {
+	input := safeMinerRuntimeInput()
+	input.SessionActive = false
+	input.WorkersHashing = false
+	input.EverStarted = true
+	input.LastStopReason = MinerStopWorkerExitUnexpected
+	state := ResolveMinerRuntimeState(input)
+	if state.State != MinerStateError {
+		t.Fatalf("state = %q, want %q", state.State, MinerStateError)
+	}
+	if state.Reason == "" {
+		t.Fatalf("unexpected worker exit must have visible reason")
+	}
+}
+
+func TestResolveMinerRuntimeStateStoppedAfterStartRequiresReason(t *testing.T) {
+	input := safeMinerRuntimeInput()
+	input.SessionActive = false
+	input.WorkersHashing = false
+	input.EverStarted = true
+	state := ResolveMinerRuntimeState(input)
+	if state.State != MinerStateError {
+		t.Fatalf("stopped after start with no reason must be error, got %+v", state)
+	}
+
+	input.LastStopReason = MinerStopUserStop
+	state = ResolveMinerRuntimeState(input)
+	if state.State != MinerStateStopped {
+		t.Fatalf("user stop should render stopped, got %+v", state)
+	}
+}
+
+func TestStopMinerRecordsMachineStopReason(t *testing.T) {
+	s := &Server{configPath: t.TempDir() + "/legacycoin.conf"}
+	s.minerActive = true
+	s.minerStartedAt = time.Now()
+	out := s.stopMiner(MinerStopUserStop)
+	if out["last_stop_reason"] != MinerStopUserStop {
+		t.Fatalf("last_stop_reason = %v, want %s", out["last_stop_reason"], MinerStopUserStop)
+	}
+	if s.minerLastStopReason != MinerStopUserStop {
+		t.Fatalf("server last stop reason = %q", s.minerLastStopReason)
+	}
+}
+
+func TestParseMinerStopReasonAllowsForceStop(t *testing.T) {
+	reason := parseMinerStopReason([]byte(`[{"reason":"user_force_stop"}]`), MinerStopRPCStopMiner)
+	if reason != MinerStopUserForceStop {
+		t.Fatalf("reason = %q, want %q", reason, MinerStopUserForceStop)
 	}
 }

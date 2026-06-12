@@ -76,6 +76,32 @@ func TestStopMinerFallsBackWhenRPCOffline(t *testing.T) {
 	if out["active_mining"] != false {
 		t.Fatalf("expected active_mining false, got %v", out["active_mining"])
 	}
+	if out["last_stop_reason"] != "user_stop" {
+		t.Fatalf("expected user_stop reason, got %v", out["last_stop_reason"])
+	}
+}
+
+func TestForceStopMinerFallsBackWithForceReasonWhenRPCOffline(t *testing.T) {
+	s := New(t.TempDir())
+	_, cancel := context.WithCancel(context.Background())
+	s.minerMu.Lock()
+	s.minerActive = true
+	s.minerEnabled = true
+	s.minerLoopRunning = true
+	s.minerThreads = 4
+	s.minerCancel = cancel
+	s.minerMu.Unlock()
+
+	out, err := s.ForceStopMiner()
+	if err != nil {
+		t.Fatalf("ForceStopMiner returned error: %v", err)
+	}
+	if out["active_mining"] != false {
+		t.Fatalf("expected active_mining false, got %v", out["active_mining"])
+	}
+	if out["last_stop_reason"] != "user_force_stop" {
+		t.Fatalf("expected user_force_stop reason, got %v", out["last_stop_reason"])
+	}
 }
 
 func TestRecordMinerStatusSuccessPreservesLastKnownConfig(t *testing.T) {

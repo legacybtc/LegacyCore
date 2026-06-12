@@ -235,6 +235,35 @@ test("safe fresh authoritative miner state never shows waiting for safe template
   assert.doesNotMatch(`${view.sessionModeLabel} ${view.miningLoopLabel}`, /waiting for safe template/i);
 });
 
+test("unexpected worker exit does not display as clean stopped without reason", () => {
+  const state = buildMinerDashboardState({
+    ...stoppedMinerStatus,
+    miner_state: "error",
+    miner_state_reason: "Mining stopped unexpectedly: worker_exit_unexpected",
+    active_mining: false,
+    mining_enabled: false,
+    mining_session_active: false,
+    last_stop_reason: "worker_exit_unexpected",
+    last_error: "Mining stopped unexpectedly: worker exited without an intentional stop request.",
+  }, overnightWalletSummary);
+  assert.equal(state.status, "error");
+  assert.match(state.statusLabel, /error/);
+  assert.match(state.sessionModeLabel, /worker_exit_unexpected/);
+  assert.match(state.miningLoopLabel, /worker_exit_unexpected/);
+  assert.notEqual(state.reasonLabel, "miner is stopped");
+});
+
+test("user stop displays stopped with user_stop reason", () => {
+  const state = buildMinerDashboardState({
+    ...stoppedMinerStatus,
+    miner_state: "stopped",
+    last_error: "user_stop",
+    last_stop_reason: "user_stop",
+  }, overnightWalletSummary);
+  assert.equal(state.status, "stopped");
+  assert.equal(state.lastActionLabel, "user_stop");
+});
+
 test("RPC timeout does not clear start notice while miner status is unavailable", () => {
   const mining = {
     ...stoppedMinerStatus,
