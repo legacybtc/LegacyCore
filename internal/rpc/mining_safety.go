@@ -198,6 +198,26 @@ func CheckSafeToMine(input MiningSafetyInput) MiningSafetyStatus {
 		TemplateMaxAgeSeconds:         input.TemplateMaxAgeSeconds,
 		StaleRatePauseActive:          input.StaleRatePauseActive,
 	}
+	staleTemplateReason := ""
+	if input.HasActiveTemplate && !input.ActiveTemplateFresh {
+		staleTemplateReason = status.ActiveTemplateStaleReason
+	}
+	if input.HasActiveTemplate && input.TemplateMaxAgeSeconds > 0 && input.TemplateAgeSeconds > input.TemplateMaxAgeSeconds {
+		staleTemplateReason = "template age exceeds hard stale limit"
+	}
+	if input.HasActiveTemplate && input.CurrentTemplateHeight > 0 && input.CurrentTipHeight >= 0 && input.CurrentTemplateHeight != input.CurrentTipHeight+1 {
+		staleTemplateReason = "template height is not current tip height + 1"
+	}
+	if input.HasActiveTemplate && input.ActiveTemplatePrevHash != "" && input.CurrentTipHash != "" && input.ActiveTemplatePrevHash != input.CurrentTipHash {
+		staleTemplateReason = "template prev hash does not match current tip"
+	}
+	if staleTemplateReason != "" {
+		status.ActiveTemplateStaleReason = staleTemplateReason
+		status.ActiveTemplateRefreshDue = true
+		if status.ActiveTemplateRefreshReason == "" {
+			status.ActiveTemplateRefreshReason = staleTemplateRefreshReason(staleTemplateReason)
+		}
+	}
 	if !input.SafeRequired && input.AllowUnsafe {
 		status.UnsafeOverride = true
 		status.State = "unsafe_override"
@@ -283,6 +303,23 @@ func miningSyncStateCurrent(syncState string, blocksBehind, blocksBehindAllowed 
 		return blocksBehind <= blocksBehindAllowed
 	default:
 		return false
+	}
+}
+
+func staleTemplateRefreshReason(reason string) string {
+	trimmed := strings.TrimSpace(reason)
+	normalized := strings.ToLower(trimmed)
+	switch {
+	case strings.Contains(normalized, "prev hash"):
+		return "prev_hash_mismatch: template prev hash does not match current tip"
+	case strings.Contains(normalized, "height"):
+		return "height_mismatch: template height is not current tip height + 1"
+	case strings.Contains(normalized, "age"):
+		return "hard_stale_template: template age exceeds hard stale limit"
+	case trimmed != "":
+		return "template_stale: " + trimmed
+	default:
+		return "template_stale: refreshing stale mining template"
 	}
 }
 

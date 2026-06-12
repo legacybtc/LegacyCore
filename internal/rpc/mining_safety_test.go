@@ -208,6 +208,9 @@ func TestCheckSafeToMineBlocksStaleActiveTemplate(t *testing.T) {
 	if status.Reason == "" || status.StaleRateWarning != "" {
 		t.Fatalf("expected template block reason without stale-rate warning: %+v", status)
 	}
+	if !status.ActiveTemplateRefreshDue || status.ActiveTemplateRefreshReason != "height_mismatch: template height is not current tip height + 1" {
+		t.Fatalf("stale active template must force refresh diagnostics: %+v", status)
+	}
 }
 
 func TestCheckSafeToMineBlocksPrevHashMismatch(t *testing.T) {
@@ -221,6 +224,30 @@ func TestCheckSafeToMineBlocksPrevHashMismatch(t *testing.T) {
 	status := CheckSafeToMine(input)
 	if status.Safe || status.Reason != "Mining paused: template prev hash does not match current tip." {
 		t.Fatalf("expected prev hash mismatch block, got %+v", status)
+	}
+	if !status.ActiveTemplateRefreshDue || status.ActiveTemplateRefreshReason != "prev_hash_mismatch: template prev hash does not match current tip" {
+		t.Fatalf("prev-hash mismatch must force refresh due, got %+v", status)
+	}
+}
+
+func TestCheckSafeToMineStaleTemplateNeverReportsRefreshDueNo(t *testing.T) {
+	input := safeMiningInput()
+	input.HasActiveTemplate = true
+	input.ActiveTemplateFresh = false
+	input.ActiveTemplateStaleReason = "template prev hash does not match current tip"
+	input.CurrentTemplateHeight = 3205
+	input.CurrentTipHeight = 3206
+	input.ActiveTemplatePrevHash = "old-tip"
+	input.CurrentTipHash = "new-tip"
+	status := CheckSafeToMine(input)
+	if status.Safe {
+		t.Fatalf("stale template must block hashing: %+v", status)
+	}
+	if !status.ActiveTemplateRefreshDue {
+		t.Fatalf("stale template must say refresh due yes: %+v", status)
+	}
+	if status.ActiveTemplateRefreshReason != "prev_hash_mismatch: template prev hash does not match current tip" {
+		t.Fatalf("refresh reason = %q", status.ActiveTemplateRefreshReason)
 	}
 }
 

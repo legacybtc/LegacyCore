@@ -49,47 +49,49 @@ type Server struct {
 	policy     config.LaunchPolicy
 	configPath string
 
-	minerMu                        sync.Mutex
-	minerActive                    bool
-	minerHashing                   bool
-	minerCancel                    context.CancelFunc
-	minerThreads                   int
-	minerBlocks                    int64
-	minerLastHash                  string
-	minerLastError                 string
-	minerPausedReason              string
-	minerLastStopReason            string
-	minerRequestedStopReason       string
-	minerStartedAt                 time.Time
-	minerStopAfterBlocks           int64
-	minerRewardHash                string
-	minerPeerRequired              bool
-	minerLocalHashPS               float64
-	minerSessionHashes             uint64
-	minerLastNonce                 uint32
-	minerStaleBlocks               int64
-	minerRejectedBlocks            int64
-	minerLastStaleTime             time.Time
-	minerLastStaleReason           string
-	minerLastTemplateTime          time.Time
-	minerLastTemplateHeight        int32
-	minerLastTemplatePrevHash      string
-	minerLastTemplateTipHeight     int32
-	minerLastTemplateTipHash       string
-	minerLastTemplateFresh         bool
-	minerLastTemplateStaleReason   string
-	minerLastTemplateRefreshDue    bool
-	minerLastTemplateRefreshReason string
-	minerTemplateRefreshCount      int64
-	minerStaleTemplateSkips        int64
-	minerLastTemplateRefreshError  string
-	minerStaleRatePauseActive      bool
-	minerAcceptedRecords           []minerAcceptedRecord
-	minerSupervisorRestartAttempts int64
-	minerLastSupervisorCancelTime  time.Time
-	minerLastRestartSuccessTime    time.Time
-	minerLastRestartFailure        string
-	defaultTxFee                   int64
+	minerMu                           sync.Mutex
+	minerActive                       bool
+	minerHashing                      bool
+	minerCancel                       context.CancelFunc
+	minerThreads                      int
+	minerBlocks                       int64
+	minerLastHash                     string
+	minerLastError                    string
+	minerPausedReason                 string
+	minerLastStopReason               string
+	minerRequestedStopReason          string
+	minerStartedAt                    time.Time
+	minerStopAfterBlocks              int64
+	minerRewardHash                   string
+	minerPeerRequired                 bool
+	minerLocalHashPS                  float64
+	minerSessionHashes                uint64
+	minerLastNonce                    uint32
+	minerStaleBlocks                  int64
+	minerRejectedBlocks               int64
+	minerLastStaleTime                time.Time
+	minerLastStaleReason              string
+	minerLastTemplateTime             time.Time
+	minerLastTemplateHeight           int32
+	minerLastTemplatePrevHash         string
+	minerLastTemplateTipHeight        int32
+	minerLastTemplateTipHash          string
+	minerLastTemplateFresh            bool
+	minerLastTemplateStaleReason      string
+	minerLastTemplateRefreshDue       bool
+	minerLastTemplateRefreshReason    string
+	minerLastTemplateRefreshAttempt   time.Time
+	minerTemplateRefreshCount         int64
+	minerStaleTemplateRefreshAttempts int64
+	minerStaleTemplateSkips           int64
+	minerLastTemplateRefreshError     string
+	minerStaleRatePauseActive         bool
+	minerAcceptedRecords              []minerAcceptedRecord
+	minerSupervisorRestartAttempts    int64
+	minerLastSupervisorCancelTime     time.Time
+	minerLastRestartSuccessTime       time.Time
+	minerLastRestartFailure           string
+	defaultTxFee                      int64
 }
 
 type minerAcceptedRecord struct {
@@ -4473,7 +4475,9 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 	lastTemplateStaleReason := s.minerLastTemplateStaleReason
 	lastTemplateRefreshDue := s.minerLastTemplateRefreshDue
 	lastTemplateRefreshReason := s.minerLastTemplateRefreshReason
+	lastTemplateRefreshAttempt := s.minerLastTemplateRefreshAttempt
 	templateRefreshCount := s.minerTemplateRefreshCount
+	staleTemplateRefreshAttempts := s.minerStaleTemplateRefreshAttempts
 	staleTemplateSkips := s.minerStaleTemplateSkips
 	lastTemplateRefreshError := s.minerLastTemplateRefreshError
 	acceptedRecords := append([]minerAcceptedRecord(nil), s.minerAcceptedRecords...)
@@ -4536,7 +4540,12 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 	hasActiveTemplate := minerEnabled && !lastTemplateTime.IsZero() && lastTemplateHeight > 0
 	if hasActiveTemplate {
 		lastTemplateFresh, lastTemplateStaleReason = s.activeTemplateFreshness(lastTemplateHeight, lastTemplatePrevHash, lastTemplateTime)
-		if lastTemplateFresh && miningTemplateSoftRefreshAgeSeconds() > 0 && lastTemplateAge > miningTemplateSoftRefreshAgeSeconds() {
+		if !lastTemplateFresh {
+			lastTemplateRefreshDue = true
+			if strings.TrimSpace(lastTemplateRefreshReason) == "" {
+				lastTemplateRefreshReason = staleTemplateRefreshReason(lastTemplateStaleReason)
+			}
+		} else if miningTemplateSoftRefreshAgeSeconds() > 0 && lastTemplateAge > miningTemplateSoftRefreshAgeSeconds() {
 			lastTemplateRefreshDue = true
 			if strings.TrimSpace(lastTemplateRefreshReason) == "" {
 				lastTemplateRefreshReason = "refreshing template in background; current template still valid"
@@ -4705,55 +4714,70 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 			}
 			return localHashPS / 1000
 		}(),
-		"live_active_threads_note":           "active_threads and local_khps are live-only; use last_session_* for stopped miner history",
-		"session_hashes":                     sessionHashes,
-		"hashes_per_thread":                  hashesPerThread(localHashPS, minerThreads),
-		"last_nonce":                         lastNonce,
-		"current_bits":                       currentBits,
-		"estimated_time_to_block_seconds":    estimatedSeconds,
-		"accepted_blocks":                    activeAcceptedBlocks,
-		"accepted_blocks_total":              minerBlocks,
-		"accepted_blocks_active_chain":       activeAcceptedBlocks,
-		"accepted_blocks_orphaned":           int64(len(acceptedBlockStatuses)) - activeAcceptedBlocks,
-		"accepted_block_hashes":              acceptedBlockHashes(acceptedBlockStatuses),
-		"accepted_block_heights":             acceptedBlockHeights(acceptedBlockStatuses),
-		"accepted_mined_blocks":              acceptedBlockStatuses,
-		"stale_blocks":                       staleBlocks,
-		"rejected_blocks":                    rejectedBlocks,
-		"stale_rate":                         safety.StaleRate,
-		"stale_rate_warning":                 safety.StaleRateWarning,
-		"last_stale_time":                    lastStaleTimeValue,
-		"last_stale_reason":                  lastStaleReason,
-		"last_template_refresh_time":         lastTemplateTimeValue,
-		"last_template_refresh_ago_seconds":  lastTemplateAge,
-		"last_template_refresh_success_time": lastTemplateTimeValue,
-		"last_template_refresh_error":        lastTemplateRefreshError,
-		"last_template_refresh_tip_height":   lastTemplateTipHeight,
-		"last_template_refresh_tip_hash":     lastTemplateTipHash,
-		"template_refresh_count":             templateRefreshCount,
-		"stale_template_skip_count":          staleTemplateSkips,
-		"last_mined_template_height":         lastTemplateHeight,
-		"current_template_height":            safety.CurrentTemplateHeight,
-		"current_tip_height":                 safety.CurrentTipHeight,
-		"current_tip_hash":                   safety.CurrentTipHash,
-		"active_template_height":             lastTemplateHeight,
-		"active_template_prev_hash":          lastTemplatePrevHash,
-		"active_template_age_seconds":        lastTemplateAge,
-		"active_template_is_fresh":           hasActiveTemplate && lastTemplateFresh,
-		"active_template_refresh_due":        hasActiveTemplate && lastTemplateRefreshDue,
-		"active_template_stale_reason":       lastTemplateStaleReason,
-		"active_template_refresh_reason":     lastTemplateRefreshReason,
-		"has_active_template":                hasActiveTemplate,
-		"template_soft_refresh_age_seconds":  miningTemplateSoftRefreshAgeSeconds(),
-		"template_max_age_seconds":           miningTemplateHardStaleAgeSeconds(),
-		"template_hard_stale_age_seconds":    miningTemplateHardStaleAgeSeconds(),
-		"mining_paused_reason":               minerPausedReason,
-		"mining_reward_address":              displayRewardAddress,
-		"configured_mining_address":          strings.TrimSpace(cfg.RewardAddress),
-		"mining_address_wallet_owned":        dest.Owned,
-		"owned_by_wallet":                    dest.Owned,
-		"external_payout_mode":               dest.External,
-		"mining_destination_error":           dest.Error,
+		"live_active_threads_note":              "active_threads and local_khps are live-only; use last_session_* for stopped miner history",
+		"session_hashes":                        sessionHashes,
+		"hashes_per_thread":                     hashesPerThread(localHashPS, minerThreads),
+		"last_nonce":                            lastNonce,
+		"current_bits":                          currentBits,
+		"estimated_time_to_block_seconds":       estimatedSeconds,
+		"accepted_blocks":                       activeAcceptedBlocks,
+		"accepted_blocks_total":                 minerBlocks,
+		"accepted_blocks_active_chain":          activeAcceptedBlocks,
+		"accepted_blocks_orphaned":              int64(len(acceptedBlockStatuses)) - activeAcceptedBlocks,
+		"accepted_block_hashes":                 acceptedBlockHashes(acceptedBlockStatuses),
+		"accepted_block_heights":                acceptedBlockHeights(acceptedBlockStatuses),
+		"accepted_mined_blocks":                 acceptedBlockStatuses,
+		"stale_blocks":                          staleBlocks,
+		"rejected_blocks":                       rejectedBlocks,
+		"stale_rate":                            safety.StaleRate,
+		"stale_rate_warning":                    safety.StaleRateWarning,
+		"last_stale_time":                       lastStaleTimeValue,
+		"last_stale_reason":                     lastStaleReason,
+		"last_template_refresh_time":            lastTemplateTimeValue,
+		"last_template_refresh_ago_seconds":     lastTemplateAge,
+		"last_template_refresh_attempt_time":    unixOrZero(lastTemplateRefreshAttempt),
+		"last_template_refresh_success_time":    lastTemplateTimeValue,
+		"last_template_refresh_error":           lastTemplateRefreshError,
+		"last_template_refresh_tip_height":      lastTemplateTipHeight,
+		"last_template_refresh_tip_hash":        lastTemplateTipHash,
+		"template_refresh_count":                templateRefreshCount,
+		"template_refresh_attempts_since_stale": staleTemplateRefreshAttempts,
+		"stale_template_skip_count":             staleTemplateSkips,
+		"template_refresh_final_state": func() string {
+			if hasActiveTemplate && lastTemplateFresh {
+				return "fresh"
+			}
+			if hasActiveTemplate && lastTemplateRefreshDue {
+				return "refreshing"
+			}
+			if hasActiveTemplate {
+				return "stale"
+			}
+			return "idle"
+		}(),
+		"active_threads_after_template_refresh": liveThreads,
+		"last_mined_template_height":            lastTemplateHeight,
+		"current_template_height":               safety.CurrentTemplateHeight,
+		"current_tip_height":                    safety.CurrentTipHeight,
+		"current_tip_hash":                      safety.CurrentTipHash,
+		"active_template_height":                lastTemplateHeight,
+		"active_template_prev_hash":             lastTemplatePrevHash,
+		"active_template_age_seconds":           lastTemplateAge,
+		"active_template_is_fresh":              hasActiveTemplate && lastTemplateFresh,
+		"active_template_refresh_due":           hasActiveTemplate && lastTemplateRefreshDue,
+		"active_template_stale_reason":          lastTemplateStaleReason,
+		"active_template_refresh_reason":        lastTemplateRefreshReason,
+		"has_active_template":                   hasActiveTemplate,
+		"template_soft_refresh_age_seconds":     miningTemplateSoftRefreshAgeSeconds(),
+		"template_max_age_seconds":              miningTemplateHardStaleAgeSeconds(),
+		"template_hard_stale_age_seconds":       miningTemplateHardStaleAgeSeconds(),
+		"mining_paused_reason":                  minerPausedReason,
+		"mining_reward_address":                 displayRewardAddress,
+		"configured_mining_address":             strings.TrimSpace(cfg.RewardAddress),
+		"mining_address_wallet_owned":           dest.Owned,
+		"owned_by_wallet":                       dest.Owned,
+		"external_payout_mode":                  dest.External,
+		"mining_destination_error":              dest.Error,
 		"payout_warning": func() string {
 			if dest.External {
 				return "External payout mode: rewards will not appear in this wallet unless you own or import that address."
@@ -4967,7 +4991,9 @@ func (s *Server) startMiner(parent context.Context, params json.RawMessage) (any
 	s.minerLastTemplateStaleReason = ""
 	s.minerLastTemplateRefreshDue = false
 	s.minerLastTemplateRefreshReason = ""
+	s.minerLastTemplateRefreshAttempt = time.Time{}
 	s.minerTemplateRefreshCount = 0
+	s.minerStaleTemplateRefreshAttempts = 0
 	s.minerStaleTemplateSkips = 0
 	s.minerLastTemplateRefreshError = ""
 	s.minerStaleRatePauseActive = false
@@ -5325,6 +5351,48 @@ func boolFromAny(v any) bool {
 	}
 }
 
+func staleTemplateSafetyBlock(status MiningSafetyStatus) bool {
+	if status.Safe || !status.HasActiveTemplate {
+		return false
+	}
+	if !status.ActiveTemplateFresh {
+		return true
+	}
+	if status.CurrentTemplateHeight > 0 && status.CurrentTipHeight >= 0 && status.CurrentTemplateHeight != status.CurrentTipHeight+1 {
+		return true
+	}
+	return status.ActiveTemplatePrevHash != "" && status.CurrentTipHash != "" && status.ActiveTemplatePrevHash != status.CurrentTipHash
+}
+
+func (s *Server) markStaleTemplateRefreshLocked(staleReason string, incrementSkip bool) {
+	staleReason = strings.TrimSpace(staleReason)
+	if staleReason == "" {
+		staleReason = "template is stale"
+	}
+	s.minerHashing = false
+	s.minerLocalHashPS = 0
+	s.minerLastTemplateFresh = false
+	s.minerLastTemplateStaleReason = staleReason
+	s.minerLastTemplateRefreshDue = true
+	s.minerLastTemplateRefreshReason = staleTemplateRefreshReason(staleReason)
+	s.minerLastTemplateRefreshError = ""
+	s.minerLastTemplateRefreshAttempt = time.Now()
+	s.minerStaleTemplateRefreshAttempts++
+	if incrementSkip {
+		s.minerStaleTemplateSkips++
+	}
+}
+
+func (s *Server) markAcceptedBlockTemplateRefreshLocked() {
+	s.minerLastTemplateRefreshDue = true
+	s.minerLastTemplateRefreshReason = "accepted_block_refresh: accepted block connected; refreshing template for new tip"
+	s.minerLastTemplateRefreshAttempt = time.Now()
+	s.minerLastTemplateRefreshError = ""
+	s.minerLastTemplateFresh = false
+	s.minerLastTemplateStaleReason = "accepted block connected; template belongs to previous tip"
+	s.minerStaleTemplateRefreshAttempts++
+}
+
 func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 	exitStopReason := MinerStopWorkerExitUnexpected
 	defer func() {
@@ -5402,40 +5470,52 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 		}
 		cfg, _ := config.LoadMiningConfig(s.miningConfigPath())
 		if safety := s.checkSafeToMine(cfg, false); !safety.Safe {
-			pausedForHighStale := strings.Contains(strings.ToLower(safety.Reason), "high stale rate")
-			s.minerMu.Lock()
-			s.minerLastError = safety.Reason
-			s.minerPausedReason = safety.Reason
-			s.minerHashing = false
-			s.minerLocalHashPS = 0
-			s.minerMu.Unlock()
-			retryDelay := 3 * time.Second
-			if pausedForHighStale {
-				retryDelay = 15 * time.Second
-			}
-			timer := time.NewTimer(retryDelay)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return
-			case <-timer.C:
-			}
-			if pausedForHighStale {
+			if staleTemplateSafetyBlock(safety) {
+				staleReason := strings.TrimSpace(safety.ActiveTemplateStaleReason)
+				if staleReason == "" {
+					staleReason = safety.Reason
+				}
 				s.minerMu.Lock()
-				s.minerStaleRatePauseActive = false
-				s.minerStaleBlocks = 0
-				s.minerRejectedBlocks = 0
-				s.minerLastTemplateTime = time.Time{}
-				s.minerLastTemplateHeight = 0
-				s.minerLastTemplatePrevHash = ""
-				s.minerLastTemplateFresh = false
-				s.minerLastTemplateRefreshDue = false
-				s.minerLastTemplateRefreshReason = ""
-				s.minerLastTemplateStaleReason = "refreshing after high stale rate"
-				s.minerLastTemplateRefreshError = "high stale rate pause completed; refreshing template"
+				s.markStaleTemplateRefreshLocked(staleReason, true)
+				s.minerLastError = ""
+				s.minerPausedReason = ""
 				s.minerMu.Unlock()
+			} else {
+				pausedForHighStale := strings.Contains(strings.ToLower(safety.Reason), "high stale rate")
+				s.minerMu.Lock()
+				s.minerLastError = safety.Reason
+				s.minerPausedReason = safety.Reason
+				s.minerHashing = false
+				s.minerLocalHashPS = 0
+				s.minerMu.Unlock()
+				retryDelay := 3 * time.Second
+				if pausedForHighStale {
+					retryDelay = 15 * time.Second
+				}
+				timer := time.NewTimer(retryDelay)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				case <-timer.C:
+				}
+				if pausedForHighStale {
+					s.minerMu.Lock()
+					s.minerStaleRatePauseActive = false
+					s.minerStaleBlocks = 0
+					s.minerRejectedBlocks = 0
+					s.minerLastTemplateTime = time.Time{}
+					s.minerLastTemplateHeight = 0
+					s.minerLastTemplatePrevHash = ""
+					s.minerLastTemplateFresh = false
+					s.minerLastTemplateRefreshDue = false
+					s.minerLastTemplateRefreshReason = ""
+					s.minerLastTemplateStaleReason = "refreshing after high stale rate"
+					s.minerLastTemplateRefreshError = "high stale rate pause completed; refreshing template"
+					s.minerMu.Unlock()
+				}
+				continue
 			}
-			continue
 		}
 		templateHeight := int32(-1)
 		templatePrevHash := ""
@@ -5521,6 +5601,7 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 				if strings.TrimSpace(s.minerLastTemplateRefreshReason) == "" {
 					s.minerLastTemplateRefreshReason = "refreshing template in background; current template still valid"
 				}
+				s.minerLastTemplateRefreshAttempt = time.Now()
 				s.minerLastTemplateRefreshError = ""
 				s.minerHashing = true
 				s.minerMu.Unlock()
@@ -5532,17 +5613,19 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 			s.minerMu.Unlock()
 			if errors.Is(err, mining.ErrStaleTemplate) {
 				s.minerMu.Lock()
-				s.minerLastError = "Mining paused: template is stale; waiting for fresh block template."
-				s.minerPausedReason = s.minerLastError
-				s.minerStaleTemplateSkips++
-				s.minerLastTemplateRefreshError = err.Error()
-				s.minerLastTemplateFresh = false
-				s.minerLastTemplateRefreshDue = false
-				s.minerLastTemplateRefreshReason = ""
-				if s.minerLastTemplateStaleReason == "" {
-					s.minerLastTemplateStaleReason = strings.TrimPrefix(err.Error(), mining.ErrStaleTemplate.Error()+": ")
-				}
+				staleReason := strings.TrimPrefix(err.Error(), mining.ErrStaleTemplate.Error()+": ")
+				s.markStaleTemplateRefreshLocked(staleReason, true)
+				s.minerLastError = ""
+				s.minerPausedReason = ""
 				s.minerMu.Unlock()
+				timer := time.NewTimer(250 * time.Millisecond)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					exitStopReason = MinerStopNodeShutdown
+					return
+				case <-timer.C:
+				}
 				continue
 			}
 			if errors.Is(err, blockchain.ErrBadPrevBlock) {
@@ -5600,6 +5683,7 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 			PayoutHash:   strings.ToLower(hex.EncodeToString(pubHash)),
 			CoinbaseTxID: coinbaseTxID(result.Block),
 		})
+		s.markAcceptedBlockTemplateRefreshLocked()
 		s.minerMu.Unlock()
 	}
 }

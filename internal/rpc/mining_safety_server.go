@@ -94,7 +94,10 @@ func (s *Server) checkSafeToMine(cfg config.MiningConfig, requireDestination boo
 	}
 	if input.HasActiveTemplate {
 		input.ActiveTemplateFresh, input.ActiveTemplateStaleReason = s.activeTemplateFreshness(input.CurrentTemplateHeight, input.ActiveTemplatePrevHash, templateAt)
-		if input.ActiveTemplateFresh && input.TemplateSoftRefreshAgeSeconds > 0 && input.TemplateAgeSeconds > input.TemplateSoftRefreshAgeSeconds {
+		if !input.ActiveTemplateFresh {
+			input.ActiveTemplateRefreshDue = true
+			input.ActiveTemplateRefreshReason = staleTemplateRefreshReason(input.ActiveTemplateStaleReason)
+		} else if input.TemplateSoftRefreshAgeSeconds > 0 && input.TemplateAgeSeconds > input.TemplateSoftRefreshAgeSeconds {
 			input.ActiveTemplateRefreshDue = true
 			input.ActiveTemplateRefreshReason = "refreshing template in background; current template still valid"
 		}

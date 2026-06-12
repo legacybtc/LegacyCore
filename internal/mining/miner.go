@@ -66,10 +66,12 @@ type TemplateStatus struct {
 
 func CheckTemplateFreshness(chain *blockchain.Chain, template *wire.MsgBlock, height int32, createdAt time.Time, hardMaxAge time.Duration) TemplateStatus {
 	status := TemplateStatus{
-		CurrentTipHeight:          -1,
-		ActiveTemplateHeight:      height,
-		ActiveTemplateIsFresh:     false,
-		ActiveTemplateStaleReason: "template unavailable",
+		CurrentTipHeight:            -1,
+		ActiveTemplateHeight:        height,
+		ActiveTemplateIsFresh:       false,
+		ActiveTemplateRefreshDue:    true,
+		ActiveTemplateStaleReason:   "template unavailable",
+		ActiveTemplateRefreshReason: "template_stale: template unavailable",
 	}
 	if template == nil {
 		return status
@@ -80,21 +82,29 @@ func CheckTemplateFreshness(chain *blockchain.Chain, template *wire.MsgBlock, he
 	}
 	if chain == nil {
 		status.ActiveTemplateStaleReason = "chain unavailable"
+		status.ActiveTemplateRefreshDue = true
+		status.ActiveTemplateRefreshReason = "template_stale: chain unavailable"
 		return status
 	}
 	tip := chain.Tip()
 	if tip == nil || tip.Hash == "" {
 		status.ActiveTemplateStaleReason = "chain tip unavailable"
+		status.ActiveTemplateRefreshDue = true
+		status.ActiveTemplateRefreshReason = "template_stale: chain tip unavailable"
 		return status
 	}
 	status.CurrentTipHeight = tip.Height
 	status.CurrentTipHash = tip.Hash
 	if status.ActiveTemplatePrevHash != tip.Hash {
 		status.ActiveTemplateStaleReason = "template prev hash does not match current tip"
+		status.ActiveTemplateRefreshDue = true
+		status.ActiveTemplateRefreshReason = "prev_hash_mismatch: template prev hash does not match current tip"
 		return status
 	}
 	if height != tip.Height+1 {
 		status.ActiveTemplateStaleReason = "template height is not current tip height + 1"
+		status.ActiveTemplateRefreshDue = true
+		status.ActiveTemplateRefreshReason = "height_mismatch: template height is not current tip height + 1"
 		return status
 	}
 	if hardMaxAge <= 0 {
@@ -102,6 +112,8 @@ func CheckTemplateFreshness(chain *blockchain.Chain, template *wire.MsgBlock, he
 	}
 	if !createdAt.IsZero() && time.Since(createdAt) > hardMaxAge {
 		status.ActiveTemplateStaleReason = "template age exceeds hard stale limit"
+		status.ActiveTemplateRefreshDue = true
+		status.ActiveTemplateRefreshReason = "hard_stale_template: template age exceeds hard stale limit"
 		return status
 	}
 	status.ActiveTemplateIsFresh = true

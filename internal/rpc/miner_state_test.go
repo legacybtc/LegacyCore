@@ -239,3 +239,66 @@ func TestParseMinerStopReasonAllowsForceStop(t *testing.T) {
 		t.Fatalf("reason = %q, want %q", reason, MinerStopUserForceStop)
 	}
 }
+
+func TestStaleTemplateSafetyBlockTriggersRefreshPath(t *testing.T) {
+	status := MiningSafetyStatus{
+		Safe:                        false,
+		HasActiveTemplate:           true,
+		ActiveTemplateFresh:         false,
+		ActiveTemplateStaleReason:   "template prev hash does not match current tip",
+		ActiveTemplatePrevHash:      "old-tip",
+		CurrentTipHash:              "new-tip",
+		CurrentTemplateHeight:       3205,
+		CurrentTipHeight:            3206,
+		ActiveTemplateRefreshDue:    true,
+		ActiveTemplateRefreshReason: "prev_hash_mismatch: template prev hash does not match current tip",
+	}
+	if !staleTemplateSafetyBlock(status) {
+		t.Fatalf("stale template safety block should enter refresh path")
+	}
+	status = MiningSafetyStatus{Safe: false, HasActiveTemplate: false, ActiveTemplateFresh: false}
+	if staleTemplateSafetyBlock(status) {
+		t.Fatalf("non-template safety block must not bypass normal pause path")
+	}
+}
+
+func TestMarkStaleTemplateRefreshLockedSetsDueAndSkip(t *testing.T) {
+	s := &Server{}
+	s.minerHashing = true
+	s.minerLocalHashPS = 42
+	s.markStaleTemplateRefreshLocked("template prev hash does not match current tip", true)
+	if s.minerHashing || s.minerLocalHashPS != 0 {
+		t.Fatalf("stale template refresh must stop old-template hashing")
+	}
+	if !s.minerLastTemplateRefreshDue {
+		t.Fatalf("stale template must mark refresh due")
+	}
+	if s.minerLastTemplateRefreshReason != "prev_hash_mismatch: template prev hash does not match current tip" {
+		t.Fatalf("refresh reason = %q", s.minerLastTemplateRefreshReason)
+	}
+	if s.minerStaleTemplateSkips != 1 || s.minerStaleTemplateRefreshAttempts != 1 {
+		t.Fatalf("expected skip and refresh attempt counts, got skips=%d attempts=%d", s.minerStaleTemplateSkips, s.minerStaleTemplateRefreshAttempts)
+	}
+	if s.minerLastTemplateRefreshAttempt.IsZero() {
+		t.Fatalf("expected refresh attempt timestamp")
+	}
+}
+
+func TestAcceptedBlockMarksTemplateRefreshDue(t *testing.T) {
+	s := &Server{}
+	s.minerLastTemplateFresh = true
+	s.minerLastTemplateRefreshDue = false
+	s.markAcceptedBlockTemplateRefreshLocked()
+	if s.minerLastTemplateFresh {
+		t.Fatalf("accepted block should invalidate previous template freshness")
+	}
+	if !s.minerLastTemplateRefreshDue {
+		t.Fatalf("accepted block should mark template refresh due")
+	}
+	if s.minerLastTemplateRefreshReason != "accepted_block_refresh: accepted block connected; refreshing template for new tip" {
+		t.Fatalf("refresh reason = %q", s.minerLastTemplateRefreshReason)
+	}
+	if s.minerStaleTemplateRefreshAttempts != 1 {
+		t.Fatalf("accepted block should count a refresh attempt, got %d", s.minerStaleTemplateRefreshAttempts)
+	}
+}

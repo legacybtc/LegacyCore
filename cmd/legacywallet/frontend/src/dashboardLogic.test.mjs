@@ -474,6 +474,32 @@ test("stale active template is visible while miner loop is paused", () => {
   assert.match(state.safetyLabel, /template is stale/);
 });
 
+test("stale active template with refresh due displays active recovery", () => {
+  const state = buildMinerDashboardState({
+    ...stoppedMinerStatus,
+    active_mining: false,
+    mining_enabled: true,
+    mining_safe: false,
+    safe_to_mine: false,
+    active_template_height: 3205,
+    current_tip_height: 3206,
+    active_template_age_seconds: 10 * 60,
+    active_template_is_fresh: false,
+    active_template_refresh_due: true,
+    active_template_stale_reason: "template prev hash does not match current tip",
+    active_template_refresh_reason: "prev_hash_mismatch: template prev hash does not match current tip",
+    active_template_prev_hash: "old-tip",
+    current_tip_hash: "new-tip",
+    stale_template_skip_count: 1,
+  }, overnightWalletSummary);
+  assert.equal(state.activeMining, false);
+  assert.equal(state.status, "starting");
+  assert.equal(state.templateRefreshLabel, "stale / refreshing");
+  assert.equal(state.templateFreshnessLabel, "stale / refresh required");
+  assert.equal(state.templateStaleReasonLabel, "template prev hash does not match current tip");
+  assert.equal(state.miningLoopLabel, "starting / confirming");
+});
+
 test("soft template refresh stays running and reads as still valid", () => {
   const state = buildMinerDashboardState({
     ...stoppedMinerStatus,
