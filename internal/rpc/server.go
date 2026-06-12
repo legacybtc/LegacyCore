@@ -67,6 +67,8 @@ type Server struct {
 	minerLocalHashPS                  float64
 	minerSessionHashes                uint64
 	minerLastNonce                    uint32
+	minerWorkerEpochStartedAt         time.Time
+	minerLastHashProgressTime         time.Time
 	minerStaleBlocks                  int64
 	minerRejectedBlocks               int64
 	minerLastStaleTime                time.Time
@@ -4462,6 +4464,8 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 	localHashPS := s.minerLocalHashPS
 	sessionHashes := s.minerSessionHashes
 	lastNonce := s.minerLastNonce
+	workerEpochStartedAt := s.minerWorkerEpochStartedAt
+	lastHashProgressTime := s.minerLastHashProgressTime
 	staleBlocks := s.minerStaleBlocks
 	rejectedBlocks := s.minerRejectedBlocks
 	lastStaleTime := s.minerLastStaleTime
@@ -4531,6 +4535,10 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 	if !lastStaleTime.IsZero() {
 		lastStaleTimeValue = lastStaleTime.Unix()
 	}
+	workerEpochAge := float64(0)
+	if !workerEpochStartedAt.IsZero() {
+		workerEpochAge = time.Since(workerEpochStartedAt).Seconds()
+	}
 	lastTemplateAge := float64(-1)
 	lastTemplateTimeValue := int64(0)
 	if !lastTemplateTime.IsZero() {
@@ -4554,31 +4562,35 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 	}
 	acceptedBlockStatuses, activeAcceptedBlocks := s.acceptedBlockStatuses(acceptedRecords)
 	runtimeState := ResolveMinerRuntimeState(MinerRuntimeInput{
-		SessionActive:        minerEnabled,
-		WorkersHashing:       activeMining,
-		ConfiguredThreads:    cfg.Threads,
-		SafetySafe:           safety.Safe,
-		SafetyReason:         safety.Reason,
-		RPCHealth:            safety.RPCHealth,
-		DataFresh:            true,
-		SyncState:            safety.SyncState,
-		BlocksBehind:         safety.BlocksBehind,
-		BlocksBehindAllowed:  int32(cfg.BlocksBehindOK),
-		GoodPeerCount:        safety.GoodPeerCount,
-		MinGoodPeers:         cfg.MinGoodPeers,
-		DestinationOK:        dest.Owned || dest.External,
-		DestinationError:     dest.Error,
-		HasActiveTemplate:    hasActiveTemplate,
-		TemplateFresh:        hasActiveTemplate && lastTemplateFresh,
-		TemplateRefreshDue:   hasActiveTemplate && lastTemplateRefreshDue,
-		TemplateStaleReason:  lastTemplateStaleReason,
-		TemplateRefreshError: lastTemplateRefreshError,
-		LastError:            lastError,
-		PausedReason:         minerPausedReason,
-		LastStopReason:       minerLastStopReason,
-		EverStarted:          !minerStartedAt.IsZero(),
-		StaleRatePauseActive: safety.StaleRatePauseActive,
-		RecentReorg:          safety.RecentReorg,
+		SessionActive:         minerEnabled,
+		WorkersHashing:        activeMining,
+		ConfiguredThreads:     cfg.Threads,
+		HashAttempts:          sessionHashes,
+		LastNonce:             lastNonce,
+		LocalHashPS:           localHashPS,
+		WorkerEpochAgeSeconds: workerEpochAge,
+		SafetySafe:            safety.Safe,
+		SafetyReason:          safety.Reason,
+		RPCHealth:             safety.RPCHealth,
+		DataFresh:             true,
+		SyncState:             safety.SyncState,
+		BlocksBehind:          safety.BlocksBehind,
+		BlocksBehindAllowed:   int32(cfg.BlocksBehindOK),
+		GoodPeerCount:         safety.GoodPeerCount,
+		MinGoodPeers:          cfg.MinGoodPeers,
+		DestinationOK:         dest.Owned || dest.External,
+		DestinationError:      dest.Error,
+		HasActiveTemplate:     hasActiveTemplate,
+		TemplateFresh:         hasActiveTemplate && lastTemplateFresh,
+		TemplateRefreshDue:    hasActiveTemplate && lastTemplateRefreshDue,
+		TemplateStaleReason:   lastTemplateStaleReason,
+		TemplateRefreshError:  lastTemplateRefreshError,
+		LastError:             lastError,
+		PausedReason:          minerPausedReason,
+		LastStopReason:        minerLastStopReason,
+		EverStarted:           !minerStartedAt.IsZero(),
+		StaleRatePauseActive:  safety.StaleRatePauseActive,
+		RecentReorg:           safety.RecentReorg,
 	})
 	activeMining = minerStateCountsAsActive(runtimeState.State)
 	liveThreads := runtimeState.ActiveThreads
@@ -4695,6 +4707,11 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 		"last_miner_status_success_time": time.Now().Unix(),
 		"miner_status_age_seconds":       0.0,
 		"status_data_fresh":              true,
+		"worker_epoch_started_at":        unixOrZero(workerEpochStartedAt),
+		"worker_epoch_age_seconds":       workerEpochAge,
+		"last_hash_progress_time":        unixOrZero(lastHashProgressTime),
+		"worker_startup_grace_seconds":   minerWorkerProgressGraceSeconds,
+		"worker_progress_stalled":        runtimeState.State == MinerStateWorkerStalled,
 		"live_hashrate":                  liveHashPS,
 		"live_hashps":                    liveHashPS,
 		"live_khps":                      liveHashPS / 1000,
@@ -4716,6 +4733,7 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 		}(),
 		"live_active_threads_note":              "active_threads and local_khps are live-only; use last_session_* for stopped miner history",
 		"session_hashes":                        sessionHashes,
+		"hash_attempts":                         sessionHashes,
 		"hashes_per_thread":                     hashesPerThread(localHashPS, minerThreads),
 		"last_nonce":                            lastNonce,
 		"current_bits":                          currentBits,
@@ -4799,6 +4817,24 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 	for key, value := range safety.Fields() {
 		out[key] = value
 	}
+	out["miner_state"] = runtimeState.State
+	out["miner_state_reason"] = runtimeState.Reason
+	out["miner_supervisor_action"] = runtimeState.SupervisorAction
+	out["miner_invariant_violation"] = runtimeState.InvariantViolation
+	out["active_mining"] = activeMining
+	out["actual_worker_hashing"] = runtimeState.LiveHashing
+	out["active_threads"] = liveThreads
+	out["live_active_threads"] = liveThreads
+	out["local_hashps"] = liveHashPS
+	out["local_khps"] = liveHashPS / 1000
+	out["local_hashps_live"] = liveHashPS
+	out["local_khps_live"] = liveHashPS / 1000
+	out["active_template_is_fresh"] = hasActiveTemplate && lastTemplateFresh
+	out["active_template_refresh_due"] = hasActiveTemplate && lastTemplateRefreshDue
+	out["active_template_stale_reason"] = lastTemplateStaleReason
+	out["active_template_refresh_reason"] = lastTemplateRefreshReason
+	out["active_template_prev_hash"] = lastTemplatePrevHash
+	out["active_template_height"] = lastTemplateHeight
 	return out
 }
 
@@ -4978,6 +5014,8 @@ func (s *Server) startMiner(parent context.Context, params json.RawMessage) (any
 	s.minerLocalHashPS = 0
 	s.minerSessionHashes = 0
 	s.minerLastNonce = 0
+	s.minerWorkerEpochStartedAt = time.Time{}
+	s.minerLastHashProgressTime = time.Time{}
 	s.minerStaleBlocks = 0
 	s.minerRejectedBlocks = 0
 	s.minerLastStaleTime = time.Time{}
@@ -5539,6 +5577,8 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 		s.minerLastTemplateRefreshReason = ""
 		s.minerLastTemplateRefreshError = ""
 		s.minerTemplateRefreshCount++
+		epochBaseHashes := s.minerSessionHashes
+		s.minerWorkerEpochStartedAt = time.Now()
 		if isTransientMinerRecoveryReason(s.minerLastError) || isTransientMinerRecoveryReason(s.minerPausedReason) {
 			s.minerLastError = ""
 			s.minerPausedReason = ""
@@ -5550,9 +5590,12 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 		s.minerMu.Unlock()
 		result, err := mining.MineBlock(ctx, s.chain, s.pool, pow.YespowerHasher{Personalization: s.chain.Params().YespowerPers}, pubHash, threads, func(p mining.Progress) {
 			s.minerMu.Lock()
-			s.minerLocalHashPS = p.Rate
-			s.minerSessionHashes = p.Attempts
-			s.minerLastNonce = p.Nonce
+			if p.Attempts > 0 {
+				s.minerLocalHashPS = p.Rate
+				s.minerSessionHashes = epochBaseHashes + p.Attempts
+				s.minerLastNonce = p.Nonce
+				s.minerLastHashProgressTime = time.Now()
+			}
 			if p.TemplateHeight > 0 {
 				s.minerLastTemplateHeight = p.TemplateHeight
 			}

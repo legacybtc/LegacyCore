@@ -2285,6 +2285,8 @@ func friendlyMinerStateLabel(state string) string {
 		return "Miner is starting"
 	case "paused", "paused_unsafe", "paused_hard_stale_template", "paused_rpc_timeout", "paused_sync_unsafe", "paused_peer_unsafe", "paused_payout_invalid":
 		return "Miner is paused"
+	case "worker_stalled":
+		return "Miner worker is stalled"
 	case "error":
 		return "Miner error"
 	default:

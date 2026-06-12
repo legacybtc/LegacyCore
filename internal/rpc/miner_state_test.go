@@ -3,29 +3,34 @@ package rpc
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
 
 func safeMinerRuntimeInput() MinerRuntimeInput {
 	return MinerRuntimeInput{
-		SessionActive:        true,
-		WorkersHashing:       true,
-		ConfiguredThreads:    1,
-		SafetySafe:           true,
-		RPCHealth:            "ok",
-		DataFresh:            true,
-		SyncState:            "current",
-		BlocksBehind:         0,
-		BlocksBehindAllowed:  1,
-		GoodPeerCount:        3,
-		MinGoodPeers:         3,
-		DestinationOK:        true,
-		HasActiveTemplate:    true,
-		TemplateFresh:        true,
-		TemplateRefreshDue:   false,
-		TemplateStaleReason:  "",
-		TemplateRefreshError: "",
+		SessionActive:         true,
+		WorkersHashing:        true,
+		ConfiguredThreads:     1,
+		HashAttempts:          100,
+		LastNonce:             99,
+		LocalHashPS:           10,
+		WorkerEpochAgeSeconds: 30,
+		SafetySafe:            true,
+		RPCHealth:             "ok",
+		DataFresh:             true,
+		SyncState:             "current",
+		BlocksBehind:          0,
+		BlocksBehindAllowed:   1,
+		GoodPeerCount:         3,
+		MinGoodPeers:          3,
+		DestinationOK:         true,
+		HasActiveTemplate:     true,
+		TemplateFresh:         true,
+		TemplateRefreshDue:    false,
+		TemplateStaleReason:   "",
+		TemplateRefreshError:  "",
 	}
 }
 
@@ -75,6 +80,40 @@ func TestResolveMinerRuntimeStateSoftRefreshStillMining(t *testing.T) {
 	}
 	if state.Reason == "" {
 		t.Fatalf("expected non-blocking refresh reason")
+	}
+}
+
+func TestResolveMinerRuntimeStateActiveWorkerRequiresHashProgress(t *testing.T) {
+	input := safeMinerRuntimeInput()
+	input.WorkersHashing = true
+	input.HashAttempts = 0
+	input.LastNonce = 0
+	input.LocalHashPS = 0
+	input.WorkerEpochAgeSeconds = 30
+	state := ResolveMinerRuntimeState(input)
+	if state.State != MinerStateWorkerStalled {
+		t.Fatalf("active worker with no hash progress must not render healthy, got %+v", state)
+	}
+	if !strings.Contains(state.Reason, "worker_not_hashing") {
+		t.Fatalf("expected worker_not_hashing reason, got %+v", state)
+	}
+	if state.ActiveThreads != 0 || state.LiveHashing {
+		t.Fatalf("zero-progress worker must not count as active live hashing, got %+v", state)
+	}
+}
+
+func TestResolveMinerRuntimeStateStartupGraceDoesNotFakeActiveThreads(t *testing.T) {
+	input := safeMinerRuntimeInput()
+	input.HashAttempts = 0
+	input.LastNonce = 0
+	input.LocalHashPS = 0
+	input.WorkerEpochAgeSeconds = 2
+	state := ResolveMinerRuntimeState(input)
+	if state.State != MinerStateStarting {
+		t.Fatalf("startup grace should be starting, got %+v", state)
+	}
+	if state.ActiveThreads != 0 || state.LiveHashing {
+		t.Fatalf("startup grace without progress must not count active threads, got %+v", state)
 	}
 }
 

@@ -13,35 +13,41 @@ const (
 	MinerStatePausedSyncUnsafe          = "paused_sync_unsafe"
 	MinerStatePausedPeerUnsafe          = "paused_peer_unsafe"
 	MinerStatePausedPayoutInvalid       = "paused_payout_invalid"
+	MinerStateWorkerStalled             = "worker_stalled"
 	MinerStateError                     = "error"
+	minerWorkerProgressGraceSeconds     = 10
 )
 
 type MinerRuntimeInput struct {
-	SessionActive        bool
-	WorkersHashing       bool
-	ConfiguredThreads    int
-	SafetySafe           bool
-	SafetyReason         string
-	RPCHealth            string
-	DataFresh            bool
-	SyncState            string
-	BlocksBehind         int32
-	BlocksBehindAllowed  int32
-	GoodPeerCount        int
-	MinGoodPeers         int
-	DestinationOK        bool
-	DestinationError     string
-	HasActiveTemplate    bool
-	TemplateFresh        bool
-	TemplateRefreshDue   bool
-	TemplateStaleReason  string
-	TemplateRefreshError string
-	LastError            string
-	PausedReason         string
-	LastStopReason       string
-	EverStarted          bool
-	StaleRatePauseActive bool
-	RecentReorg          bool
+	SessionActive         bool
+	WorkersHashing        bool
+	ConfiguredThreads     int
+	HashAttempts          uint64
+	LastNonce             uint32
+	LocalHashPS           float64
+	WorkerEpochAgeSeconds float64
+	SafetySafe            bool
+	SafetyReason          string
+	RPCHealth             string
+	DataFresh             bool
+	SyncState             string
+	BlocksBehind          int32
+	BlocksBehindAllowed   int32
+	GoodPeerCount         int
+	MinGoodPeers          int
+	DestinationOK         bool
+	DestinationError      string
+	HasActiveTemplate     bool
+	TemplateFresh         bool
+	TemplateRefreshDue    bool
+	TemplateStaleReason   string
+	TemplateRefreshError  string
+	LastError             string
+	PausedReason          string
+	LastStopReason        string
+	EverStarted           bool
+	StaleRatePauseActive  bool
+	RecentReorg           bool
 }
 
 type MinerRuntimeState struct {
@@ -81,6 +87,29 @@ func ResolveMinerRuntimeState(input MinerRuntimeInput) MinerRuntimeState {
 		return MinerRuntimeState{State: MinerStatePausedUnsafe, Reason: "Mining paused: no configured miner threads."}
 	}
 	if input.WorkersHashing {
+		hasProgress := input.HashAttempts > 0 && (input.LastNonce > 0 || input.LocalHashPS > 0)
+		if !hasProgress {
+			if input.WorkerEpochAgeSeconds > 0 && input.WorkerEpochAgeSeconds < minerWorkerProgressGraceSeconds {
+				return MinerRuntimeState{
+					State:              MinerStateStarting,
+					Reason:             "waiting for first hash progress",
+					ActiveThreads:      0,
+					LiveHashing:        false,
+					ShouldHaveWorkers:  true,
+					SupervisorAction:   "waiting_for_hash_progress",
+					InvariantViolation: "worker epoch has started but no hash progress has been reported yet",
+				}
+			}
+			return MinerRuntimeState{
+				State:              MinerStateWorkerStalled,
+				Reason:             "worker_not_hashing: active worker has no hash progress.",
+				ActiveThreads:      0,
+				LiveHashing:        false,
+				ShouldHaveWorkers:  true,
+				SupervisorAction:   "restart_workers",
+				InvariantViolation: "active worker reported but hash attempts, nonce, and local H/s are still zero",
+			}
+		}
 		state := MinerStateRunning
 		reason := ""
 		if input.TemplateRefreshDue && input.TemplateFresh {

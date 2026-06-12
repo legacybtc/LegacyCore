@@ -71,6 +71,16 @@ func (h errorHashTestHasher) HashHeader(header wire.BlockHeader) (chainhash.Hash
 	return chainhash.Hash{}, h.err
 }
 
+type neverSolveTestHasher struct{}
+
+func (neverSolveTestHasher) HashHeader(header wire.BlockHeader) (chainhash.Hash, error) {
+	var h chainhash.Hash
+	for i := range h {
+		h[i] = 0xff
+	}
+	return h, nil
+}
+
 func TestMultiOutputCoinbaseBlockAccepted(t *testing.T) {
 	params := chaincfg.MainNet
 	genesisBlock, err := genesis.NewBlock(params)
@@ -231,6 +241,51 @@ func TestMineBlockReturnsWorkerErrorNotInternalContextCanceled(t *testing.T) {
 		}
 		if errors.Is(err, context.Canceled) {
 			t.Fatalf("internal epoch cancellation leaked as context.Canceled")
+		}
+	}
+}
+
+func TestMineBlockReportsStartupHashProgress(t *testing.T) {
+	params := chaincfg.MainNet
+	genesisBlock, err := genesis.NewBlock(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	genesisHash, err := lowHashTestHasher{}.HashHeader(genesisBlock.Header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params.GenesisHash = genesisHash.String()
+	chain, err := blockchain.New(params, lowHashTestHasher{}, storage.NewFileStore(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.EnsureGenesis(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	progressc := make(chan Progress, 16)
+	done := make(chan error, 1)
+	go func() {
+		_, err := MineBlock(ctx, chain, mempool.New(), neverSolveTestHasher{}, bytes.Repeat([]byte{0x66}, 20), 1, func(p Progress) {
+			progressc <- p
+		})
+		done <- err
+	}()
+	timeout := time.After(2500 * time.Millisecond)
+	for {
+		select {
+		case p := <-progressc:
+			if p.Attempts > 0 && p.Nonce > 0 && p.Rate > 0 {
+				cancel()
+				<-done
+				return
+			}
+		case <-timeout:
+			cancel()
+			<-done
+			t.Fatalf("miner did not report non-zero hash progress within startup window")
 		}
 	}
 }

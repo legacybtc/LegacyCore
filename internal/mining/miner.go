@@ -336,7 +336,7 @@ func MineBlock(ctx context.Context, chain *blockchain.Chain, pool *mempool.Pool,
 	}()
 	staleTicker := time.NewTicker(time.Second)
 	defer staleTicker.Stop()
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
 		select {

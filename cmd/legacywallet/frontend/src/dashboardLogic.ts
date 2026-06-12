@@ -370,7 +370,7 @@ export function buildMinerDashboardState(mining: DashboardDict = {}, wallet: Das
   const normalStop = isNormalStop(rawLastError);
   const historicalRetry = !activeMining && !miningEnabled && isRetryEvent(rawLastError);
   const displayLastError = normalStop || historicalRetry ? "" : rawLastError;
-  const status = authoritativeState === "error"
+  const status = authoritativeState === "error" || authoritativeState === "worker_stalled"
     ? "error"
     : deriveMinerStatus({ rpcOffline, activeMining, lastKnownActiveMining, miningEnabled, miningSafe, pausedReason, displayLastError });
   const configuredThreads = safeNumber(mining.configured_threads ?? mining.configured_threads_last_known ?? mining.threads ?? mining.last_session_active_threads, 0);

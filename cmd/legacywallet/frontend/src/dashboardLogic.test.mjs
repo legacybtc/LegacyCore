@@ -235,6 +235,44 @@ test("safe fresh authoritative miner state never shows waiting for safe template
   assert.doesNotMatch(`${view.sessionModeLabel} ${view.miningLoopLabel}`, /waiting for safe template/i);
 });
 
+test("fresh template with zero hash progress renders worker stalled, not healthy mining", () => {
+  const view = buildMinerDashboardState({
+    ...stoppedMinerStatus,
+    miner_state: "worker_stalled",
+    miner_state_reason: "worker_not_hashing: active worker has no hash progress.",
+    active_mining: false,
+    actual_worker_hashing: false,
+    mining_enabled: true,
+    mining_session_active: true,
+    mining_safe: true,
+    safe_to_mine: true,
+    active_threads: 0,
+    live_active_threads: 0,
+    configured_threads: 1,
+    local_hashps: 0,
+    local_khps: 0,
+    session_hashes: 0,
+    last_nonce: 0,
+    rpc_health: "ok",
+    dashboard_data_fresh: true,
+    sync_state: "current",
+    blocks_behind: 0,
+    good_peer_count: 4,
+    active_template_height: 3212,
+    current_tip_height: 3211,
+    active_template_is_fresh: true,
+    active_template_refresh_due: false,
+    active_template_prev_hash: "tip",
+    current_tip_hash: "tip",
+  }, overnightWalletSummary);
+  assert.equal(view.status, "error");
+  assert.equal(view.activeMining, false);
+  assert.equal(view.liveActiveThreads, 0);
+  assert.match(view.sessionModeLabel, /worker_not_hashing/);
+  assert.match(view.miningLoopLabel, /worker_not_hashing/);
+  assert.doesNotMatch(`${view.statusLabel} ${view.safetyLabel}`, /running|safe$/i);
+});
+
 test("unexpected worker exit does not display as clean stopped without reason", () => {
   const state = buildMinerDashboardState({
     ...stoppedMinerStatus,
