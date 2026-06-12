@@ -118,6 +118,8 @@ func CheckTemplateFreshness(chain *blockchain.Chain, template *wire.MsgBlock, he
 	}
 	status.ActiveTemplateIsFresh = true
 	status.ActiveTemplateStaleReason = ""
+	status.ActiveTemplateRefreshDue = false
+	status.ActiveTemplateRefreshReason = ""
 	if !createdAt.IsZero() && time.Since(createdAt) > DefaultSoftTemplateRefreshAge {
 		status.ActiveTemplateRefreshDue = true
 		status.ActiveTemplateRefreshReason = "template soft refresh age reached"

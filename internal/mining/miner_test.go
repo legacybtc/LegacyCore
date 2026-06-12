@@ -164,6 +164,9 @@ func TestTemplateFreshnessRejectsBehindHeightPrevHashAndAge(t *testing.T) {
 	if !fresh.ActiveTemplateIsFresh {
 		t.Fatalf("fresh template rejected: %+v", fresh)
 	}
+	if fresh.ActiveTemplateRefreshDue || fresh.ActiveTemplateStaleReason != "" || fresh.ActiveTemplateRefreshReason != "" {
+		t.Fatalf("fresh template must clear stale/unavailable refresh state, got %+v", fresh)
+	}
 	behind := CheckTemplateFreshness(chain, template, height-1, time.Now(), DefaultHardTemplateStaleAge)
 	if behind.ActiveTemplateIsFresh || !behind.ActiveTemplateRefreshDue || behind.ActiveTemplateStaleReason != "template height is not current tip height + 1" {
 		t.Fatalf("behind template should be stale, got %+v", behind)
@@ -177,6 +180,9 @@ func TestTemplateFreshnessRejectsBehindHeightPrevHashAndAge(t *testing.T) {
 	softOld := CheckTemplateFreshness(chain, template, height, time.Now().Add(-DefaultSoftTemplateRefreshAge-time.Second), DefaultHardTemplateStaleAge)
 	if !softOld.ActiveTemplateIsFresh || !softOld.ActiveTemplateRefreshDue {
 		t.Fatalf("soft-old template should stay fresh and request refresh, got %+v", softOld)
+	}
+	if softOld.ActiveTemplateStaleReason != "" || softOld.ActiveTemplateRefreshReason == "" {
+		t.Fatalf("soft-old template should request refresh without stale/unavailable reason, got %+v", softOld)
 	}
 	hardOld := CheckTemplateFreshness(chain, template, height, time.Now().Add(-DefaultHardTemplateStaleAge-time.Second), DefaultHardTemplateStaleAge)
 	if hardOld.ActiveTemplateIsFresh || !hardOld.ActiveTemplateRefreshDue || hardOld.ActiveTemplateStaleReason != "template age exceeds hard stale limit" {

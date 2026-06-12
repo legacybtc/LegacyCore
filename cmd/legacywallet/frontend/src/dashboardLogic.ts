@@ -1,6 +1,7 @@
 export type DashboardDict = Record<string, any>;
 
 const BASE_UNITS_PER_LBTC = 100_000_000;
+export const ESTIMATED_NETWORK_HASHRATE_NOTE = "Estimated from recent block difficulty and block timing. This is not a live sum of all miners.";
 
 export type ImmatureRewardRow = {
   txid: string;
@@ -352,6 +353,13 @@ export function peerStatusLabel(peer: DashboardDict, chain: DashboardDict = {}):
   return "ok";
 }
 
+export function estimatedHashrateShareLabel(localHash: any, networkHash: any): string {
+  const localHps = hashpsFromValue(localHash);
+  const networkHps = hashpsFromValue(networkHash);
+  if (localHps <= 0 || networkHps <= 0) return "-";
+  return `~${fmtNumber((localHps / networkHps) * 100)}%`;
+}
+
 export function buildMinerDashboardState(mining: DashboardDict = {}, wallet: DashboardDict = {}): MinerDashboardState {
   const rpcHealth = minerRPCHealth(mining);
   const rpcOffline = minerRPCOffline(mining);
@@ -391,8 +399,11 @@ export function buildMinerDashboardState(mining: DashboardDict = {}, wallet: Das
   const templateHeight = mining.active_template_height ?? mining.last_mined_template_height ?? mining.current_template_height;
   const templateFresh = boolValue(mining.active_template_is_fresh);
   const templateRefreshDue = templateFresh && boolValue(mining.active_template_refresh_due);
-  const templateStaleReason = cleanString(mining.active_template_stale_reason);
-  const templateRefreshReason = cleanString(mining.active_template_refresh_reason);
+  const templateStaleReason = templateFresh ? "" : cleanString(mining.active_template_stale_reason);
+  const rawTemplateRefreshReason = templateFresh && !templateRefreshDue ? "" : cleanString(mining.active_template_refresh_reason);
+  const templateRefreshReason = templateFresh && templateRefreshDue && hardTemplateRefreshReason(rawTemplateRefreshReason)
+    ? "refreshing template in background; current template still valid"
+    : rawTemplateRefreshReason;
   const templateAge = safeNumber(mining.active_template_age_seconds ?? mining.last_template_refresh_ago_seconds, -1);
   const templateRefreshTime = mining.last_template_refresh_success_time ?? mining.last_template_refresh_time;
   const payoutOwnershipLabel = activeRewardHash || resolvedRewardAddress
@@ -624,6 +635,18 @@ function safeNumber(v: any, fallback = 0): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function hashpsFromValue(v: any): number {
+  if (typeof v === "number" || typeof v === "string") return Math.max(0, safeNumber(v, 0));
+  if (!v || typeof v !== "object") return 0;
+  const hps = safeNumber(v.hps ?? v.hashps ?? v.local_hashps, 0);
+  if (hps > 0) return hps;
+  const khps = safeNumber(v.khps ?? v.khashps ?? v.local_khps, 0);
+  if (khps > 0) return khps * 1000;
+  const mhps = safeNumber(v.mhps ?? v.mhashps, 0);
+  if (mhps > 0) return mhps * 1_000_000;
+  return 0;
+}
+
 function boolValue(v: any): boolean {
   if (typeof v === "boolean") return v;
   if (typeof v === "string") return v.toLowerCase() === "true" || v === "1";
@@ -650,6 +673,15 @@ function isNormalStop(v: string): boolean {
 function isRetryEvent(v: string): boolean {
   const s = v.toLowerCase().trim();
   return s.includes("stale tip") || s.includes("retry") || s.includes("refresh");
+}
+
+function hardTemplateRefreshReason(v: string): boolean {
+  const s = v.toLowerCase().trim();
+  return s.includes("template_stale") ||
+    s.includes("template unavailable") ||
+    s.includes("prev_hash_mismatch") ||
+    s.includes("height_mismatch") ||
+    s.includes("hard_stale_template");
 }
 
 function fmtNumber(v: any): string {

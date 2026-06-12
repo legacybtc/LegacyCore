@@ -323,6 +323,27 @@ func TestMarkStaleTemplateRefreshLockedSetsDueAndSkip(t *testing.T) {
 	}
 }
 
+func TestClearValidTemplateStateDropsStaleUnavailableReason(t *testing.T) {
+	templateAt := time.Now()
+	s := &Server{
+		minerLastTemplateTime:          templateAt,
+		minerLastTemplateHeight:        3229,
+		minerLastTemplatePrevHash:      "tip",
+		minerLastTemplateFresh:         false,
+		minerLastTemplateStaleReason:   "template unavailable",
+		minerLastTemplateRefreshDue:    true,
+		minerLastTemplateRefreshReason: "template_stale: template unavailable",
+		minerLastTemplateRefreshError:  "previous getblocktemplate timeout",
+	}
+	s.clearValidTemplateStateIfCurrent(3229, "tip", templateAt)
+	if !s.minerLastTemplateFresh {
+		t.Fatalf("valid current template should be fresh")
+	}
+	if s.minerLastTemplateRefreshDue || s.minerLastTemplateStaleReason != "" || s.minerLastTemplateRefreshReason != "" || s.minerLastTemplateRefreshError != "" {
+		t.Fatalf("valid current template must clear stale/unavailable state: due=%t stale=%q reason=%q error=%q", s.minerLastTemplateRefreshDue, s.minerLastTemplateStaleReason, s.minerLastTemplateRefreshReason, s.minerLastTemplateRefreshError)
+	}
+}
+
 func TestAcceptedBlockMarksTemplateRefreshDue(t *testing.T) {
 	s := &Server{}
 	s.minerLastTemplateFresh = true

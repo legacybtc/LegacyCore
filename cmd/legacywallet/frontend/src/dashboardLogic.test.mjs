@@ -8,6 +8,8 @@ const {
   buildMiningStartState,
   desktopPerformanceThreads,
   describeSyncWatchdogAction,
+  ESTIMATED_NETWORK_HASHRATE_NOTE,
+  estimatedHashrateShareLabel,
   formatBaseUnitsLBTC,
   knownPeersLabel,
   miningBlockedNotice,
@@ -80,6 +82,19 @@ test("immature base units display as LBTC with maturity context", () => {
   assert.equal(summary.outputs.length, 2);
   assert.equal(summary.outputs[0].valueLabel, "50 LBTC");
   assert.equal(summary.outputs[0].blocksRemaining, 44);
+});
+
+test("immature reward total is wallet-wide, not only current session accepted blocks", () => {
+  const summary = buildImmatureRewardSummary({
+    ...overnightWalletSummary,
+    immature: 15_000_000_000,
+    immature_outputs: [
+      ...overnightWalletSummary.immature_outputs,
+      { value: 5_000_000_000, height: 2640, matures_at: 2740, confirmations: 3 },
+    ],
+  }, 2643);
+  assert.equal(summary.totalLabel, "150 LBTC");
+  assert.equal(summary.outputs.length, 3);
 });
 
 test("stopped miner does not display as active or unsafe", () => {
@@ -233,6 +248,48 @@ test("safe fresh authoritative miner state never shows waiting for safe template
   assert.equal(view.liveActiveThreads, 1);
   assert.equal(view.threadMetricLabel, "1 active / 1 configured");
   assert.doesNotMatch(`${view.sessionModeLabel} ${view.miningLoopLabel}`, /waiting for safe template/i);
+});
+
+test("valid hashing template does not surface stale unavailable reason", () => {
+  const view = buildMinerDashboardState({
+    ...stoppedMinerStatus,
+    miner_state: "running",
+    active_mining: true,
+    actual_worker_hashing: true,
+    mining_enabled: true,
+    mining_session_active: true,
+    mining_safe: true,
+    safe_to_mine: true,
+    active_threads: 1,
+    live_active_threads: 1,
+    configured_threads: 1,
+    session_hashes: 250,
+    hash_attempts: 250,
+    last_nonce: 249,
+    local_hashps: 196.85,
+    rpc_health: "ok",
+    dashboard_data_fresh: true,
+    sync_state: "current",
+    blocks_behind: 0,
+    good_peer_count: 4,
+    active_template_height: 3229,
+    current_tip_height: 3228,
+    active_template_is_fresh: true,
+    active_template_refresh_due: false,
+    active_template_stale_reason: "template unavailable",
+    active_template_refresh_reason: "template_stale: template unavailable",
+    active_template_prev_hash: "tip",
+    current_tip_hash: "tip",
+    last_template_refresh_time: 1_719_000_000,
+    last_error: "",
+  }, overnightWalletSummary);
+  assert.equal(view.status, "running");
+  assert.equal(view.activeMining, true);
+  assert.equal(view.miningLoopLabel, "active");
+  assert.equal(view.templateRefreshLabel, "fresh");
+  assert.equal(view.templateFreshnessLabel, "fresh");
+  assert.equal(view.templateStaleReasonLabel, "-");
+  assert.doesNotMatch(`${view.statusLabel} ${view.safetyLabel} ${view.sessionModeLabel}`, /retrying|unavailable|template_stale/i);
 });
 
 test("fresh template with zero hash progress renders worker stalled, not healthy mining", () => {
@@ -550,7 +607,8 @@ test("soft template refresh stays running and reads as still valid", () => {
     active_template_age_seconds: 2 * 60,
     active_template_is_fresh: true,
     active_template_refresh_due: true,
-    active_template_refresh_reason: "refreshing template in background; current template still valid",
+    active_template_stale_reason: "template unavailable",
+    active_template_refresh_reason: "template_stale: template unavailable",
     active_template_prev_hash: "0000015725e19df418b355",
     current_tip_hash: "0000015725e19df418b355",
     active_threads: 1,
@@ -572,6 +630,12 @@ test("peer status uses good-peer reason when peer is not suitable", () => {
     good_peer_reason: "height too low",
   };
   assert.equal(peerStatusLabel(peer, { height: 3177 }), "height too low");
+});
+
+test("estimated network hashrate share explains local share", () => {
+  assert.match(estimatedHashrateShareLabel({ hps: 914 }, { khps: 6.279 }), /^~14[.,]55[67]%$/);
+  assert.match(estimatedHashrateShareLabel({ khps: 0.914 }, { hps: 6279 }), /^~14[.,]55[67]%$/);
+  assert.match(ESTIMATED_NETWORK_HASHRATE_NOTE, /not a live sum of all miners/i);
 });
 
 test("unowned payout hash is rendered as a blocking wallet safety warning", () => {

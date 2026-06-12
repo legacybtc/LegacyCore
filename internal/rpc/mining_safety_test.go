@@ -172,6 +172,40 @@ func TestCheckSafeToMineAllowsSoftTemplateRefresh(t *testing.T) {
 	}
 }
 
+func TestCheckSafeToMineClearsUnavailableReasonForFreshTemplate(t *testing.T) {
+	input := safeMiningInput()
+	input.HasActiveTemplate = true
+	input.ActiveTemplateFresh = true
+	input.ActiveTemplateRefreshDue = false
+	input.ActiveTemplateStaleReason = "template unavailable"
+	input.ActiveTemplateRefreshReason = "template_stale: template unavailable"
+	input.CurrentTipHeight = 101
+	input.CurrentTemplateHeight = 102
+	input.CurrentTipHash = "tip"
+	input.ActiveTemplatePrevHash = "tip"
+	input.TemplateAgeSeconds = 5
+	input.TemplateSoftRefreshAgeSeconds = 30
+	input.TemplateMaxAgeSeconds = 20 * 60
+
+	status := CheckSafeToMine(input)
+	if !status.Safe {
+		t.Fatalf("fresh active template should be safe: %+v", status)
+	}
+	if status.ActiveTemplateRefreshDue || status.ActiveTemplateStaleReason != "" || status.ActiveTemplateRefreshReason != "" {
+		t.Fatalf("fresh active template must clear stale/unavailable state, got %+v", status)
+	}
+
+	input.ActiveTemplateRefreshDue = true
+	input.ActiveTemplateRefreshReason = "template_stale: template unavailable"
+	status = CheckSafeToMine(input)
+	if !status.Safe {
+		t.Fatalf("fresh soft-refresh template should be safe: %+v", status)
+	}
+	if status.ActiveTemplateStaleReason != "" || status.ActiveTemplateRefreshReason != "refreshing template in background; current template still valid" {
+		t.Fatalf("fresh soft-refresh template must normalize stale/unavailable wording, got %+v", status)
+	}
+}
+
 func TestCheckSafeToMineBlocksHardTemplateAge(t *testing.T) {
 	input := safeMiningInput()
 	input.HasActiveTemplate = true

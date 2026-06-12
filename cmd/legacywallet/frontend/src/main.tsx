@@ -35,6 +35,8 @@ import {
   cleanMiningBlockedReason,
   desktopPerformanceThreads,
   describeSyncWatchdogAction,
+  ESTIMATED_NETWORK_HASHRATE_NOTE,
+  estimatedHashrateShareLabel,
   buildMinerDashboardState,
   formatBaseUnitsLBTC,
   formatHumanLBTC as formatDashboardHumanLBTC,
@@ -1500,7 +1502,7 @@ function ExplorerPage({ snap, run, refresh }: PageProps) {
         <Metric label="50-block avg" value={seconds(timing.last_50_block_average_seconds)} />
         <Metric label="100-block avg" value={seconds(timing.last_100_block_average_seconds)} />
         <Metric label="Target" value={seconds(timing.target_spacing_seconds || 600)} />
-        <Metric label="Network KH/s" value={networkHashLabel(summary.network_hashps)} />
+        <Metric label="Estimated Network KH/s" value={networkHashLabel(summary.network_hashps)} />
         <Metric label="Tx index" value={snap.blockchain?.txindex?.enabled ? "Enabled" : "Disabled"} />
         <Metric label="Address index" value={snap.blockchain?.addressindex?.enabled ? "Enabled" : "Disabled"} />
       </div>
@@ -1751,6 +1753,10 @@ function BackupPage({ snap, run, refresh }: PageProps) {
 function MiningPage({ snap, run, refresh, notify }: PageProps) {
   const mining = snap.mining || {};
   const netHash = networkHashDiagnostics(mining.network_hashps);
+  const estimatedNetworkShare = estimatedHashrateShareLabel(
+    { hps: mining.local_hashps_live ?? mining.local_hashps },
+    mining.network_hashps,
+  );
   const netSource = String(mining.network_hashps_source || "unavailable");
   const avgBlockTimeSeconds = Number(snap.chain_timing?.average_block_time_seconds || 0);
   const [threads, setThreads] = useState<number>(mining.configured_threads || snap.settings?.defaultThreads || 1);
@@ -1886,7 +1892,7 @@ function MiningPage({ snap, run, refresh, notify }: PageProps) {
         <Metric label="Sync state" value={mining.sync_state || "-"} />
         <Metric label="Blocks behind" value={mining.blocks_behind ?? 0} />
         <Metric label="Good peers" value={mining.good_peer_count ?? "-"} />
-        <Metric label="Network KH/s" value={networkRateLabel} />
+        <Metric label="Estimated Network KH/s" value={networkRateLabel} />
         <Metric label="Source" value={friendlyNetworkSource(netSource)} />
         <Metric label={minerView.acceptedLabel} value={mining.accepted_blocks || 0} />
         <Metric label={minerView.staleLabel} value={mining.stale_blocks || 0} />
@@ -1974,16 +1980,19 @@ function MiningPage({ snap, run, refresh, notify }: PageProps) {
           ["Effective threads", minerView.effectiveThreadsLabel],
           ["Hashes per thread", fmtNumber(mining.hashes_per_thread)],
           ["Session hashes", fmtNumber(mining.session_hashes)],
-          ["Estimated time to block", seconds(mining.estimated_time_to_block_seconds)],
-          ["Network H/s", netHash.hpsLabel],
-          ["Network KH/s", netHash.khsLabel !== "-" ? netHash.khsLabel : `Unavailable - ${netHash.unavailableReason || "not enough safe data"}`],
-          ["Network MH/s", netHash.mhsLabel],
-          ["Network hash window", netHash.windowLabel],
-          ["Network hash confidence", netHash.confidenceLabel],
-          ["Network hash formula", netHash.formulaLabel],
-          ["Network source", friendlyNetworkSource(netHash.sourceLabel || netSource)],
-          ["Network status", netHash.statusLabel],
-          ["Network note", netHash.note || netHash.unavailableReason || "-"],
+          ["Estimated time to block", `${seconds(mining.estimated_time_to_block_seconds)} (probabilistic)`],
+          ["Estimated Network H/s", netHash.hpsLabel],
+          ["Estimated Network KH/s", netHash.khsLabel !== "-" ? netHash.khsLabel : `Unavailable - ${netHash.unavailableReason || "not enough safe data"}`],
+          ["Estimated Network MH/s", netHash.mhsLabel],
+          ["Your estimated share", estimatedNetworkShare],
+          ["Estimated network hash window", netHash.windowLabel],
+          ["Estimated network hash confidence", netHash.confidenceLabel],
+          ["Estimated network hash formula", netHash.formulaLabel],
+          ["Estimated network source", friendlyNetworkSource(netHash.sourceLabel || netSource)],
+          ["Estimated network status", netHash.statusLabel],
+          ["Estimated network note", netHash.note || ESTIMATED_NETWORK_HASHRATE_NOTE],
+          ["Good-peer rejection reasons", formatReasonCounts(mining.good_peer_rejection_reasons)],
+          ["Good-peer diagnostics note", mining.good_peer_diagnostics_note || "-"],
           ["Average block time", avgBlockTimeSeconds > 0 ? `${Math.round(avgBlockTimeSeconds)}s` : "-"],
           ["Hashrate updated", netHash.updatedAt],
           ["Session blocks", mining.session_blocks || 0],
@@ -2003,7 +2012,7 @@ function MiningPage({ snap, run, refresh, notify }: PageProps) {
           <h3>Mining Activity</h3>
           {activeMining && mining.mining_paused_reason && <Notice tone="warn" text={`Mining is paused because ${mining.mining_paused_reason}. It will resume automatically when safe.`} />}
           {Number(mining.accepted_blocks || 0) > 0 && immatureSummary.totalBaseUnits > 0 && (
-            <Notice tone="info" text={`${mining.accepted_blocks} accepted blocks found. ${immatureSummary.totalLabel} is immature and will become spendable after 100 confirmations.`} />
+            <Notice tone="info" text={`This session accepted ${mining.accepted_blocks} active-chain block(s). Wallet currently has ${immatureSummary.totalLabel} immature coinbase total across ${immatureSummary.outputs.length} immature reward output(s); this may include earlier mined rewards still maturing. Current subsidy is 50 LBTC before height 210,000.`} />
           )}
           <div className="activityTicker">
             <StatusDot ok={!rpcOffline && minerView.activeMining} />
@@ -2083,7 +2092,7 @@ function NetworkPage({ snap, run, refresh }: PageProps) {
         <Metric label="Known peers" value={knownPeers} />
         <Metric label="Sync" value={state.label} />
         <Metric label="Height" value={chain.height ?? "-"} />
-        <Metric label="Network KH/s" value={netHash} />
+        <Metric label="Estimated Network KH/s" value={netHash} />
         <Metric label="10-block avg" value={seconds(timing.last_10_block_average_seconds)} />
         <Metric label="50-block avg" value={seconds(timing.last_50_block_average_seconds)} />
         <Metric label="100-block avg" value={seconds(timing.last_100_block_average_seconds)} />
@@ -2211,7 +2220,7 @@ function NetworkPage({ snap, run, refresh }: PageProps) {
             <p><strong>Direct P2P connections</strong> are active connections from this wallet only.</p>
             <p><strong>DNS seeds</strong> are bootstrap helpers, not a count of users or miners.</p>
             <p><strong>Known peers</strong> are locally discovered or cached addresses and may not be online.</p>
-            <p><strong>Estimated Network KH/s</strong> comes from recent block difficulty/timing, not from this wallet's peer count.</p>
+            <p><strong>Estimated Network KH/s</strong> comes from recent block difficulty/timing, not from this wallet's peer count or a live sum of miners.</p>
             <p><strong>Total network nodes</strong> are unavailable without crawler support. The wallet does not fake this number.</p>
             <p>To help the network, keep P2P port 19555 open. Never expose RPC port 19556 publicly.</p>
           </div>
@@ -3203,6 +3212,15 @@ function networkHashDiagnostics(v: any) {
     statusLabel: khs > 0 ? (status || "estimated") : "unavailable",
     updatedAt: updatedAt > 0 ? new Date(updatedAt * 1000).toLocaleTimeString() : "-",
   };
+}
+
+function formatReasonCounts(v: any) {
+  if (!v || typeof v !== "object") return "-";
+  const entries = Object.entries(v)
+    .filter(([, count]) => Number(count) > 0)
+    .sort(([a], [b]) => a.localeCompare(b));
+  if (!entries.length) return "-";
+  return entries.map(([reason, count]) => `${reason}: ${count}`).join("; ");
 }
 
 function lbtc(v: any) {

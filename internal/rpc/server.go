@@ -4558,6 +4558,12 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 			if strings.TrimSpace(lastTemplateRefreshReason) == "" {
 				lastTemplateRefreshReason = "refreshing template in background; current template still valid"
 			}
+		} else {
+			lastTemplateStaleReason = ""
+			lastTemplateRefreshDue = false
+			lastTemplateRefreshReason = ""
+			lastTemplateRefreshError = ""
+			s.clearValidTemplateStateIfCurrent(lastTemplateHeight, lastTemplatePrevHash, lastTemplateTime)
 		}
 	}
 	acceptedBlockStatuses, activeAcceptedBlocks := s.acceptedBlockStatuses(acceptedRecords)
@@ -4611,6 +4617,7 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 	} else if runtimeState.SupervisorAction != "" {
 		currentSafetyState = "starting / resuming workers"
 	}
+	goodPeerReasonCounts, peerQualityDiagnostics := s.miningPeerDiagnostics(safety.LocalHeight)
 	out := map[string]any{
 		"mining_ready":              miningReady,
 		"can_start":                 canStart,
@@ -4805,14 +4812,17 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 			}
 			return ""
 		}(),
-		"mining_pubkey_hash": dest.PubKeyHashHex,
-		"active_reward_hash": displayRewardHash,
-		"reject_zero_hash":   cfg.RejectZeroHash,
-		"peers":              s.p2p.PeerCount(),
-		"storage":            storage,
-		"wallet":             s.wallet.SecurityInfo(),
-		"config":             s.miningConfigPath(),
-		"control_rpcs":       []string{"startminer", "stopminer", "restartminer", "getminerstatus", "benchmarkminer", "autotuneminer", "setminerthreads", "setminingaddress", "configureminer"},
+		"mining_pubkey_hash":          dest.PubKeyHashHex,
+		"active_reward_hash":          displayRewardHash,
+		"reject_zero_hash":            cfg.RejectZeroHash,
+		"peers":                       s.p2p.PeerCount(),
+		"good_peer_rejection_reasons": goodPeerReasonCounts,
+		"peer_quality_diagnostics":    peerQualityDiagnostics,
+		"good_peer_diagnostics_note":  "Peer count includes all connected peers; good peers have useful current chain data, acceptable latency/pongs, matching chain ID, and no recent sync or block errors.",
+		"storage":                     storage,
+		"wallet":                      s.wallet.SecurityInfo(),
+		"config":                      s.miningConfigPath(),
+		"control_rpcs":                []string{"startminer", "stopminer", "restartminer", "getminerstatus", "benchmarkminer", "autotuneminer", "setminerthreads", "setminingaddress", "configureminer"},
 	}
 	for key, value := range safety.Fields() {
 		out[key] = value
@@ -5402,6 +5412,65 @@ func staleTemplateSafetyBlock(status MiningSafetyStatus) bool {
 	return status.ActiveTemplatePrevHash != "" && status.CurrentTipHash != "" && status.ActiveTemplatePrevHash != status.CurrentTipHash
 }
 
+func (s *Server) miningPeerDiagnostics(localHeight int32) (map[string]int, []map[string]any) {
+	reasonCounts := map[string]int{}
+	if s == nil || s.p2p == nil {
+		return reasonCounts, nil
+	}
+	peers := s.p2p.PeerInfos()
+	rows := make([]map[string]any, 0, len(peers))
+	for _, peer := range peers {
+		reason := strings.TrimSpace(peer.GoodPeerReason)
+		if reason == "" {
+			if peer.GoodPeer {
+				reason = "current enough"
+			} else {
+				reason = "not reliable for mining yet"
+			}
+		}
+		if !peer.GoodPeer {
+			reasonCounts[reason]++
+		}
+		lag := peer.LagFromLocalHeight
+		if lag == 0 && localHeight >= 0 && peer.ReportedHeight > 0 {
+			lag = localHeight - peer.ReportedHeight
+		}
+		rows = append(rows, map[string]any{
+			"address":                          peer.Addr,
+			"direction":                        peer.Direction,
+			"good_peer":                        peer.GoodPeer,
+			"good_peer_reason":                 reason,
+			"peer_quality":                     peer.PeerQuality,
+			"reported_height":                  peer.ReportedHeight,
+			"lag_from_local_height":            lag,
+			"stale":                            peer.Stale,
+			"missed_pongs":                     peer.MissedPongs,
+			"ping_latency_ms":                  peer.PingLatencyMS,
+			"last_sync_error":                  peer.LastSyncError,
+			"last_block_reject":                peer.LastBlockReject,
+			"last_seen_ago_seconds":            peer.LastSeenAgoSeconds,
+			"last_height_update_ago_seconds":   peer.LastHeightUpdateAgoSeconds,
+			"last_sync_request_ago_seconds":    peer.LastSyncRequestAgoSeconds,
+			"last_header_received_ago_seconds": peer.LastHeaderReceivedAgoSeconds,
+			"last_block_received_ago_seconds":  peer.LastBlockReceivedAgoSeconds,
+		})
+	}
+	return reasonCounts, rows
+}
+
+func (s *Server) clearValidTemplateStateIfCurrent(templateHeight int32, templatePrevHash string, templateAt time.Time) {
+	s.minerMu.Lock()
+	defer s.minerMu.Unlock()
+	if s.minerLastTemplateHeight != templateHeight || s.minerLastTemplatePrevHash != templatePrevHash || !s.minerLastTemplateTime.Equal(templateAt) {
+		return
+	}
+	s.minerLastTemplateFresh = true
+	s.minerLastTemplateStaleReason = ""
+	s.minerLastTemplateRefreshDue = false
+	s.minerLastTemplateRefreshReason = ""
+	s.minerLastTemplateRefreshError = ""
+}
+
 func (s *Server) markStaleTemplateRefreshLocked(staleReason string, incrementSkip bool) {
 	staleReason = strings.TrimSpace(staleReason)
 	if staleReason == "" {
@@ -5606,6 +5675,13 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 			s.minerLastTemplateRefreshDue = p.TemplateRefreshDue
 			s.minerLastTemplateStaleReason = p.TemplateStaleReason
 			s.minerLastTemplateRefreshReason = p.TemplateRefreshReason
+			if p.TemplateFresh {
+				s.minerLastTemplateStaleReason = ""
+				if !p.TemplateRefreshDue {
+					s.minerLastTemplateRefreshReason = ""
+					s.minerLastTemplateRefreshError = ""
+				}
+			}
 			s.minerMu.Unlock()
 		})
 		if err != nil {

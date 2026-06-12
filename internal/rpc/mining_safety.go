@@ -217,6 +217,13 @@ func CheckSafeToMine(input MiningSafetyInput) MiningSafetyStatus {
 		if status.ActiveTemplateRefreshReason == "" {
 			status.ActiveTemplateRefreshReason = staleTemplateRefreshReason(staleTemplateReason)
 		}
+	} else if input.HasActiveTemplate && input.ActiveTemplateFresh {
+		status.ActiveTemplateStaleReason = ""
+		if !status.ActiveTemplateRefreshDue {
+			status.ActiveTemplateRefreshReason = ""
+		} else if staleTemplateHardReason(status.ActiveTemplateRefreshReason) {
+			status.ActiveTemplateRefreshReason = "refreshing template in background; current template still valid"
+		}
 	}
 	if !input.SafeRequired && input.AllowUnsafe {
 		status.UnsafeOverride = true
@@ -321,6 +328,15 @@ func staleTemplateRefreshReason(reason string) string {
 	default:
 		return "template_stale: refreshing stale mining template"
 	}
+}
+
+func staleTemplateHardReason(reason string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(reason))
+	return strings.Contains(normalized, "template_stale") ||
+		strings.Contains(normalized, "template unavailable") ||
+		strings.Contains(normalized, "prev_hash_mismatch") ||
+		strings.Contains(normalized, "height_mismatch") ||
+		strings.Contains(normalized, "hard_stale_template")
 }
 
 func int32String(n int32) string {
