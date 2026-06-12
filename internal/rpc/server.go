@@ -4512,34 +4512,6 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 		lastErrorRaw = lastError
 		lastError = ""
 	}
-	liveThreads := 0
-	liveHashPS := float64(0)
-	if activeMining {
-		liveThreads = minerThreads
-		liveHashPS = localHashPS
-	}
-	currentMiningState := "stopped"
-	if activeMining {
-		currentMiningState = "running"
-	} else if minerEnabled && strings.TrimSpace(minerPausedReason) != "" {
-		currentMiningState = "paused"
-	} else if minerEnabled {
-		currentMiningState = "starting"
-	}
-	currentSafetyState := "idle / ready, miner stopped"
-	if !safety.Safe {
-		currentSafetyState = safety.Reason
-	} else if activeMining && miningReady {
-		currentSafetyState = "safe"
-	} else if minerEnabled && strings.TrimSpace(minerPausedReason) != "" {
-		currentSafetyState = minerPausedReason
-	} else if minerEnabled && !activeMining {
-		currentSafetyState = "starting / refreshing template"
-	} else if activeMining && !miningReady {
-		currentSafetyState = "unsafe"
-	} else if dest.Error != "" {
-		currentSafetyState = dest.Error
-	}
 	lastStaleTimeValue := int64(0)
 	if !lastStaleTime.IsZero() {
 		lastStaleTimeValue = lastStaleTime.Unix()
@@ -4561,39 +4533,102 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 		}
 	}
 	acceptedBlockStatuses, activeAcceptedBlocks := s.acceptedBlockStatuses(acceptedRecords)
+	runtimeState := ResolveMinerRuntimeState(MinerRuntimeInput{
+		SessionActive:        minerEnabled,
+		WorkersHashing:       activeMining,
+		ConfiguredThreads:    cfg.Threads,
+		SafetySafe:           safety.Safe,
+		SafetyReason:         safety.Reason,
+		RPCHealth:            safety.RPCHealth,
+		DataFresh:            true,
+		SyncState:            safety.SyncState,
+		BlocksBehind:         safety.BlocksBehind,
+		BlocksBehindAllowed:  int32(cfg.BlocksBehindOK),
+		GoodPeerCount:        safety.GoodPeerCount,
+		MinGoodPeers:         cfg.MinGoodPeers,
+		DestinationOK:        dest.Owned || dest.External,
+		DestinationError:     dest.Error,
+		HasActiveTemplate:    hasActiveTemplate,
+		TemplateFresh:        hasActiveTemplate && lastTemplateFresh,
+		TemplateRefreshDue:   hasActiveTemplate && lastTemplateRefreshDue,
+		TemplateStaleReason:  lastTemplateStaleReason,
+		TemplateRefreshError: lastTemplateRefreshError,
+		LastError:            lastError,
+		PausedReason:         minerPausedReason,
+		StaleRatePauseActive: safety.StaleRatePauseActive,
+		RecentReorg:          safety.RecentReorg,
+	})
+	activeMining = minerStateCountsAsActive(runtimeState.State)
+	liveThreads := runtimeState.ActiveThreads
+	liveHashPS := float64(0)
+	if runtimeState.LiveHashing {
+		liveHashPS = localHashPS
+	}
+	currentMiningState := runtimeState.State
+	currentSafetyState := "idle / ready, miner stopped"
+	if runtimeState.State == MinerStateStopped {
+		currentSafetyState = "idle / ready, miner stopped"
+	} else if runtimeState.Reason != "" {
+		currentSafetyState = runtimeState.Reason
+	} else if runtimeState.State == MinerStateRunning {
+		currentSafetyState = "safe"
+	} else if runtimeState.State == MinerStateSoftRefreshingStillMining {
+		currentSafetyState = "refreshing template in background; current template still valid"
+	} else if runtimeState.SupervisorAction != "" {
+		currentSafetyState = "starting / resuming workers"
+	}
 	out := map[string]any{
-		"mining_ready":        miningReady,
-		"can_start":           canStart,
-		"mining_enabled":      cfg.Enabled || minerEnabled,
-		"active_mining":       activeMining,
-		"miner_loop_enabled":  minerEnabled,
-		"mining_safe":         safety.Safe,
-		"threads":             cfg.Threads,
-		"configured_threads":  cfg.Threads,
-		"max_threads":         cfg.MaxThreads,
-		"active_threads":      liveThreads,
-		"live_active_threads": liveThreads,
+		"mining_ready":              miningReady,
+		"can_start":                 canStart,
+		"mining_enabled":            minerEnabled,
+		"mining_config_enabled":     cfg.Enabled,
+		"mining_session_active":     minerEnabled,
+		"active_mining":             activeMining,
+		"actual_worker_hashing":     runtimeState.LiveHashing,
+		"miner_loop_enabled":        minerEnabled,
+		"miner_state":               runtimeState.State,
+		"miner_state_reason":        runtimeState.Reason,
+		"miner_supervisor_action":   runtimeState.SupervisorAction,
+		"miner_invariant_violation": runtimeState.InvariantViolation,
+		"mining_safe":               safety.Safe,
+		"threads":                   cfg.Threads,
+		"configured_threads":        cfg.Threads,
+		"max_threads":               cfg.MaxThreads,
+		"active_threads":            liveThreads,
+		"live_active_threads":       liveThreads,
 		"last_session_active_threads": func() int {
 			if minerEnabled {
-				return 0
+				return liveThreads
 			}
 			return minerThreads
 		}(),
 		"effective_threads": func() int {
 			if activeMining {
-				return minerThreads
+				return liveThreads
 			}
 			return cfg.Threads
 		}(),
 		"thread_state": func() string {
-			if activeMining {
+			if runtimeState.LiveHashing {
 				return "active"
+			}
+			if runtimeState.ShouldHaveWorkers {
+				return "resuming_workers"
+			}
+			if minerEnabled && runtimeState.Reason != "" {
+				return "paused"
 			}
 			return "configured_only"
 		}(),
 		"threads_note": func() string {
-			if activeMining {
+			if runtimeState.LiveHashing {
 				return "active_threads is the live worker count currently mining"
+			}
+			if runtimeState.ShouldHaveWorkers {
+				return "miner supervisor is resuming workers because no active blocker is present"
+			}
+			if minerEnabled && runtimeState.Reason != "" {
+				return "miner session is paused until the displayed blocker clears"
 			}
 			return "miner is stopped; configured_threads will be used next time mining starts"
 		}(),
@@ -5305,7 +5340,11 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 			s.minerHashing = false
 			s.minerLocalHashPS = 0
 			s.minerMu.Unlock()
-			timer := time.NewTimer(15 * time.Second)
+			retryDelay := 3 * time.Second
+			if pausedForHighStale {
+				retryDelay = 15 * time.Second
+			}
+			timer := time.NewTimer(retryDelay)
 			select {
 			case <-ctx.Done():
 				timer.Stop()

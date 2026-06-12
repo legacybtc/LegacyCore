@@ -1762,7 +1762,7 @@ function MiningPage({ snap, run, refresh, notify }: PageProps) {
   const immatureSummary = buildImmatureRewardSummary(snap.wallet || {}, snap.blockchain?.height ?? snap.wallet?.height);
   const rpcOffline = Boolean(mining.rpc_offline);
   const activeMining = minerView.activeMining;
-  const miningEnabled = Boolean(mining.mining_enabled);
+  const miningEnabled = Boolean(mining.mining_session_active ?? mining.mining_enabled);
   const miningStart = buildMiningStartState(mining, snap.wallet || {}, minerView);
   const canStartMining = miningStart.canStartMining;
   const clearStartNotice = shouldClearMiningStartNotice(mining, snap.wallet || {}, minerView, miningStart);
@@ -1796,7 +1796,11 @@ function MiningPage({ snap, run, refresh, notify }: PageProps) {
     return !status || Boolean(status.rpc_offline || status.data_unavailable) || health === "timeout" || health === "offline";
   }
   function minerBlockedReason(status: Dict | null) {
-    return cleanMiningBlockedReason(status?.mining_blocked_reason || status?.mining_safety_reason || status?.mining_paused_reason || status?.last_error || "");
+    return cleanMiningBlockedReason(status?.miner_state_reason || status?.mining_blocked_reason || status?.mining_safety_reason || status?.mining_paused_reason || status?.last_error || "");
+  }
+  function minerStatusRunning(status: Dict | null) {
+    const state = String(status?.miner_state || status?.current_mining_state || "").toLowerCase();
+    return Boolean(status?.active_mining || state === "running" || state === "soft_refreshing_still_mining");
   }
   async function confirmMinerStart() {
     const deadline = Date.now() + 8500;
@@ -1806,7 +1810,7 @@ function MiningPage({ snap, run, refresh, notify }: PageProps) {
       try {
         lastStatus = await api().GetMinerStatus();
         if (!minerStatusUnavailable(lastStatus)) {
-          if (lastStatus?.active_mining) return { state: "running", status: lastStatus, reason: "" };
+          if (minerStatusRunning(lastStatus)) return { state: "running", status: lastStatus, reason: "" };
           const reason = minerBlockedReason(lastStatus);
           if (reason) return { state: "blocked", status: lastStatus, reason };
           if (lastStatus?.active_mining === false && lastStatus?.mining_enabled === false) return { state: "stopped", status: lastStatus, reason: "miner is stopped" };
@@ -2002,7 +2006,7 @@ function MiningPage({ snap, run, refresh, notify }: PageProps) {
             <Notice tone="info" text={`${mining.accepted_blocks} accepted blocks found. ${immatureSummary.totalLabel} is immature and will become spendable after 100 confirmations.`} />
           )}
           <div className="activityTicker">
-            <StatusDot ok={!rpcOffline && Boolean(mining.active_mining)} />
+            <StatusDot ok={!rpcOffline && minerView.activeMining} />
             <strong>{minerView.activityStatusLabel}</strong>
             <span>{minerView.activityThreadsLabel}</span>
           </div>

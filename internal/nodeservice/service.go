@@ -1882,7 +1882,9 @@ func (s *Service) GetMinerStatus() (map[string]any, error) {
 			normalizeMinerStatusForDashboard(out)
 			s.recordMinerStatusSuccess(out)
 			s.addMinerStatusDiagnostics(out, true)
-			out["miner_state"] = deriveMinerState(out, false)
+			if strings.TrimSpace(fmt.Sprint(out["miner_state"])) == "" || strings.TrimSpace(fmt.Sprint(out["miner_state"])) == "<nil>" {
+				out["miner_state"] = deriveMinerState(out, false)
+			}
 			out["status_text"] = friendlyMinerStateLabel(fmt.Sprint(out["miner_state"]))
 			return out, nil
 		}
@@ -1991,8 +1993,9 @@ func (s *Service) GetMinerStatus() (map[string]any, error) {
 		}(),
 		"network_hashps":        nh,
 		"network_hashps_source": source,
-		"miner_state":           friendlyFallbackMinerState(miningNow, pausedReason),
-		"status_text":           friendlyMinerStateLabel(friendlyFallbackMinerState(miningNow, pausedReason)),
+		"miner_state":           "paused_rpc_timeout",
+		"miner_state_reason":    "Mining blocked: RPC is not responding.",
+		"status_text":           friendlyMinerStateLabel("paused_rpc_timeout"),
 	}
 	addRPCHealthFields(out, s.rpcHealthSnapshot(), false)
 	out["last_start_command_time"] = unixOrZero(lastStartCommandTime)
@@ -2084,6 +2087,11 @@ func (s *Service) MiningDestinationStatus() map[string]any {
 
 func normalizeMinerStatusForDashboard(status map[string]any) {
 	active, _ := status["active_mining"].(bool)
+	state := strings.ToLower(strings.TrimSpace(fmt.Sprint(status["miner_state"])))
+	if state == "running" || state == "soft_refreshing_still_mining" {
+		active = true
+		status["active_mining"] = true
+	}
 	enabled, _ := status["mining_enabled"].(bool)
 	lastError := cleanMinerStatusString(status["last_error"])
 	if !active {
@@ -2268,9 +2276,11 @@ func friendlyMinerStateLabel(state string) string {
 	switch strings.ToLower(strings.TrimSpace(state)) {
 	case "running":
 		return "Miner is running"
+	case "soft_refreshing_still_mining":
+		return "Miner is running; template refreshing"
 	case "starting":
 		return "Miner is starting"
-	case "paused":
+	case "paused", "paused_unsafe", "paused_hard_stale_template", "paused_rpc_timeout", "paused_sync_unsafe", "paused_peer_unsafe", "paused_payout_invalid":
 		return "Miner is paused"
 	case "error":
 		return "Miner error"

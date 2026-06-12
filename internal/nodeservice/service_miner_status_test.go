@@ -47,6 +47,9 @@ func TestGetMinerStatusFallsBackWhenRPCOffline(t *testing.T) {
 	if status["mining_blocked_reason"] != "Mining blocked: RPC is not responding." {
 		t.Fatalf("unexpected mining blocked reason: %v", status["mining_blocked_reason"])
 	}
+	if status["miner_state"] != "paused_rpc_timeout" || status["miner_state_reason"] != "Mining blocked: RPC is not responding." {
+		t.Fatalf("expected paused_rpc_timeout fallback state, got state=%v reason=%v", status["miner_state"], status["miner_state_reason"])
+	}
 	if status["rpc_health"] != "offline" && status["rpc_health"] != "timeout" {
 		t.Fatalf("expected rpc_health offline/timeout, got %v", status["rpc_health"])
 	}
@@ -131,6 +134,27 @@ func TestNormalizeMinerStatusTreatsStopAsAction(t *testing.T) {
 	}
 	if status["local_khps"] != 0.0 {
 		t.Fatalf("expected local_khps to be live-zero while stopped, got %v", status["local_khps"])
+	}
+}
+
+func TestNormalizeMinerStatusPreservesAuthoritativeRunningState(t *testing.T) {
+	status := map[string]any{
+		"miner_state":          "running",
+		"active_mining":        false,
+		"mining_enabled":       true,
+		"active_threads":       1,
+		"configured_threads":   1,
+		"local_hashps":         50.0,
+		"local_khps":           0.05,
+		"last_error":           "",
+		"mining_paused_reason": "",
+	}
+	normalizeMinerStatusForDashboard(status)
+	if status["active_mining"] != true {
+		t.Fatalf("authoritative running state should keep dashboard active, got %v", status["active_mining"])
+	}
+	if status["active_threads"] != 1 {
+		t.Fatalf("active threads should not be zeroed for authoritative running state, got %v", status["active_threads"])
 	}
 }
 

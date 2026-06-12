@@ -190,6 +190,51 @@ test("running safe miner with slow RPC clears stale start timeout notice", () =>
   assert.equal(shouldClearMiningStartNotice(mining, overnightWalletSummary, view, start), true);
 });
 
+test("safe fresh authoritative miner state never shows waiting for safe template", () => {
+  const mining = {
+    ...stoppedMinerStatus,
+    miner_state: "running",
+    miner_supervisor_action: "resume_workers",
+    miner_invariant_violation: "active session is safe but workers are not reporting live hashing; supervisor should resume workers",
+    active_mining: true,
+    actual_worker_hashing: false,
+    mining_enabled: true,
+    mining_session_active: true,
+    mining_safe: true,
+    safe_to_mine: true,
+    active_threads: 1,
+    live_active_threads: 1,
+    configured_threads: 1,
+    local_khps_live: 0,
+    local_khps: 0,
+    rpc_health: "ok",
+    dashboard_data_fresh: true,
+    fallback_stale: false,
+    sync_state: "current",
+    blocks_behind: 0,
+    good_peer_count: 3,
+    mining_blocked_reason: "",
+    mining_safety_reason: "",
+    mining_paused_reason: "",
+    active_template_height: 2705,
+    current_tip_height: 2704,
+    active_template_is_fresh: true,
+    active_template_refresh_due: false,
+    active_template_prev_hash: "tip",
+    current_tip_hash: "tip",
+    last_error: "",
+  };
+  const view = buildMinerDashboardState(mining, overnightWalletSummary);
+  assert.equal(view.status, "running");
+  assert.equal(view.activeMining, true);
+  assert.equal(view.safetyLabel, "safe");
+  assert.equal(view.sessionModeLabel, "running");
+  assert.equal(view.miningLoopLabel, "active");
+  assert.equal(view.liveActiveThreads, 1);
+  assert.equal(view.threadMetricLabel, "1 active / 1 configured");
+  assert.doesNotMatch(`${view.sessionModeLabel} ${view.miningLoopLabel}`, /waiting for safe template/i);
+});
+
 test("RPC timeout does not clear start notice while miner status is unavailable", () => {
   const mining = {
     ...stoppedMinerStatus,
@@ -336,7 +381,7 @@ test("stale active template is visible while miner loop is paused", () => {
   }, overnightWalletSummary);
   assert.equal(state.activeMining, false);
   assert.equal(state.status, "unsafe");
-  assert.equal(state.miningLoopLabel, "paused / waiting for safe template");
+  assert.equal(state.miningLoopLabel, "paused: Mining paused: template is stale; waiting for fresh block template.");
   assert.equal(state.templateHeightLabel, "3136");
   assert.equal(state.templateRefreshLabel, "stale / refreshing");
   assert.equal(state.templateFreshnessLabel, "stale / refresh required");
@@ -364,7 +409,7 @@ test("soft template refresh stays running and reads as still valid", () => {
   }, overnightWalletSummary);
   assert.equal(state.activeMining, true);
   assert.equal(state.status, "running");
-  assert.equal(state.miningLoopLabel, "active");
+  assert.equal(state.miningLoopLabel, "active; refreshing template in background");
   assert.equal(state.templateRefreshLabel, "refreshing");
   assert.equal(state.templateFreshnessLabel, "refreshing / still valid");
   assert.match(state.templateStaleReasonLabel, /current template still valid/);
