@@ -1,6 +1,8 @@
 package rpc
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -151,6 +153,53 @@ func TestResolveMinerRuntimeStateStoppedAfterStartRequiresReason(t *testing.T) {
 	state = ResolveMinerRuntimeState(input)
 	if state.State != MinerStateStopped {
 		t.Fatalf("user stop should render stopped, got %+v", state)
+	}
+}
+
+func TestResolveMinerRuntimeStateRejectsFalseNodeShutdownWhileRPCOnline(t *testing.T) {
+	input := safeMinerRuntimeInput()
+	input.SessionActive = false
+	input.WorkersHashing = false
+	input.EverStarted = true
+	input.LastStopReason = MinerStopNodeShutdown
+	input.RPCHealth = "ok"
+	input.DataFresh = true
+	state := ResolveMinerRuntimeState(input)
+	if state.State != MinerStateError {
+		t.Fatalf("false node_shutdown while RPC online should be error, got %+v", state)
+	}
+	if state.Reason == "" || state.Reason == "miner is stopped" {
+		t.Fatalf("false node_shutdown must have visible invariant reason, got %+v", state)
+	}
+}
+
+func TestResolveMinerRuntimeStateAllowsTrueNodeShutdownWhenOffline(t *testing.T) {
+	input := safeMinerRuntimeInput()
+	input.SessionActive = false
+	input.WorkersHashing = false
+	input.EverStarted = true
+	input.LastStopReason = MinerStopNodeShutdown
+	input.RPCHealth = "offline"
+	input.DataFresh = false
+	state := ResolveMinerRuntimeState(input)
+	if state.State != MinerStateStopped {
+		t.Fatalf("true node_shutdown should render stopped, got %+v", state)
+	}
+}
+
+func TestClassifyMinerContextCancellationDoesNotUseNodeShutdownForInnerCancel(t *testing.T) {
+	reason, shouldExit := classifyMinerContextCancellation(context.Canceled, context.Background())
+	if reason != MinerStopSupervisorCancelled || shouldExit {
+		t.Fatalf("inner miner cancellation classified as reason=%q shouldExit=%t", reason, shouldExit)
+	}
+}
+
+func TestClassifyMinerContextCancellationUsesNodeShutdownForOuterCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	reason, shouldExit := classifyMinerContextCancellation(errors.New("worker failed"), ctx)
+	if reason != MinerStopNodeShutdown || !shouldExit {
+		t.Fatalf("outer shutdown classified as reason=%q shouldExit=%t", reason, shouldExit)
 	}
 }
 

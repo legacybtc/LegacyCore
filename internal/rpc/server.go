@@ -5462,13 +5462,28 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 			s.minerMu.Unlock()
 		})
 		if err != nil {
-			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+			if stopReason, shouldExit := classifyMinerContextCancellation(err, ctx); stopReason != "" {
 				s.minerMu.Lock()
 				s.minerHashing = false
 				s.minerLocalHashPS = 0
+				if !shouldExit {
+					s.minerLastError = MinerStopSupervisorCancelled + ": mining worker epoch cancelled; restarting workers."
+					s.minerPausedReason = "Mining worker epoch cancelled unexpectedly; restarting workers."
+				}
 				s.minerMu.Unlock()
-				exitStopReason = MinerStopNodeShutdown
-				return
+				if shouldExit {
+					exitStopReason = stopReason
+					return
+				}
+				timer := time.NewTimer(500 * time.Millisecond)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					exitStopReason = MinerStopNodeShutdown
+					return
+				case <-timer.C:
+				}
+				continue
 			}
 			if errors.Is(err, mining.ErrTemplateRefreshRequired) {
 				s.minerMu.Lock()

@@ -60,6 +60,9 @@ func ResolveMinerRuntimeState(input MinerRuntimeInput) MinerRuntimeState {
 		if stopReason == "" && input.EverStarted {
 			stopReason = MinerStopWorkerExitUnexpected
 		}
+		if normalizeMinerStopReason(stopReason) == MinerStopNodeShutdown && !nodeShutdownReasonConsistent(input) {
+			return MinerRuntimeState{State: MinerStateError, Reason: "Mining stop reason node_shutdown is inconsistent while node RPC is still online."}
+		}
 		if minerStopReasonIsUnexpected(stopReason) {
 			return MinerRuntimeState{State: MinerStateError, Reason: "Mining stopped unexpectedly: " + normalizeMinerStopReason(stopReason)}
 		}
@@ -100,6 +103,19 @@ func ResolveMinerRuntimeState(input MinerRuntimeInput) MinerRuntimeState {
 		ShouldHaveWorkers:  true,
 		SupervisorAction:   "resume_workers",
 		InvariantViolation: "active session is safe but workers are not reporting live hashing; supervisor should resume workers",
+	}
+}
+
+func nodeShutdownReasonConsistent(input MinerRuntimeInput) bool {
+	rpcHealth := strings.ToLower(strings.TrimSpace(input.RPCHealth))
+	if !input.DataFresh {
+		return true
+	}
+	switch rpcHealth {
+	case "offline", "timeout", "shutting_down", "shutdown", "stopping", "exiting":
+		return true
+	default:
+		return false
 	}
 }
 

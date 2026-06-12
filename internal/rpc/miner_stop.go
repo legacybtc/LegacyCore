@@ -1,7 +1,9 @@
 package rpc
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 )
 
@@ -11,6 +13,7 @@ const (
 	MinerStopRPCStopMiner         = "rpc_stopminer"
 	MinerStopNodeShutdown         = "node_shutdown"
 	MinerStopSupervisorShutdown   = "supervisor_shutdown"
+	MinerStopSupervisorCancelled  = "supervisor_context_cancelled"
 	MinerStopUnsafeSync           = "unsafe_sync"
 	MinerStopUnsafePeers          = "unsafe_peers"
 	MinerStopRPCTimeout           = "rpc_timeout"
@@ -39,6 +42,8 @@ func normalizeMinerStopReason(reason string) string {
 		return MinerStopNodeShutdown
 	case MinerStopSupervisorShutdown, "block_limit_reached", "requested_block_limit":
 		return MinerStopSupervisorShutdown
+	case MinerStopSupervisorCancelled:
+		return MinerStopSupervisorCancelled
 	case MinerStopUnsafeSync:
 		return MinerStopUnsafeSync
 	case MinerStopUnsafePeers, "no_peers", "peer_required_but_no_peers":
@@ -89,9 +94,19 @@ func parseMinerStopReason(params json.RawMessage, fallback string) string {
 
 func minerStopReasonIsUnexpected(reason string) bool {
 	switch normalizeMinerStopReason(reason) {
-	case MinerStopWorkerExitUnexpected, MinerStopInternalError:
+	case MinerStopWorkerExitUnexpected, MinerStopInternalError, MinerStopSupervisorCancelled:
 		return true
 	default:
 		return false
 	}
+}
+
+func classifyMinerContextCancellation(err error, outer context.Context) (string, bool) {
+	if outer != nil && outer.Err() != nil {
+		return MinerStopNodeShutdown, true
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return MinerStopSupervisorCancelled, false
+	}
+	return "", false
 }

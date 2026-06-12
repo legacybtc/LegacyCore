@@ -253,6 +253,28 @@ test("unexpected worker exit does not display as clean stopped without reason", 
   assert.notEqual(state.reasonLabel, "miner is stopped");
 });
 
+test("false node_shutdown while RPC is ok displays error, not clean stopped", () => {
+  const state = buildMinerDashboardState({
+    ...stoppedMinerStatus,
+    miner_state: "error",
+    miner_state_reason: "Mining stop reason node_shutdown is inconsistent while node RPC is still online.",
+    active_mining: false,
+    mining_enabled: false,
+    mining_session_active: false,
+    rpc_health: "ok",
+    dashboard_data_fresh: true,
+    sync_state: "current",
+    blocks_behind: 0,
+    good_peer_count: 4,
+    last_stop_reason: "node_shutdown",
+    last_error: "",
+  }, overnightWalletSummary);
+  assert.equal(state.status, "error");
+  assert.match(state.sessionModeLabel, /node_shutdown/);
+  assert.match(state.safetyLabel, /error/);
+  assert.notEqual(state.reasonLabel, "miner is stopped");
+});
+
 test("user stop displays stopped with user_stop reason", () => {
   const state = buildMinerDashboardState({
     ...stoppedMinerStatus,
