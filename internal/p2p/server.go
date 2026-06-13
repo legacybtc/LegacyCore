@@ -699,6 +699,8 @@ type PeerInfo struct {
 	BestSyncCandidate                bool    `json:"best_sync_candidate"`
 	GoodPeer                         bool    `json:"good_peer"`
 	GoodPeerReason                   string  `json:"good_peer_reason"`
+	PeerSafetyCategory               string  `json:"peer_safety_category"`
+	PeerSafetyReason                 string  `json:"peer_safety_reason"`
 	LagFromLocalHeight               int32   `json:"lag_from_local_height"`
 }
 
@@ -775,7 +777,7 @@ func (s *Server) PeerInfos() []PeerInfo {
 		if localHeight >= 0 && height > 0 {
 			lagFromLocal = localHeight - height
 		}
-		goodPeer, goodPeerReason := classifyGoodPeer(localHeight, height, stale, missedPongs, quality, chainID, s.chainID, lastSyncError, lastBlockReject, rtt)
+		peerCategory, goodPeer, goodPeerReason := classifyPeerSafety(localHeight, height, stale, missedPongs, quality, chainID, s.chainID, lastSyncError, lastBlockReject, rtt)
 		out = append(out, PeerInfo{
 			Addr:                             p.remote,
 			Direction:                        direction,
@@ -826,6 +828,8 @@ func (s *Server) PeerInfos() []PeerInfo {
 			BestSyncCandidate:                p == bestPeer,
 			GoodPeer:                         goodPeer,
 			GoodPeerReason:                   goodPeerReason,
+			PeerSafetyCategory:               peerCategory,
+			PeerSafetyReason:                 goodPeerReason,
 			LagFromLocalHeight:               lagFromLocal,
 		})
 	}
@@ -833,34 +837,53 @@ func (s *Server) PeerInfos() []PeerInfo {
 }
 
 func classifyGoodPeer(localHeight, peerHeight int32, stale bool, missedPongs int, quality, chainID, expectedChainID, lastSyncError, lastBlockReject string, rtt time.Duration) (bool, string) {
+	_, good, reason := classifyPeerSafety(localHeight, peerHeight, stale, missedPongs, quality, chainID, expectedChainID, lastSyncError, lastBlockReject, rtt)
+	return good, reason
+}
+
+func classifyPeerSafety(localHeight, peerHeight int32, stale bool, missedPongs int, quality, chainID, expectedChainID, lastSyncError, lastBlockReject string, rtt time.Duration) (string, bool, string) {
 	if strings.TrimSpace(chainID) != "" && strings.TrimSpace(expectedChainID) != "" && chainID != expectedChainID {
-		return false, "wrong chain/genesis"
+		return "wrong_chain_id", false, "wrong chain/genesis"
 	}
 	if strings.TrimSpace(lastBlockReject) != "" {
-		return false, "block rejected"
+		return "protocol_error", false, "block rejected"
 	}
 	if strings.TrimSpace(lastSyncError) != "" {
-		return false, "sync error"
-	}
-	if stale {
-		return false, "stale data"
+		return "protocol_error", false, "sync error"
 	}
 	if missedPongs >= 3 {
-		return false, "timeout"
-	}
-	if strings.EqualFold(quality, "poor") {
-		return false, "poor peer quality"
+		return "unresponsive", false, "timeout"
 	}
 	if localHeight > 0 && peerHeight <= 0 {
-		return false, "unknown height"
+		return "stale_chain_data", false, "unknown height"
 	}
-	if localHeight > 0 && peerHeight > 0 && peerHeight+1 < localHeight {
-		return false, "height too low"
+	if localHeight > 0 && peerHeight > 0 {
+		lag := localHeight - peerHeight
+		switch {
+		case lag < 0:
+			return "stronger_chainwork", false, "peer reports higher chain height"
+		case lag == 0:
+			return "current_agreeing", true, "current and agreeing"
+		case lag == 1:
+			return "lagging_1_block", true, "lagging by 1 block"
+		case lag == 2:
+			return "lagging_2_blocks", true, "lagging by 2 blocks"
+		case stale:
+			return "stale_chain_data", false, "stale chain data"
+		default:
+			return "lagging_more_than_2", false, "lagging by more than 2 blocks"
+		}
+	}
+	if strings.EqualFold(quality, "poor") {
+		return "unresponsive", false, "poor peer quality"
+	}
+	if stale {
+		return "stale_chain_data", false, "stale chain data"
 	}
 	if rtt > 5*time.Second {
-		return false, "poor ping"
+		return "unresponsive", false, "poor ping"
 	}
-	return true, "current enough"
+	return "current_agreeing", true, "current and agreeing"
 }
 
 func (s *Server) BestPeerHeight() int32 {

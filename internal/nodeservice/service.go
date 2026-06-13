@@ -1882,7 +1882,9 @@ func (s *Service) GetMinerStatus() (map[string]any, error) {
 			normalizeMinerStatusForDashboard(out)
 			s.recordMinerStatusSuccess(out)
 			s.addMinerStatusDiagnostics(out, true)
-			out["miner_state"] = deriveMinerState(out, false)
+			if strings.TrimSpace(fmt.Sprint(out["miner_state"])) == "" || strings.TrimSpace(fmt.Sprint(out["miner_state"])) == "<nil>" {
+				out["miner_state"] = deriveMinerState(out, false)
+			}
 			out["status_text"] = friendlyMinerStateLabel(fmt.Sprint(out["miner_state"]))
 			return out, nil
 		}
@@ -1913,6 +1915,7 @@ func (s *Service) GetMinerStatus() (map[string]any, error) {
 	sessionHashes := s.minerSessionHashes
 	lastNonce := s.minerLastNonce
 	pausedReason := s.minerPausedReason
+	stopReason := s.minerStopReason
 	lastStartCommandTime := s.minerStartCommandTime
 	startAccepted := s.minerStartAccepted
 	startConfirmStatus := s.minerStartConfirmStatus
@@ -1958,6 +1961,7 @@ func (s *Service) GetMinerStatus() (map[string]any, error) {
 		"session_hashes":                sessionHashes,
 		"last_nonce":                    lastNonce,
 		"last_error":                    "",
+		"last_stop_reason":              stopReason,
 		"last_historical_event":         "RPC offline: miner status is local fallback",
 		"current_mining_state":          map[bool]string{true: "running (fallback)", false: "unavailable"}[miningNow],
 		"current_safety_state": func() string {
@@ -1991,8 +1995,9 @@ func (s *Service) GetMinerStatus() (map[string]any, error) {
 		}(),
 		"network_hashps":        nh,
 		"network_hashps_source": source,
-		"miner_state":           friendlyFallbackMinerState(miningNow, pausedReason),
-		"status_text":           friendlyMinerStateLabel(friendlyFallbackMinerState(miningNow, pausedReason)),
+		"miner_state":           "paused_rpc_timeout",
+		"miner_state_reason":    "Mining blocked: RPC is not responding.",
+		"status_text":           friendlyMinerStateLabel("paused_rpc_timeout"),
 	}
 	addRPCHealthFields(out, s.rpcHealthSnapshot(), false)
 	out["last_start_command_time"] = unixOrZero(lastStartCommandTime)
@@ -2084,6 +2089,11 @@ func (s *Service) MiningDestinationStatus() map[string]any {
 
 func normalizeMinerStatusForDashboard(status map[string]any) {
 	active, _ := status["active_mining"].(bool)
+	state := strings.ToLower(strings.TrimSpace(fmt.Sprint(status["miner_state"])))
+	if state == "running" || state == "soft_refreshing_still_mining" {
+		active = true
+		status["active_mining"] = true
+	}
 	enabled, _ := status["mining_enabled"].(bool)
 	lastError := cleanMinerStatusString(status["last_error"])
 	if !active {
@@ -2132,7 +2142,8 @@ func cleanMinerStatusString(v any) string {
 
 func isNormalMinerStopEvent(s string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(s))
-	return normalized == "rpc stopminer" || normalized == "stopminer" || normalized == "stopped" || normalized == "stopped by user"
+	return normalized == "rpc stopminer" || normalized == "stopminer" || normalized == "stopped" || normalized == "stopped by user" ||
+		normalized == "user_stop" || normalized == "user_force_stop" || normalized == "rpc_stopminer" || normalized == "supervisor_shutdown"
 }
 
 func isHistoricalMinerRetryEvent(s string) bool {
@@ -2268,10 +2279,14 @@ func friendlyMinerStateLabel(state string) string {
 	switch strings.ToLower(strings.TrimSpace(state)) {
 	case "running":
 		return "Miner is running"
+	case "soft_refreshing_still_mining":
+		return "Miner is running; template refreshing"
 	case "starting":
 		return "Miner is starting"
-	case "paused":
+	case "paused", "paused_unsafe", "paused_hard_stale_template", "paused_rpc_timeout", "paused_sync_unsafe", "paused_peer_unsafe", "paused_payout_invalid":
 		return "Miner is paused"
+	case "worker_stalled":
+		return "Miner worker is stalled"
 	case "error":
 		return "Miner error"
 	default:
@@ -2547,14 +2562,15 @@ func (s *Service) StopMiner() (map[string]any, error) {
 	s.minerLoopRunning = false
 	s.minerPausedReason = ""
 	s.minerCancel = nil
-	s.minerLastError = "stopped"
-	s.minerStopReason = "stopped by user"
+	s.minerLastError = "user_stop"
+	s.minerStopReason = "user_stop"
 	s.minerMu.Unlock()
-	result, err := callLocalRPC(s.dataDir, "stopminer", []any{}, 2200*time.Millisecond)
+	result, err := callLocalRPC(s.dataDir, "stopminer", []any{map[string]any{"reason": "user_stop"}}, 2200*time.Millisecond)
 	if err == nil {
 		if out, ok := result.(map[string]any); ok {
 			out["status_source"] = "rpc"
 			out["local_loop_was_active"] = active
+			out["last_stop_reason"] = "user_stop"
 			return out, nil
 		}
 	}
@@ -2563,7 +2579,7 @@ func (s *Service) StopMiner() (map[string]any, error) {
 		"was_active":               active,
 		"session_blocks":           blocks,
 		"last_block_hash":          last,
-		"last_stop_reason":         "stopped by user",
+		"last_stop_reason":         "user_stop",
 		"status_source":            "local_fallback",
 		"rpc_stop_error":           fmt.Sprint(err),
 		"local_loop_was_active":    active,
@@ -2572,7 +2588,42 @@ func (s *Service) StopMiner() (map[string]any, error) {
 }
 
 func (s *Service) ForceStopMiner() (map[string]any, error) {
-	return s.StopMiner()
+	s.minerMu.Lock()
+	active := s.minerActive
+	cancel := s.minerCancel
+	blocks := s.minerBlocks
+	last := s.minerLastHash
+	if cancel != nil {
+		cancel()
+	}
+	s.minerActive = false
+	s.minerEnabled = false
+	s.minerLoopRunning = false
+	s.minerPausedReason = ""
+	s.minerCancel = nil
+	s.minerLastError = "user_force_stop"
+	s.minerStopReason = "user_force_stop"
+	s.minerMu.Unlock()
+	result, err := callLocalRPC(s.dataDir, "stopminer", []any{map[string]any{"reason": "user_force_stop"}}, 2200*time.Millisecond)
+	if err == nil {
+		if out, ok := result.(map[string]any); ok {
+			out["status_source"] = "rpc"
+			out["local_loop_was_active"] = active
+			out["last_stop_reason"] = "user_force_stop"
+			return out, nil
+		}
+	}
+	return map[string]any{
+		"active_mining":            false,
+		"was_active":               active,
+		"session_blocks":           blocks,
+		"last_block_hash":          last,
+		"last_stop_reason":         "user_force_stop",
+		"status_source":            "local_fallback",
+		"rpc_stop_error":           fmt.Sprint(err),
+		"local_loop_was_active":    active,
+		"local_loop_force_stopped": true,
+	}, nil
 }
 
 func (s *Service) setMinerStartBlocked(reason, message string) {
@@ -3973,7 +4024,7 @@ func (s *Service) minerLoop(ctx context.Context, n *node.Node, pubHash []byte, t
 		s.minerLoopRunning = false
 		s.minerCancel = nil
 		if s.minerStopReason == "" {
-			s.minerStopReason = "miner loop exited"
+			s.minerStopReason = "worker_exit_unexpected"
 		}
 		s.minerMu.Unlock()
 	}()
@@ -3986,7 +4037,7 @@ func (s *Service) minerLoop(ctx context.Context, n *node.Node, pubHash []byte, t
 		if health := n.Chain().StorageHealth(); !health.OK {
 			s.minerMu.Lock()
 			s.minerLastError = "storage health failed: " + health.Error
-			s.minerStopReason = "fatal storage error"
+			s.minerStopReason = "internal_error"
 			s.minerRejectBlocks++
 			s.minerMu.Unlock()
 			return
@@ -4029,7 +4080,7 @@ func (s *Service) minerLoop(ctx context.Context, n *node.Node, pubHash []byte, t
 			if ctx.Err() != nil {
 				s.minerMu.Lock()
 				if s.minerStopReason == "" {
-					s.minerStopReason = "node shutdown or stop requested"
+					s.minerStopReason = "node_shutdown"
 				}
 				s.minerMu.Unlock()
 				return
@@ -4062,7 +4113,7 @@ func (s *Service) minerLoop(ctx context.Context, n *node.Node, pubHash []byte, t
 			}
 			s.minerMu.Lock()
 			s.minerLastError = err.Error()
-			s.minerStopReason = ""
+			s.minerStopReason = "worker_exit_unexpected"
 			s.minerRejectBlocks++
 			s.minerLoopRunning = false
 			s.minerLocalHashPS = 0

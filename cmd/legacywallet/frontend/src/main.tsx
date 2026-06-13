@@ -35,6 +35,8 @@ import {
   cleanMiningBlockedReason,
   desktopPerformanceThreads,
   describeSyncWatchdogAction,
+  ESTIMATED_NETWORK_HASHRATE_NOTE,
+  estimatedHashrateShareLabel,
   buildMinerDashboardState,
   formatBaseUnitsLBTC,
   formatHumanLBTC as formatDashboardHumanLBTC,
@@ -1500,7 +1502,7 @@ function ExplorerPage({ snap, run, refresh }: PageProps) {
         <Metric label="50-block avg" value={seconds(timing.last_50_block_average_seconds)} />
         <Metric label="100-block avg" value={seconds(timing.last_100_block_average_seconds)} />
         <Metric label="Target" value={seconds(timing.target_spacing_seconds || 600)} />
-        <Metric label="Network KH/s" value={networkHashLabel(summary.network_hashps)} />
+        <Metric label="Estimated Network KH/s" value={networkHashLabel(summary.network_hashps)} />
         <Metric label="Tx index" value={snap.blockchain?.txindex?.enabled ? "Enabled" : "Disabled"} />
         <Metric label="Address index" value={snap.blockchain?.addressindex?.enabled ? "Enabled" : "Disabled"} />
       </div>
@@ -1762,7 +1764,10 @@ function MiningPage({ snap, run, refresh, notify }: PageProps) {
   const immatureSummary = buildImmatureRewardSummary(snap.wallet || {}, snap.blockchain?.height ?? snap.wallet?.height);
   const rpcOffline = Boolean(mining.rpc_offline);
   const activeMining = minerView.activeMining;
-  const miningEnabled = Boolean(mining.mining_enabled);
+  const estimatedNetworkShare = activeMining
+    ? estimatedHashrateShareLabel({ hps: mining.local_hashps_live ?? mining.local_hashps }, mining.network_hashps)
+    : "-";
+  const miningEnabled = Boolean(mining.mining_session_active ?? mining.mining_enabled);
   const miningStart = buildMiningStartState(mining, snap.wallet || {}, minerView);
   const canStartMining = miningStart.canStartMining;
   const clearStartNotice = shouldClearMiningStartNotice(mining, snap.wallet || {}, minerView, miningStart);
@@ -1796,7 +1801,11 @@ function MiningPage({ snap, run, refresh, notify }: PageProps) {
     return !status || Boolean(status.rpc_offline || status.data_unavailable) || health === "timeout" || health === "offline";
   }
   function minerBlockedReason(status: Dict | null) {
-    return cleanMiningBlockedReason(status?.mining_blocked_reason || status?.mining_safety_reason || status?.mining_paused_reason || status?.last_error || "");
+    return cleanMiningBlockedReason(status?.miner_state_reason || status?.mining_blocked_reason || status?.mining_safety_reason || status?.mining_paused_reason || status?.last_error || "");
+  }
+  function minerStatusRunning(status: Dict | null) {
+    const state = String(status?.miner_state || status?.current_mining_state || "").toLowerCase();
+    return Boolean(status?.active_mining || state === "running" || state === "soft_refreshing_still_mining");
   }
   async function confirmMinerStart() {
     const deadline = Date.now() + 8500;
@@ -1806,7 +1815,7 @@ function MiningPage({ snap, run, refresh, notify }: PageProps) {
       try {
         lastStatus = await api().GetMinerStatus();
         if (!minerStatusUnavailable(lastStatus)) {
-          if (lastStatus?.active_mining) return { state: "running", status: lastStatus, reason: "" };
+          if (minerStatusRunning(lastStatus)) return { state: "running", status: lastStatus, reason: "" };
           const reason = minerBlockedReason(lastStatus);
           if (reason) return { state: "blocked", status: lastStatus, reason };
           if (lastStatus?.active_mining === false && lastStatus?.mining_enabled === false) return { state: "stopped", status: lastStatus, reason: "miner is stopped" };
@@ -1882,7 +1891,8 @@ function MiningPage({ snap, run, refresh, notify }: PageProps) {
         <Metric label="Sync state" value={mining.sync_state || "-"} />
         <Metric label="Blocks behind" value={mining.blocks_behind ?? 0} />
         <Metric label="Good peers" value={mining.good_peer_count ?? "-"} />
-        <Metric label="Network KH/s" value={networkRateLabel} />
+        <Metric label="Agreeing peers" value={mining.current_agreeing_peer_count ?? "-"} />
+        <Metric label="Estimated Network KH/s" value={networkRateLabel} />
         <Metric label="Source" value={friendlyNetworkSource(netSource)} />
         <Metric label={minerView.acceptedLabel} value={mining.accepted_blocks || 0} />
         <Metric label={minerView.staleLabel} value={mining.stale_blocks || 0} />
@@ -1939,6 +1949,19 @@ function MiningPage({ snap, run, refresh, notify }: PageProps) {
           ["Blocks behind", mining.blocks_behind ?? 0],
           ["Peer count", mining.peer_count ?? mining.peers ?? "-"],
           ["Good peer count", mining.good_peer_count ?? "-"],
+          ["Current agreeing peers", mining.current_agreeing_peer_count ?? "-"],
+          ["Lagging by 1 block", mining.lagging_1_block_peer_count ?? "-"],
+          ["Lagging by 2 blocks", mining.lagging_2_blocks_peer_count ?? "-"],
+          ["Lagging by more than 2", mining.lagging_more_than_2_peer_count ?? "-"],
+          ["Stale chain-data peers", mining.stale_chain_data_peer_count ?? "-"],
+          ["Unresponsive peers", mining.unresponsive_peer_count ?? "-"],
+          ["Conflicting-tip peers", mining.conflicting_tip_peer_count ?? "-"],
+          ["Stronger-chainwork peers", mining.stronger_chainwork_peer_count ?? "-"],
+          ["Wrong-chain peers", mining.wrong_chain_peer_count ?? "-"],
+          ["Protocol-error peers", mining.protocol_error_peer_count ?? "-"],
+          ["Mining peer threshold", `${mining.min_agreeing_peers ?? 2} agreeing peer(s)`],
+          ["Peer pause grace", mining.peer_agreement_grace_active ? `${mining.peer_agreement_grace_remaining_seconds ?? 0}s before pause` : `${mining.peer_safety_grace_seconds ?? 90}s`],
+          ["Peer resume hysteresis", mining.peer_agreement_recovery_active ? `${mining.peer_agreement_recovery_remaining_seconds ?? 0}s before resume` : `${mining.peer_safety_recovery_seconds ?? 30}s`],
           ["Mining loop", minerView.miningLoopLabel],
           ["Reason", minerView.reasonLabel],
           ["Session mode", minerView.sessionModeLabel],
@@ -1950,6 +1973,8 @@ function MiningPage({ snap, run, refresh, notify }: PageProps) {
           ["Template freshness", minerView.templateFreshnessLabel],
           ["Template status reason", minerView.templateStaleReasonLabel],
           ["Template refresh due", mining.active_template_refresh_due === undefined ? "-" : yesNo(mining.active_template_refresh_due)],
+          ["Template recovery pending", mining.template_recovery_pending === undefined ? "-" : yesNo(mining.template_recovery_pending)],
+          ["Template recovery age", mining.template_recovery_pending ? seconds(mining.template_recovery_age_seconds) : "-"],
           ["Template refresh reason", mining.active_template_refresh_reason || "-"],
           ["Last template refresh", miningEnabled && mining.last_template_refresh_time ? dateTime(mining.last_template_refresh_time) : minerView.templateRefreshLabel],
           ["Template age", miningEnabled ? seconds(mining.active_template_age_seconds ?? mining.last_template_refresh_ago_seconds) : minerView.templateAgeLabel],
@@ -1970,16 +1995,19 @@ function MiningPage({ snap, run, refresh, notify }: PageProps) {
           ["Effective threads", minerView.effectiveThreadsLabel],
           ["Hashes per thread", fmtNumber(mining.hashes_per_thread)],
           ["Session hashes", fmtNumber(mining.session_hashes)],
-          ["Estimated time to block", seconds(mining.estimated_time_to_block_seconds)],
-          ["Network H/s", netHash.hpsLabel],
-          ["Network KH/s", netHash.khsLabel !== "-" ? netHash.khsLabel : `Unavailable - ${netHash.unavailableReason || "not enough safe data"}`],
-          ["Network MH/s", netHash.mhsLabel],
-          ["Network hash window", netHash.windowLabel],
-          ["Network hash confidence", netHash.confidenceLabel],
-          ["Network hash formula", netHash.formulaLabel],
-          ["Network source", friendlyNetworkSource(netHash.sourceLabel || netSource)],
-          ["Network status", netHash.statusLabel],
-          ["Network note", netHash.note || netHash.unavailableReason || "-"],
+          ["Estimated time to block", activeMining ? `${seconds(mining.estimated_time_to_block_seconds)} (probabilistic)` : miningEnabled ? "paused" : "-"],
+          ["Estimated Network H/s", netHash.hpsLabel],
+          ["Estimated Network KH/s", netHash.khsLabel !== "-" ? netHash.khsLabel : `Unavailable - ${netHash.unavailableReason || "not enough safe data"}`],
+          ["Estimated Network MH/s", netHash.mhsLabel],
+          ["Your estimated share", estimatedNetworkShare],
+          ["Estimated network hash window", netHash.windowLabel],
+          ["Estimated network hash confidence", netHash.confidenceLabel],
+          ["Estimated network hash formula", netHash.formulaLabel],
+          ["Estimated network source", friendlyNetworkSource(netHash.sourceLabel || netSource)],
+          ["Estimated network status", netHash.statusLabel],
+          ["Estimated network note", netHash.note || ESTIMATED_NETWORK_HASHRATE_NOTE],
+          ["Good-peer rejection reasons", formatReasonCounts(mining.good_peer_rejection_reasons)],
+          ["Good-peer diagnostics note", mining.good_peer_diagnostics_note || "-"],
           ["Average block time", avgBlockTimeSeconds > 0 ? `${Math.round(avgBlockTimeSeconds)}s` : "-"],
           ["Hashrate updated", netHash.updatedAt],
           ["Session blocks", mining.session_blocks || 0],
@@ -1999,10 +2027,10 @@ function MiningPage({ snap, run, refresh, notify }: PageProps) {
           <h3>Mining Activity</h3>
           {activeMining && mining.mining_paused_reason && <Notice tone="warn" text={`Mining is paused because ${mining.mining_paused_reason}. It will resume automatically when safe.`} />}
           {Number(mining.accepted_blocks || 0) > 0 && immatureSummary.totalBaseUnits > 0 && (
-            <Notice tone="info" text={`${mining.accepted_blocks} accepted blocks found. ${immatureSummary.totalLabel} is immature and will become spendable after 100 confirmations.`} />
+            <Notice tone="info" text={`This session accepted ${mining.accepted_blocks} active-chain block(s). Wallet currently has ${immatureSummary.totalLabel} immature coinbase total across ${immatureSummary.outputs.length} immature reward output(s); this may include earlier mined rewards still maturing. Current subsidy is 50 LBTC before height 210,000.`} />
           )}
           <div className="activityTicker">
-            <StatusDot ok={!rpcOffline && Boolean(mining.active_mining)} />
+            <StatusDot ok={!rpcOffline && minerView.activeMining} />
             <strong>{minerView.activityStatusLabel}</strong>
             <span>{minerView.activityThreadsLabel}</span>
           </div>
@@ -2079,7 +2107,7 @@ function NetworkPage({ snap, run, refresh }: PageProps) {
         <Metric label="Known peers" value={knownPeers} />
         <Metric label="Sync" value={state.label} />
         <Metric label="Height" value={chain.height ?? "-"} />
-        <Metric label="Network KH/s" value={netHash} />
+        <Metric label="Estimated Network KH/s" value={netHash} />
         <Metric label="10-block avg" value={seconds(timing.last_10_block_average_seconds)} />
         <Metric label="50-block avg" value={seconds(timing.last_50_block_average_seconds)} />
         <Metric label="100-block avg" value={seconds(timing.last_100_block_average_seconds)} />
@@ -2194,6 +2222,8 @@ function NetworkPage({ snap, run, refresh }: PageProps) {
                 <span>Last sync error: {p.last_sync_error || "-"}</span>
                 <span>Good peer: {p.good_peer === undefined ? "not reported" : yesNo(p.good_peer)}</span>
                 <span>Good-peer reason: {p.good_peer_reason || "-"}</span>
+                <span>Peer safety category: {p.peer_safety_category || "-"}</span>
+                <span>Peer safety reason: {p.peer_safety_reason || "-"}</span>
                 <span>Lag from local height: {p.lag_from_local_height ?? p.peer_height_gap ?? "-"}</span>
                 <span>Blocks requested / served: {p.blocks_requested ?? 0} / {p.blocks_served ?? 0}</span>
               </div>
@@ -2207,7 +2237,7 @@ function NetworkPage({ snap, run, refresh }: PageProps) {
             <p><strong>Direct P2P connections</strong> are active connections from this wallet only.</p>
             <p><strong>DNS seeds</strong> are bootstrap helpers, not a count of users or miners.</p>
             <p><strong>Known peers</strong> are locally discovered or cached addresses and may not be online.</p>
-            <p><strong>Estimated Network KH/s</strong> comes from recent block difficulty/timing, not from this wallet's peer count.</p>
+            <p><strong>Estimated Network KH/s</strong> comes from recent block difficulty/timing, not from this wallet's peer count or a live sum of miners.</p>
             <p><strong>Total network nodes</strong> are unavailable without crawler support. The wallet does not fake this number.</p>
             <p>To help the network, keep P2P port 19555 open. Never expose RPC port 19556 publicly.</p>
           </div>
@@ -3199,6 +3229,15 @@ function networkHashDiagnostics(v: any) {
     statusLabel: khs > 0 ? (status || "estimated") : "unavailable",
     updatedAt: updatedAt > 0 ? new Date(updatedAt * 1000).toLocaleTimeString() : "-",
   };
+}
+
+function formatReasonCounts(v: any) {
+  if (!v || typeof v !== "object") return "-";
+  const entries = Object.entries(v)
+    .filter(([, count]) => Number(count) > 0)
+    .sort(([a], [b]) => a.localeCompare(b));
+  if (!entries.length) return "-";
+  return entries.map(([reason, count]) => `${reason}: ${count}`).join("; ");
 }
 
 function lbtc(v: any) {

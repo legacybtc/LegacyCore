@@ -1,6 +1,7 @@
 export type DashboardDict = Record<string, any>;
 
 const BASE_UNITS_PER_LBTC = 100_000_000;
+export const ESTIMATED_NETWORK_HASHRATE_NOTE = "Estimated from recent block difficulty and block timing. This is not a live sum of all miners.";
 
 export type ImmatureRewardRow = {
   txid: string;
@@ -26,7 +27,7 @@ export type ImmatureRewardSummary = {
 
 export type MinerDashboardState = {
   activeMining: boolean;
-  status: "running" | "retrying" | "unsafe" | "stopped" | "starting" | "status_unknown_rpc_timeout" | "last_known_running" | "last_known_stopped";
+  status: "running" | "retrying" | "unsafe" | "error" | "stopped" | "starting" | "status_unknown_rpc_timeout" | "last_known_running" | "last_known_stopped";
   statusLabel: string;
   safetyLabel: string;
   reasonLabel: string;
@@ -352,22 +353,31 @@ export function peerStatusLabel(peer: DashboardDict, chain: DashboardDict = {}):
   return "ok";
 }
 
+export function estimatedHashrateShareLabel(localHash: any, networkHash: any): string {
+  const localHps = hashpsFromValue(localHash);
+  const networkHps = hashpsFromValue(networkHash);
+  if (localHps <= 0 || networkHps <= 0) return "-";
+  return `~${((localHps / networkHps) * 100).toFixed(2)}%`;
+}
+
 export function buildMinerDashboardState(mining: DashboardDict = {}, wallet: DashboardDict = {}): MinerDashboardState {
   const rpcHealth = minerRPCHealth(mining);
   const rpcOffline = minerRPCOffline(mining);
   const dataFresh = minerDataFresh(mining, rpcOffline);
   const staleData = rpcOffline || boolValue(mining.fallback_stale) || !dataFresh;
-  const activeMining = !rpcOffline && boolValue(mining.active_mining);
+  const authoritativeState = cleanString(mining.miner_state || mining.current_mining_state).toLowerCase();
+  const authoritativeActive = authoritativeState === "running" || authoritativeState === "soft_refreshing_still_mining";
+  const activeMining = !rpcOffline && (authoritativeState ? authoritativeActive : boolValue(mining.active_mining));
   const lastKnownActiveMining = boolValue(mining.last_known_active_mining ?? mining.active_mining);
-  const miningEnabled = boolValue(mining.mining_enabled);
+  const miningEnabled = boolValue(mining.mining_session_active ?? mining.mining_enabled);
   const miningSafe = !rpcOffline && dataFresh && (mining.mining_safe === undefined ? false : boolValue(mining.mining_safe));
+  const stateReason = cleanString(mining.miner_state_reason);
   const blockedReason = cleanString(mining.mining_blocked_reason || mining.mining_safety_reason);
-  const pausedReason = cleanString(mining.mining_paused_reason) || blockedReason;
+  const pausedReason = stateReason || cleanString(mining.mining_paused_reason) || blockedReason;
   const rawLastError = cleanString(mining.last_error);
   const normalStop = isNormalStop(rawLastError);
   const historicalRetry = !activeMining && !miningEnabled && isRetryEvent(rawLastError);
   const displayLastError = normalStop || historicalRetry ? "" : rawLastError;
-  const status = deriveMinerStatus({ rpcOffline, activeMining, lastKnownActiveMining, miningEnabled, miningSafe, pausedReason, displayLastError });
   const configuredThreads = safeNumber(mining.configured_threads ?? mining.configured_threads_last_known ?? mining.threads ?? mining.last_session_active_threads, 0);
   const maxThreads = safeNumber(mining.detected_cpu_threads ?? mining.max_threads, 0);
   const liveActiveThreads = activeMining ? safeNumber(mining.active_threads, configuredThreads) : 0;
@@ -385,9 +395,20 @@ export function buildMinerDashboardState(mining: DashboardDict = {}, wallet: Das
   const templateVisible = activeMining || miningEnabled || boolValue(mining.has_active_template);
   const templateHeight = mining.active_template_height ?? mining.last_mined_template_height ?? mining.current_template_height;
   const templateFresh = boolValue(mining.active_template_is_fresh);
-  const templateRefreshDue = templateFresh && boolValue(mining.active_template_refresh_due);
-  const templateStaleReason = cleanString(mining.active_template_stale_reason);
-  const templateRefreshReason = cleanString(mining.active_template_refresh_reason);
+  const rawTemplateRefreshDue = boolValue(mining.active_template_refresh_due);
+  const templateRefreshDue = templateFresh && rawTemplateRefreshDue;
+  const templateRecoveryPending = boolValue(mining.template_recovery_pending);
+  const templateStaleReason = templateFresh ? "" : cleanString(mining.active_template_stale_reason);
+  const rawTemplateRefreshReason = templateFresh && !templateRefreshDue ? "" : cleanString(mining.active_template_refresh_reason);
+  const templateRefreshReason = templateFresh && templateRefreshDue && hardTemplateRefreshReason(rawTemplateRefreshReason)
+    ? "refreshing template in background; current template still valid"
+    : rawTemplateRefreshReason;
+  const hardStaleRecoveryActive = templateVisible && !templateFresh && (rawTemplateRefreshDue || templateRecoveryPending || authoritativeState === "paused_hard_stale_template");
+  const hardStaleRecoveryMessage = "New tip detected; refreshing mining template";
+  const effectivePausedReason = hardStaleRecoveryActive ? hardStaleRecoveryMessage : pausedReason;
+  const status = authoritativeState === "error" || authoritativeState === "worker_stalled"
+    ? "error"
+    : deriveMinerStatus({ rpcOffline, activeMining, lastKnownActiveMining, miningEnabled, miningSafe, pausedReason: effectivePausedReason, displayLastError });
   const templateAge = safeNumber(mining.active_template_age_seconds ?? mining.last_template_refresh_ago_seconds, -1);
   const templateRefreshTime = mining.last_template_refresh_success_time ?? mining.last_template_refresh_time;
   const payoutOwnershipLabel = activeRewardHash || resolvedRewardAddress
@@ -398,26 +419,74 @@ export function buildMinerDashboardState(mining: DashboardDict = {}, wallet: Das
         : "not owned by this wallet"
     : "not configured";
   const miningToLabel = resolvedRewardAddress || activeRewardHash || "not configured";
+  const supervisorAction = cleanString(mining.miner_supervisor_action);
+  const softRefreshingStillMining = authoritativeState === "soft_refreshing_still_mining" || (activeMining && templateRefreshDue);
+  const errorReason = effectivePausedReason || displayLastError || cleanString(mining.last_stop_reason);
+  const sessionModeLabel = status === "error"
+    ? `error: ${errorReason || "worker exited unexpectedly"}`
+    : hardStaleRecoveryActive
+      ? "refreshing template / waiting for fresh template"
+    : activeMining
+    ? softRefreshingStillMining
+      ? "soft refreshing / still mining"
+      : "running"
+    : miningEnabled
+      ? pausedReason
+        ? `paused / waiting: ${pausedReason}`
+        : supervisorAction === "resume_workers"
+          ? "resuming workers"
+          : "starting / confirming"
+      : "stopped; ready for next start";
+  const miningLoopLabel = status === "error"
+    ? `error: ${errorReason || "worker exited unexpectedly"}`
+    : hardStaleRecoveryActive
+      ? `paused: ${hardStaleRecoveryMessage}`
+    : activeMining
+    ? softRefreshingStillMining
+      ? "active; refreshing template in background"
+      : "active"
+    : miningEnabled
+      ? pausedReason
+        ? `paused: ${pausedReason}`
+        : supervisorAction === "resume_workers"
+          ? "resuming workers"
+          : "starting / confirming"
+      : "inactive (miner stopped)";
+  const activityStatusLabel = rpcOffline
+    ? (lastKnownActiveMining ? "Miner status unavailable (last known running)" : "Miner status unavailable (RPC offline / last known)")
+    : status === "error"
+      ? `Mining error: ${errorReason || "worker exited unexpectedly"}`
+    : hardStaleRecoveryActive
+      ? "Mining paused: New tip detected; refreshing mining template"
+    : activeMining
+      ? softRefreshingStillMining
+        ? "Mining active; template refreshing"
+        : "Mining active"
+      : miningEnabled
+        ? pausedReason
+          ? `Mining paused: ${pausedReason}`
+          : "Mining starting / confirming"
+        : "Miner stopped";
   return {
     activeMining,
     status,
     statusLabel: statusLabel(status),
-    safetyLabel: safetyLabel(status, pausedReason, miningSafe, rpcOffline),
-    reasonLabel: reasonLabel({ status, activeMining, pausedReason, displayLastError, lastAction: normalStop ? "stopped by user/RPC" : cleanString(mining.last_action || mining.last_stop_reason) }),
+    safetyLabel: safetyLabel(status, effectivePausedReason, miningSafe, rpcOffline),
+    reasonLabel: reasonLabel({ status, activeMining, pausedReason: softRefreshingStillMining ? "" : effectivePausedReason, displayLastError, lastAction: normalStop ? cleanString(mining.last_stop_reason || "stopped by user/RPC") : cleanString(mining.last_action || mining.last_stop_reason) }),
     rpcHealthLabel: rpcOffline ? `RPC ${rpcHealth || "timeout"}` : rpcHealth ? `RPC ${rpcHealth}` : "RPC ok",
     dataFreshnessLabel: dataFresh ? "fresh" : staleData ? "last known / stale" : "unknown",
-    blockedReasonLabel: blockedReason || pausedReason || "-",
+    blockedReasonLabel: blockedReason || effectivePausedReason || "-",
     threadWarningLabel: maxThreads > 1 && configuredThreads >= maxThreads ? "Using all CPU threads may overload the wallet/RPC. Leave 1-2 CPU threads free." : "",
     staleRateLabel: `${fmtNumber(safeNumber(mining.stale_rate, 0) * 100)}%`,
     staleRateWarning: cleanString(mining.stale_rate_warning),
-    sessionModeLabel: activeMining ? "running" : miningEnabled ? "retrying / waiting for safe template" : "stopped; ready for next start",
-    pausedReasonLabel: activeMining || miningEnabled ? (pausedReason || "-") : "none (miner stopped)",
-    miningLoopLabel: activeMining ? "active" : miningEnabled ? "paused / waiting for safe template" : "inactive (miner stopped)",
+    sessionModeLabel,
+    pausedReasonLabel: activeMining || miningEnabled ? (effectivePausedReason || "-") : "none (miner stopped)",
+    miningLoopLabel,
     templateHeightLabel: templateVisible ? labelOrDash(templateHeight) : "not currently mining",
-    templateRefreshLabel: templateVisible && templateRefreshDue ? "refreshing" : templateVisible && (!templateFresh || templateStaleReason) ? "stale / refreshing" : templateVisible && templateRefreshTime ? "fresh" : templateVisible ? "refreshing" : "not currently mining",
+    templateRefreshLabel: templateVisible && (templateRefreshDue || hardStaleRecoveryActive) ? "refreshing" : templateVisible && (!templateFresh || templateStaleReason) ? "stale / refreshing" : templateVisible && templateRefreshTime ? "fresh" : templateVisible ? "refreshing" : "not currently mining",
     templateAgeLabel: templateVisible && templateAge >= 0 ? labelOrDash(templateAge) : templateVisible ? "unknown" : "not currently mining",
-    templateFreshnessLabel: templateVisible ? (templateRefreshDue ? "refreshing / still valid" : templateFresh ? "fresh" : "stale / refresh required") : "not currently mining",
-    templateStaleReasonLabel: templateRefreshDue ? (templateRefreshReason || "refreshing template in background; current template still valid") : templateStaleReason || (templateVisible && !templateFresh ? "waiting for fresh block template" : "-"),
+    templateFreshnessLabel: templateVisible ? (templateRefreshDue ? "refreshing / still valid" : templateFresh ? "fresh" : hardStaleRecoveryActive ? "refreshing / waiting for fresh template" : "stale / refresh required") : "not currently mining",
+    templateStaleReasonLabel: hardStaleRecoveryActive ? `Waiting for fresh template: ${templateStaleReason || templateRefreshReason || "template no longer matches current tip"}` : templateRefreshDue ? (templateRefreshReason || "refreshing template in background; current template still valid") : templateStaleReason || (templateVisible && !templateFresh ? "waiting for fresh block template" : "-"),
     watchdogLabel: activeMining || miningEnabled ? labelOrDash(mining.watchdog_last_recovery_action) : historicalRetry ? `previous: ${rawLastError}` : "-",
     liveActiveThreads,
     configuredThreads,
@@ -434,7 +503,7 @@ export function buildMinerDashboardState(mining: DashboardDict = {}, wallet: Das
     staleLabel: activeMining ? "Stale" : "Last session stale",
     rejectedLabel: activeMining ? "Rejected" : "Last session rejected",
     displayLastError,
-    lastActionLabel: normalStop ? "stopped by user/RPC" : (cleanString(mining.last_action || mining.last_stop_reason) || "-"),
+    lastActionLabel: normalStop ? cleanString(mining.last_stop_reason || "stopped by user/RPC") : (cleanString(mining.last_action || mining.last_stop_reason) || "-"),
     historicalEventLabel: historicalRetry ? rawLastError : cleanString(mining.last_historical_event),
     activeRewardHash,
     currentDefaultMiningAddress,
@@ -447,7 +516,7 @@ export function buildMinerDashboardState(mining: DashboardDict = {}, wallet: Das
     miningDestinationError,
     miningToLabel,
     lastAcceptedPaidToLabel: safeNumber(mining.accepted_blocks, 0) > 0 ? (resolvedRewardAddress || activeRewardHash || "recorded reward destination") : "-",
-    activityStatusLabel: rpcOffline ? (lastKnownActiveMining ? "Miner status unavailable (last known running)" : "Miner status unavailable (RPC offline / last known)") : activeMining ? "Mining active" : miningEnabled ? "Mining retrying / waiting" : "Miner stopped",
+    activityStatusLabel,
     activityThreadsLabel: activeMining
       ? `${liveActiveThreads} active thread workers`
       : staleData
@@ -490,6 +559,8 @@ function statusLabel(status: MinerDashboardState["status"]): string {
       return "retrying / refreshing template";
     case "unsafe":
       return "unsafe / paused";
+    case "error":
+      return "error";
     case "starting":
       return "starting";
     case "last_known_running":
@@ -507,6 +578,7 @@ function safetyLabel(status: MinerDashboardState["status"], pausedReason: string
   if (rpcOffline) return "unknown — RPC timeout";
   if (status === "stopped") return "idle / ready, miner stopped";
   if (status === "retrying") return `retrying (${pausedReason || "refreshing mining template"})`;
+  if (status === "error") return `error${pausedReason ? ` (${pausedReason})` : ""}`;
   if (status === "unsafe" || !miningSafe) return `unsafe${pausedReason ? ` (${pausedReason})` : ""}`;
   return "safe";
 }
@@ -574,6 +646,18 @@ function safeNumber(v: any, fallback = 0): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function hashpsFromValue(v: any): number {
+  if (typeof v === "number" || typeof v === "string") return Math.max(0, safeNumber(v, 0));
+  if (!v || typeof v !== "object") return 0;
+  const hps = safeNumber(v.hps ?? v.hashps ?? v.local_hashps, 0);
+  if (hps > 0) return hps;
+  const khps = safeNumber(v.khps ?? v.khashps ?? v.local_khps, 0);
+  if (khps > 0) return khps * 1000;
+  const mhps = safeNumber(v.mhps ?? v.mhashps, 0);
+  if (mhps > 0) return mhps * 1_000_000;
+  return 0;
+}
+
 function boolValue(v: any): boolean {
   if (typeof v === "boolean") return v;
   if (typeof v === "string") return v.toLowerCase() === "true" || v === "1";
@@ -593,12 +677,22 @@ function labelOrDash(v: any): string {
 
 function isNormalStop(v: string): boolean {
   const s = v.toLowerCase().trim();
-  return s === "rpc stopminer" || s === "stopminer" || s === "stopped" || s === "stopped by user";
+  return s === "rpc stopminer" || s === "stopminer" || s === "stopped" || s === "stopped by user" ||
+    s === "user_stop" || s === "user_force_stop" || s === "rpc_stopminer" || s === "supervisor_shutdown";
 }
 
 function isRetryEvent(v: string): boolean {
   const s = v.toLowerCase().trim();
   return s.includes("stale tip") || s.includes("retry") || s.includes("refresh");
+}
+
+function hardTemplateRefreshReason(v: string): boolean {
+  const s = v.toLowerCase().trim();
+  return s.includes("template_stale") ||
+    s.includes("template unavailable") ||
+    s.includes("prev_hash_mismatch") ||
+    s.includes("height_mismatch") ||
+    s.includes("hard_stale_template");
 }
 
 function fmtNumber(v: any): string {

@@ -461,21 +461,24 @@ func LoadLogConfig(path string) (LogConfig, error) {
 }
 
 type MiningConfig struct {
-	Enabled         bool
-	PubKeyHash      string
-	RewardAddress   string
-	Threads         int
-	MaxThreads      int
-	AutoStart       bool
-	PeerRequired    bool
-	SafeRequired    bool
-	MinGoodPeers    int
-	AllowUnsafe     bool
-	BlocksBehindOK  int
-	RejectUnsafeGBT bool
-	RejectZeroHash  bool
-	ExternalPayout  bool
-	StopAfterBlocks int64
+	Enabled             bool
+	PubKeyHash          string
+	RewardAddress       string
+	Threads             int
+	MaxThreads          int
+	AutoStart           bool
+	PeerRequired        bool
+	SafeRequired        bool
+	MinGoodPeers        int
+	MinAgreeingPeers    int
+	PeerGraceSeconds    int
+	PeerRecoverySeconds int
+	AllowUnsafe         bool
+	BlocksBehindOK      int
+	RejectUnsafeGBT     bool
+	RejectZeroHash      bool
+	ExternalPayout      bool
+	StopAfterBlocks     int64
 }
 
 func LoadMiningConfig(path string) (MiningConfig, error) {
@@ -483,7 +486,7 @@ func LoadMiningConfig(path string) (MiningConfig, error) {
 	if err != nil {
 		return MiningConfig{}, err
 	}
-	cfg := MiningConfig{Threads: 1, MaxThreads: runtime.NumCPU(), PeerRequired: false, SafeRequired: true, MinGoodPeers: 3, BlocksBehindOK: 1, RejectUnsafeGBT: true, RejectZeroHash: true}
+	cfg := MiningConfig{Threads: 1, MaxThreads: runtime.NumCPU(), PeerRequired: false, SafeRequired: true, MinGoodPeers: 3, MinAgreeingPeers: 2, PeerGraceSeconds: 90, PeerRecoverySeconds: 30, BlocksBehindOK: 1, RejectUnsafeGBT: true, RejectZeroHash: true}
 	if vals := kv["mining_enabled"]; len(vals) > 0 {
 		v := strings.ToLower(strings.TrimSpace(vals[len(vals)-1]))
 		cfg.Enabled = v == "1" || v == "true" || v == "yes" || v == "on"
@@ -538,6 +541,27 @@ func LoadMiningConfig(path string) (MiningConfig, error) {
 		_, _ = fmt.Sscanf(strings.TrimSpace(vals[len(vals)-1]), "%d", &n)
 		if n >= 0 {
 			cfg.MinGoodPeers = n
+		}
+	}
+	if vals := kv["mining_min_agreeing_peers"]; len(vals) > 0 {
+		var n int
+		_, _ = fmt.Sscanf(strings.TrimSpace(vals[len(vals)-1]), "%d", &n)
+		if n >= 0 {
+			cfg.MinAgreeingPeers = n
+		}
+	}
+	if vals := kv["mining_peer_grace_seconds"]; len(vals) > 0 {
+		var n int
+		_, _ = fmt.Sscanf(strings.TrimSpace(vals[len(vals)-1]), "%d", &n)
+		if n >= 0 {
+			cfg.PeerGraceSeconds = n
+		}
+	}
+	if vals := kv["mining_peer_recovery_seconds"]; len(vals) > 0 {
+		var n int
+		_, _ = fmt.Sscanf(strings.TrimSpace(vals[len(vals)-1]), "%d", &n)
+		if n >= 0 {
+			cfg.PeerRecoverySeconds = n
 		}
 	}
 	if vals := kv["mining_blocks_behind_allowed"]; len(vals) > 0 {

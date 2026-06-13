@@ -8,6 +8,8 @@ const {
   buildMiningStartState,
   desktopPerformanceThreads,
   describeSyncWatchdogAction,
+  ESTIMATED_NETWORK_HASHRATE_NOTE,
+  estimatedHashrateShareLabel,
   formatBaseUnitsLBTC,
   knownPeersLabel,
   miningBlockedNotice,
@@ -80,6 +82,19 @@ test("immature base units display as LBTC with maturity context", () => {
   assert.equal(summary.outputs.length, 2);
   assert.equal(summary.outputs[0].valueLabel, "50 LBTC");
   assert.equal(summary.outputs[0].blocksRemaining, 44);
+});
+
+test("immature reward total is wallet-wide, not only current session accepted blocks", () => {
+  const summary = buildImmatureRewardSummary({
+    ...overnightWalletSummary,
+    immature: 15_000_000_000,
+    immature_outputs: [
+      ...overnightWalletSummary.immature_outputs,
+      { value: 5_000_000_000, height: 2640, matures_at: 2740, confirmations: 3 },
+    ],
+  }, 2643);
+  assert.equal(summary.totalLabel, "150 LBTC");
+  assert.equal(summary.outputs.length, 3);
 });
 
 test("stopped miner does not display as active or unsafe", () => {
@@ -188,6 +203,216 @@ test("running safe miner with slow RPC clears stale start timeout notice", () =>
   assert.equal(view.rpcHealthLabel, "RPC slow");
   assert.equal(view.dataFreshnessLabel, "fresh");
   assert.equal(shouldClearMiningStartNotice(mining, overnightWalletSummary, view, start), true);
+});
+
+test("safe fresh authoritative miner state never shows waiting for safe template", () => {
+  const mining = {
+    ...stoppedMinerStatus,
+    miner_state: "running",
+    miner_supervisor_action: "resume_workers",
+    miner_invariant_violation: "active session is safe but workers are not reporting live hashing; supervisor should resume workers",
+    active_mining: true,
+    actual_worker_hashing: false,
+    mining_enabled: true,
+    mining_session_active: true,
+    mining_safe: true,
+    safe_to_mine: true,
+    active_threads: 1,
+    live_active_threads: 1,
+    configured_threads: 1,
+    local_khps_live: 0,
+    local_khps: 0,
+    rpc_health: "ok",
+    dashboard_data_fresh: true,
+    fallback_stale: false,
+    sync_state: "current",
+    blocks_behind: 0,
+    good_peer_count: 3,
+    mining_blocked_reason: "",
+    mining_safety_reason: "",
+    mining_paused_reason: "",
+    active_template_height: 2705,
+    current_tip_height: 2704,
+    active_template_is_fresh: true,
+    active_template_refresh_due: false,
+    active_template_prev_hash: "tip",
+    current_tip_hash: "tip",
+    last_error: "",
+  };
+  const view = buildMinerDashboardState(mining, overnightWalletSummary);
+  assert.equal(view.status, "running");
+  assert.equal(view.activeMining, true);
+  assert.equal(view.safetyLabel, "safe");
+  assert.equal(view.sessionModeLabel, "running");
+  assert.equal(view.miningLoopLabel, "active");
+  assert.equal(view.liveActiveThreads, 1);
+  assert.equal(view.threadMetricLabel, "1 active / 1 configured");
+  assert.doesNotMatch(`${view.sessionModeLabel} ${view.miningLoopLabel}`, /waiting for safe template/i);
+});
+
+test("valid hashing template does not surface stale unavailable reason", () => {
+  const view = buildMinerDashboardState({
+    ...stoppedMinerStatus,
+    miner_state: "running",
+    active_mining: true,
+    actual_worker_hashing: true,
+    mining_enabled: true,
+    mining_session_active: true,
+    mining_safe: true,
+    safe_to_mine: true,
+    active_threads: 1,
+    live_active_threads: 1,
+    configured_threads: 1,
+    session_hashes: 250,
+    hash_attempts: 250,
+    last_nonce: 249,
+    local_hashps: 196.85,
+    rpc_health: "ok",
+    dashboard_data_fresh: true,
+    sync_state: "current",
+    blocks_behind: 0,
+    good_peer_count: 4,
+    active_template_height: 3229,
+    current_tip_height: 3228,
+    active_template_is_fresh: true,
+    active_template_refresh_due: false,
+    active_template_stale_reason: "template unavailable",
+    active_template_refresh_reason: "template_stale: template unavailable",
+    active_template_prev_hash: "tip",
+    current_tip_hash: "tip",
+    last_template_refresh_time: 1_719_000_000,
+    last_error: "",
+  }, overnightWalletSummary);
+  assert.equal(view.status, "running");
+  assert.equal(view.activeMining, true);
+  assert.equal(view.miningLoopLabel, "active");
+  assert.equal(view.templateRefreshLabel, "fresh");
+  assert.equal(view.templateFreshnessLabel, "fresh");
+  assert.equal(view.templateStaleReasonLabel, "-");
+  assert.doesNotMatch(`${view.statusLabel} ${view.safetyLabel} ${view.sessionModeLabel}`, /retrying|unavailable|template_stale/i);
+});
+
+test("fresh template with zero hash progress renders worker stalled, not healthy mining", () => {
+  const view = buildMinerDashboardState({
+    ...stoppedMinerStatus,
+    miner_state: "worker_stalled",
+    miner_state_reason: "worker_not_hashing: active worker has no hash progress.",
+    active_mining: false,
+    actual_worker_hashing: false,
+    mining_enabled: true,
+    mining_session_active: true,
+    mining_safe: true,
+    safe_to_mine: true,
+    active_threads: 0,
+    live_active_threads: 0,
+    configured_threads: 1,
+    local_hashps: 0,
+    local_khps: 0,
+    session_hashes: 0,
+    last_nonce: 0,
+    rpc_health: "ok",
+    dashboard_data_fresh: true,
+    sync_state: "current",
+    blocks_behind: 0,
+    good_peer_count: 4,
+    active_template_height: 3212,
+    current_tip_height: 3211,
+    active_template_is_fresh: true,
+    active_template_refresh_due: false,
+    active_template_prev_hash: "tip",
+    current_tip_hash: "tip",
+  }, overnightWalletSummary);
+  assert.equal(view.status, "error");
+  assert.equal(view.activeMining, false);
+  assert.equal(view.liveActiveThreads, 0);
+  assert.match(view.sessionModeLabel, /worker_not_hashing/);
+  assert.match(view.miningLoopLabel, /worker_not_hashing/);
+  assert.doesNotMatch(`${view.statusLabel} ${view.safetyLabel}`, /running|safe$/i);
+});
+
+test("unexpected worker exit does not display as clean stopped without reason", () => {
+  const state = buildMinerDashboardState({
+    ...stoppedMinerStatus,
+    miner_state: "error",
+    miner_state_reason: "Mining stopped unexpectedly: worker_exit_unexpected",
+    active_mining: false,
+    mining_enabled: false,
+    mining_session_active: false,
+    last_stop_reason: "worker_exit_unexpected",
+    last_error: "Mining stopped unexpectedly: worker exited without an intentional stop request.",
+  }, overnightWalletSummary);
+  assert.equal(state.status, "error");
+  assert.match(state.statusLabel, /error/);
+  assert.match(state.sessionModeLabel, /worker_exit_unexpected/);
+  assert.match(state.miningLoopLabel, /worker_exit_unexpected/);
+  assert.notEqual(state.reasonLabel, "miner is stopped");
+});
+
+test("false node_shutdown while RPC is ok displays error, not clean stopped", () => {
+  const state = buildMinerDashboardState({
+    ...stoppedMinerStatus,
+    miner_state: "error",
+    miner_state_reason: "Mining stop reason node_shutdown is inconsistent while node RPC is still online.",
+    active_mining: false,
+    mining_enabled: false,
+    mining_session_active: false,
+    rpc_health: "ok",
+    dashboard_data_fresh: true,
+    sync_state: "current",
+    blocks_behind: 0,
+    good_peer_count: 4,
+    last_stop_reason: "node_shutdown",
+    last_error: "",
+  }, overnightWalletSummary);
+  assert.equal(state.status, "error");
+  assert.match(state.sessionModeLabel, /node_shutdown/);
+  assert.match(state.safetyLabel, /error/);
+  assert.notEqual(state.reasonLabel, "miner is stopped");
+});
+
+test("supervisor_context_cancelled recovery state does not render as unsafe paused", () => {
+  const state = buildMinerDashboardState({
+    ...stoppedMinerStatus,
+    miner_state: "running",
+    miner_supervisor_action: "resume_workers",
+    active_mining: true,
+    actual_worker_hashing: false,
+    mining_enabled: true,
+    mining_session_active: true,
+    mining_safe: true,
+    safe_to_mine: true,
+    active_threads: 1,
+    configured_threads: 1,
+    last_error: "supervisor_context_cancelled: mining worker epoch cancelled; restarting workers.",
+    mining_paused_reason: "Mining worker epoch cancelled unexpectedly; restarting workers.",
+    rpc_health: "ok",
+    dashboard_data_fresh: true,
+    sync_state: "current",
+    blocks_behind: 0,
+    good_peer_count: 4,
+    active_template_height: 3204,
+    current_tip_height: 3203,
+    active_template_is_fresh: true,
+    active_template_refresh_due: false,
+    active_template_prev_hash: "tip",
+    current_tip_hash: "tip",
+  }, overnightWalletSummary);
+  assert.equal(state.status, "running");
+  assert.equal(state.activeMining, true);
+  assert.equal(state.miningLoopLabel, "active");
+  assert.equal(state.sessionModeLabel, "running");
+  assert.doesNotMatch(`${state.statusLabel} ${state.safetyLabel} ${state.miningLoopLabel}`, /unsafe|paused/i);
+});
+
+test("user stop displays stopped with user_stop reason", () => {
+  const state = buildMinerDashboardState({
+    ...stoppedMinerStatus,
+    miner_state: "stopped",
+    last_error: "user_stop",
+    last_stop_reason: "user_stop",
+  }, overnightWalletSummary);
+  assert.equal(state.status, "stopped");
+  assert.equal(state.lastActionLabel, "user_stop");
 });
 
 test("RPC timeout does not clear start notice while miner status is unavailable", () => {
@@ -336,12 +561,42 @@ test("stale active template is visible while miner loop is paused", () => {
   }, overnightWalletSummary);
   assert.equal(state.activeMining, false);
   assert.equal(state.status, "unsafe");
-  assert.equal(state.miningLoopLabel, "paused / waiting for safe template");
+  assert.equal(state.miningLoopLabel, "paused: Mining paused: template is stale; waiting for fresh block template.");
   assert.equal(state.templateHeightLabel, "3136");
   assert.equal(state.templateRefreshLabel, "stale / refreshing");
   assert.equal(state.templateFreshnessLabel, "stale / refresh required");
   assert.equal(state.templateStaleReasonLabel, "template height is not current tip height + 1");
   assert.match(state.safetyLabel, /template is stale/);
+});
+
+test("stale active template with refresh due displays active recovery", () => {
+  const state = buildMinerDashboardState({
+    ...stoppedMinerStatus,
+    active_mining: false,
+    mining_enabled: true,
+    mining_safe: false,
+    safe_to_mine: false,
+    active_template_height: 3205,
+    current_tip_height: 3206,
+    active_template_age_seconds: 10 * 60,
+    active_template_is_fresh: false,
+    active_template_refresh_due: true,
+    template_recovery_pending: true,
+    template_recovery_age_seconds: 10,
+    active_template_stale_reason: "template prev hash does not match current tip",
+    active_template_refresh_reason: "prev_hash_mismatch: template prev hash does not match current tip",
+    active_template_prev_hash: "old-tip",
+    current_tip_hash: "new-tip",
+    stale_template_skip_count: 1,
+  }, overnightWalletSummary);
+  assert.equal(state.activeMining, false);
+  assert.equal(state.status, "retrying");
+  assert.equal(state.templateRefreshLabel, "refreshing");
+  assert.equal(state.templateFreshnessLabel, "refreshing / waiting for fresh template");
+  assert.match(state.templateStaleReasonLabel, /Waiting for fresh template: template prev hash does not match current tip/);
+  assert.equal(state.sessionModeLabel, "refreshing template / waiting for fresh template");
+  assert.equal(state.miningLoopLabel, "paused: New tip detected; refreshing mining template");
+  assert.equal(state.pausedReasonLabel, "New tip detected; refreshing mining template");
 });
 
 test("soft template refresh stays running and reads as still valid", () => {
@@ -356,7 +611,8 @@ test("soft template refresh stays running and reads as still valid", () => {
     active_template_age_seconds: 2 * 60,
     active_template_is_fresh: true,
     active_template_refresh_due: true,
-    active_template_refresh_reason: "refreshing template in background; current template still valid",
+    active_template_stale_reason: "template unavailable",
+    active_template_refresh_reason: "template_stale: template unavailable",
     active_template_prev_hash: "0000015725e19df418b355",
     current_tip_hash: "0000015725e19df418b355",
     active_threads: 1,
@@ -364,7 +620,7 @@ test("soft template refresh stays running and reads as still valid", () => {
   }, overnightWalletSummary);
   assert.equal(state.activeMining, true);
   assert.equal(state.status, "running");
-  assert.equal(state.miningLoopLabel, "active");
+  assert.equal(state.miningLoopLabel, "active; refreshing template in background");
   assert.equal(state.templateRefreshLabel, "refreshing");
   assert.equal(state.templateFreshnessLabel, "refreshing / still valid");
   assert.match(state.templateStaleReasonLabel, /current template still valid/);
@@ -378,6 +634,32 @@ test("peer status uses good-peer reason when peer is not suitable", () => {
     good_peer_reason: "height too low",
   };
   assert.equal(peerStatusLabel(peer, { height: 3177 }), "height too low");
+});
+
+test("estimated network hashrate share explains local share", () => {
+  assert.equal(estimatedHashrateShareLabel({ hps: 914 }, { khps: 6.279 }), "~14.56%");
+  assert.equal(estimatedHashrateShareLabel({ hps: 37.43 }, { hps: 1000 }), "~3.74%");
+  assert.match(ESTIMATED_NETWORK_HASHRATE_NOTE, /not a live sum of all miners/i);
+});
+
+test("paused miner dashboard exposes no live thread/share calculations", () => {
+  const state = buildMinerDashboardState({
+    ...stoppedMinerStatus,
+    mining_enabled: true,
+    active_mining: false,
+    miner_state: "paused_hard_stale_template",
+    mining_safe: false,
+    active_threads: 0,
+    configured_threads: 1,
+    active_template_is_fresh: false,
+    active_template_refresh_due: true,
+    template_recovery_pending: true,
+    active_template_stale_reason: "template prev hash does not match current tip",
+  }, overnightWalletSummary);
+  assert.equal(state.liveActiveThreads, 0);
+  assert.equal(state.threadMetricLabel, "not currently mining / 1 configured");
+  assert.match(state.hashrateMetricLabel, /^0 KH\/s/);
+  assert.equal(estimatedHashrateShareLabel({ hps: 0 }, { hps: 1000 }), "-");
 });
 
 test("unowned payout hash is rendered as a blocking wallet safety warning", () => {

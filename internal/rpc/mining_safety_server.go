@@ -20,6 +20,9 @@ func (s *Server) checkSafeToMine(cfg config.MiningConfig, requireDestination boo
 		SafeRequired:        cfg.SafeRequired,
 		AllowUnsafe:         cfg.AllowUnsafe,
 		MinGoodPeers:        cfg.MinGoodPeers,
+		MinAgreeingPeers:    cfg.MinAgreeingPeers,
+		PeerGraceSeconds:    cfg.PeerGraceSeconds,
+		PeerRecoverySeconds: cfg.PeerRecoverySeconds,
 		BlocksBehindAllowed: cfg.BlocksBehindOK,
 		SyncState:           "unknown",
 	}
@@ -52,7 +55,19 @@ func (s *Server) checkSafeToMine(cfg config.MiningConfig, requireDestination boo
 		input.NoUsefulChainData = boolFromMap(sync, "no_useful_chain_data")
 		input.LastSyncError = stringFromMap(sync, "last_sync_error", "")
 		peers := s.p2p.PeerInfos()
-		input.GoodPeerCount = goodMiningPeerCount(peers, input.LocalHeight)
+		peerAssessment := assessMiningPeers(peers, input.LocalHeight)
+		input.GoodPeerCount = peerAssessment.Compatible
+		input.AgreeingPeerCount = peerAssessment.CurrentAgreeing
+		input.CompatiblePeerCount = peerAssessment.Compatible
+		input.Lagging1PeerCount = peerAssessment.Lagging1
+		input.Lagging2PeerCount = peerAssessment.Lagging2
+		input.LaggingMorePeerCount = peerAssessment.LaggingMore
+		input.StaleChainDataPeerCount = peerAssessment.StaleChainData
+		input.UnresponsivePeerCount = peerAssessment.Unresponsive
+		input.ConflictingTipPeerCount = peerAssessment.ConflictingTip
+		input.StrongerChainworkPeerCount = peerAssessment.StrongerChainwork
+		input.WrongChainPeerCount = peerAssessment.WrongChain
+		input.ProtocolErrorPeerCount = peerAssessment.ProtocolError
 		input.PeerSplit = miningPeerSetSplit(peers)
 		if input.PeerCount == 0 && len(peers) > 0 {
 			input.PeerCount = len(peers)
@@ -94,11 +109,15 @@ func (s *Server) checkSafeToMine(cfg config.MiningConfig, requireDestination boo
 	}
 	if input.HasActiveTemplate {
 		input.ActiveTemplateFresh, input.ActiveTemplateStaleReason = s.activeTemplateFreshness(input.CurrentTemplateHeight, input.ActiveTemplatePrevHash, templateAt)
-		if input.ActiveTemplateFresh && input.TemplateSoftRefreshAgeSeconds > 0 && input.TemplateAgeSeconds > input.TemplateSoftRefreshAgeSeconds {
+		if !input.ActiveTemplateFresh {
+			input.ActiveTemplateRefreshDue = true
+			input.ActiveTemplateRefreshReason = staleTemplateRefreshReason(input.ActiveTemplateStaleReason)
+		} else if input.TemplateSoftRefreshAgeSeconds > 0 && input.TemplateAgeSeconds > input.TemplateSoftRefreshAgeSeconds {
 			input.ActiveTemplateRefreshDue = true
 			input.ActiveTemplateRefreshReason = "refreshing template in background; current template still valid"
 		}
 	}
+	s.applyMiningPeerAgreementWindow(&input)
 	return CheckSafeToMine(input)
 }
 
@@ -120,6 +139,161 @@ func (s *Server) activeTemplateFreshness(templateHeight int32, templatePrevHash 
 		return false, "template age exceeds hard stale limit"
 	}
 	return true, ""
+}
+
+type miningPeerAssessment struct {
+	CurrentAgreeing   int
+	Compatible        int
+	Lagging1          int
+	Lagging2          int
+	LaggingMore       int
+	StaleChainData    int
+	Unresponsive      int
+	ConflictingTip    int
+	StrongerChainwork int
+	WrongChain        int
+	ProtocolError     int
+	Counts            map[string]int
+}
+
+func assessMiningPeers(peers []p2p.PeerInfo, localHeight int32) miningPeerAssessment {
+	out := miningPeerAssessment{Counts: make(map[string]int)}
+	for _, peer := range peers {
+		category := strings.TrimSpace(peer.PeerSafetyCategory)
+		if category == "" {
+			category = miningPeerCategory(peer, localHeight)
+		}
+		out.Counts[category]++
+		switch category {
+		case "current_agreeing":
+			out.CurrentAgreeing++
+			out.Compatible++
+		case "lagging_1_block":
+			out.Lagging1++
+			out.Compatible++
+		case "lagging_2_blocks":
+			out.Lagging2++
+			out.Compatible++
+		case "lagging_more_than_2":
+			out.LaggingMore++
+		case "stale_chain_data":
+			out.StaleChainData++
+		case "unresponsive":
+			out.Unresponsive++
+		case "conflicting_tip":
+			out.ConflictingTip++
+		case "stronger_chainwork":
+			out.StrongerChainwork++
+		case "wrong_chain_id":
+			out.WrongChain++
+		case "protocol_error":
+			out.ProtocolError++
+		}
+	}
+	return out
+}
+
+func miningPeerCategory(peer p2p.PeerInfo, localHeight int32) string {
+	reason := strings.ToLower(strings.TrimSpace(peer.GoodPeerReason))
+	if strings.Contains(reason, "wrong chain") {
+		return "wrong_chain_id"
+	}
+	if strings.TrimSpace(peer.LastBlockReject) != "" || strings.TrimSpace(peer.LastSyncError) != "" {
+		return "protocol_error"
+	}
+	if peer.MissedPongs >= 3 || strings.EqualFold(peer.PeerQuality, "poor") {
+		return "unresponsive"
+	}
+	if localHeight > 0 && peer.ReportedHeight <= 0 {
+		return "stale_chain_data"
+	}
+	if localHeight > 0 && peer.ReportedHeight > 0 {
+		lag := localHeight - peer.ReportedHeight
+		switch {
+		case lag < 0:
+			return "stronger_chainwork"
+		case lag == 0:
+			return "current_agreeing"
+		case lag == 1:
+			return "lagging_1_block"
+		case lag == 2:
+			return "lagging_2_blocks"
+		case peer.Stale:
+			return "stale_chain_data"
+		default:
+			return "lagging_more_than_2"
+		}
+	}
+	if peer.Stale {
+		return "stale_chain_data"
+	}
+	if peer.GoodPeer {
+		return "current_agreeing"
+	}
+	return "stale_chain_data"
+}
+
+func (s *Server) applyMiningPeerAgreementWindow(input *MiningSafetyInput) {
+	if s == nil || input == nil {
+		return
+	}
+	minAgreeing := input.MinAgreeingPeers
+	if minAgreeing <= 0 {
+		minAgreeing = defaultMiningMinAgreeingPeers
+	}
+	graceSeconds := input.PeerGraceSeconds
+	if graceSeconds <= 0 {
+		graceSeconds = defaultMiningPeerGraceSeconds
+	}
+	recoverySeconds := input.PeerRecoverySeconds
+	if recoverySeconds <= 0 {
+		recoverySeconds = defaultMiningPeerRecoverySeconds
+	}
+	input.MinAgreeingPeers = minAgreeing
+	input.PeerGraceSeconds = graceSeconds
+	input.PeerRecoverySeconds = recoverySeconds
+	immediateRisk := input.PeerCount == 0 ||
+		input.StrongerChainworkPeerCount > 0 ||
+		input.ConflictingTipPeerCount > 0 ||
+		input.WrongChainPeerCount > 0 ||
+		input.ProtocolErrorPeerCount > 0 ||
+		input.BlocksBehind > int32(input.BlocksBehindAllowed)
+	if minAgreeing <= 0 || immediateRisk {
+		return
+	}
+	now := time.Now()
+	s.minerMu.Lock()
+	defer s.minerMu.Unlock()
+	if input.AgreeingPeerCount < minAgreeing {
+		if s.minerPeerAgreementLostSince.IsZero() {
+			s.minerPeerAgreementLostSince = now
+		}
+		s.minerPeerAgreementRecoveredSince = time.Time{}
+		elapsed := now.Sub(s.minerPeerAgreementLostSince)
+		if elapsed < time.Duration(graceSeconds)*time.Second {
+			input.PeerAgreementGraceActive = true
+			input.PeerAgreementGraceRemaining = int((time.Duration(graceSeconds)*time.Second - elapsed + time.Second - 1) / time.Second)
+			return
+		}
+		s.minerPeerAgreementPaused = true
+		input.PeerSafetyPauseActive = true
+		return
+	}
+	s.minerPeerAgreementLostSince = time.Time{}
+	if s.minerPeerAgreementPaused {
+		if s.minerPeerAgreementRecoveredSince.IsZero() {
+			s.minerPeerAgreementRecoveredSince = now
+		}
+		elapsed := now.Sub(s.minerPeerAgreementRecoveredSince)
+		if elapsed < time.Duration(recoverySeconds)*time.Second {
+			input.PeerAgreementRecoveryActive = true
+			input.PeerAgreementRecoveryRemaining = int((time.Duration(recoverySeconds)*time.Second - elapsed + time.Second - 1) / time.Second)
+			input.PeerSafetyPauseActive = true
+			return
+		}
+	}
+	s.minerPeerAgreementRecoveredSince = time.Time{}
+	s.minerPeerAgreementPaused = false
 }
 
 func miningTemplateSoftRefreshAge() time.Duration {
@@ -146,21 +320,16 @@ func miningTemplateHardStaleAgeSeconds() float64 {
 	return miningTemplateHardStaleAge().Seconds()
 }
 
+func miningTemplateRecoveryTimeout() time.Duration {
+	return 30 * time.Second
+}
+
+func miningTemplateRecoveryTimeoutSeconds() float64 {
+	return miningTemplateRecoveryTimeout().Seconds()
+}
+
 func goodMiningPeerCount(peers []p2p.PeerInfo, localHeight int32) int {
-	good := 0
-	for _, peer := range peers {
-		if peer.Stale || strings.EqualFold(peer.PeerQuality, "poor") {
-			continue
-		}
-		if localHeight > 0 && peer.ReportedHeight <= 0 {
-			continue
-		}
-		if peer.ReportedHeight > 0 && peer.ReportedHeight+1 < localHeight {
-			continue
-		}
-		good++
-	}
-	return good
+	return assessMiningPeers(peers, localHeight).Compatible
 }
 
 func miningPeerSetSplit(peers []p2p.PeerInfo) bool {

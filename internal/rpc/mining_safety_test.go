@@ -1,6 +1,11 @@
 package rpc
 
-import "testing"
+import (
+	"testing"
+	"time"
+
+	"legacycoin/legacy-go/internal/p2p"
+)
 
 func safeMiningInput() MiningSafetyInput {
 	return MiningSafetyInput{
@@ -26,6 +31,134 @@ func TestCheckSafeToMineAllowsSyncedWithGoodPeers(t *testing.T) {
 	}
 	if status.Reason != "" {
 		t.Fatalf("safe status should not have reason: %q", status.Reason)
+	}
+}
+
+func TestCheckSafeToMineAllowsTwoCurrentPeersWithLaggingPeers(t *testing.T) {
+	input := safeMiningInput()
+	input.LocalHeight = 3310
+	input.BestPeerHeight = 3310
+	input.BlocksBehind = 0
+	input.PeerCount = 4
+	input.MinAgreeingPeers = 2
+	input.GoodPeerCount = 4
+	input.CompatiblePeerCount = 4
+	input.AgreeingPeerCount = 2
+	input.Lagging1PeerCount = 1
+	input.Lagging2PeerCount = 1
+	status := CheckSafeToMine(input)
+	if !status.Safe {
+		t.Fatalf("two current agreeing peers plus 1-2 block lagging peers should be safe: %+v", status)
+	}
+	if status.AgreeingPeerCount != 2 || status.Lagging1PeerCount != 1 || status.Lagging2PeerCount != 1 {
+		t.Fatalf("peer category counts not preserved: %+v", status)
+	}
+}
+
+func TestCheckSafeToMineGraceAllowsTemporaryPeerDegradation(t *testing.T) {
+	input := safeMiningInput()
+	input.MinAgreeingPeers = 2
+	input.PeerCount = 4
+	input.GoodPeerCount = 2
+	input.CompatiblePeerCount = 2
+	input.AgreeingPeerCount = 1
+	input.PeerAgreementGraceActive = true
+	input.PeerAgreementGraceRemaining = 42
+	status := CheckSafeToMine(input)
+	if !status.Safe || status.State != "degraded" {
+		t.Fatalf("temporary peer degradation should warn but remain safe during grace: %+v", status)
+	}
+	if status.Reason == "" || !status.PeerAgreementGraceActive {
+		t.Fatalf("expected degraded peer grace diagnostics: %+v", status)
+	}
+}
+
+func TestCheckSafeToMinePersistentLossOfAgreeingPeersPauses(t *testing.T) {
+	input := safeMiningInput()
+	input.MinAgreeingPeers = 2
+	input.PeerCount = 4
+	input.GoodPeerCount = 2
+	input.CompatiblePeerCount = 2
+	input.AgreeingPeerCount = 1
+	status := CheckSafeToMine(input)
+	if status.Safe {
+		t.Fatalf("persistent loss of agreeing peers should pause mining: %+v", status)
+	}
+	if status.Reason != "Mining paused: fewer than 2 current agreeing peer(s)." {
+		t.Fatalf("unexpected reason: %q", status.Reason)
+	}
+}
+
+func TestCheckSafeToMineStrongerChainPausesImmediately(t *testing.T) {
+	input := safeMiningInput()
+	input.MinAgreeingPeers = 2
+	input.PeerCount = 4
+	input.AgreeingPeerCount = 2
+	input.StrongerChainworkPeerCount = 1
+	input.PeerAgreementGraceActive = true
+	status := CheckSafeToMine(input)
+	if status.Safe {
+		t.Fatalf("stronger chain candidate must pause immediately: %+v", status)
+	}
+	if status.Reason != "Mining paused: peer reports a stronger chain candidate." {
+		t.Fatalf("unexpected reason: %q", status.Reason)
+	}
+}
+
+func TestMiningPeerAssessmentCategorizesLaggingPeers(t *testing.T) {
+	peers := []p2p.PeerInfo{
+		{ReportedHeight: 3310, PeerSafetyCategory: "current_agreeing", GoodPeer: true},
+		{ReportedHeight: 3310, PeerSafetyCategory: "current_agreeing", GoodPeer: true},
+		{ReportedHeight: 3309, PeerSafetyCategory: "lagging_1_block", GoodPeer: true},
+		{ReportedHeight: 3308, PeerSafetyCategory: "lagging_2_blocks", GoodPeer: true},
+	}
+	assessment := assessMiningPeers(peers, 3310)
+	if assessment.CurrentAgreeing != 2 || assessment.Lagging1 != 1 || assessment.Lagging2 != 1 || assessment.Compatible != 4 {
+		t.Fatalf("assessment = %+v", assessment)
+	}
+}
+
+func TestPeerAgreementHysteresisPausesAndRecovers(t *testing.T) {
+	s := &Server{}
+	input := MiningSafetyInput{
+		PeerCount:           4,
+		MinAgreeingPeers:    2,
+		PeerGraceSeconds:    60,
+		PeerRecoverySeconds: 20,
+		BlocksBehindAllowed: 1,
+		AgreeingPeerCount:   1,
+	}
+	s.minerPeerAgreementLostSince = time.Now().Add(-61 * time.Second)
+	s.applyMiningPeerAgreementWindow(&input)
+	if !input.PeerSafetyPauseActive {
+		t.Fatalf("expected persistent low agreement to activate pause: %+v", input)
+	}
+
+	recovering := MiningSafetyInput{
+		PeerCount:           4,
+		MinAgreeingPeers:    2,
+		PeerGraceSeconds:    60,
+		PeerRecoverySeconds: 20,
+		BlocksBehindAllowed: 1,
+		AgreeingPeerCount:   2,
+	}
+	s.applyMiningPeerAgreementWindow(&recovering)
+	if !recovering.PeerAgreementRecoveryActive || !recovering.PeerSafetyPauseActive {
+		t.Fatalf("expected recovery hysteresis to keep pause briefly: %+v", recovering)
+	}
+
+	recovered := MiningSafetyInput{
+		PeerCount:           4,
+		MinAgreeingPeers:    2,
+		PeerGraceSeconds:    60,
+		PeerRecoverySeconds: 20,
+		BlocksBehindAllowed: 1,
+		AgreeingPeerCount:   2,
+	}
+	s.minerPeerAgreementRecoveredSince = time.Now().Add(-21 * time.Second)
+	s.applyMiningPeerAgreementWindow(&recovered)
+	if recovered.PeerSafetyPauseActive || recovered.PeerAgreementRecoveryActive || s.minerPeerAgreementPaused {
+		t.Fatalf("expected hysteresis recovery to clear pause: input=%+v paused=%t", recovered, s.minerPeerAgreementPaused)
 	}
 }
 
@@ -172,6 +305,40 @@ func TestCheckSafeToMineAllowsSoftTemplateRefresh(t *testing.T) {
 	}
 }
 
+func TestCheckSafeToMineClearsUnavailableReasonForFreshTemplate(t *testing.T) {
+	input := safeMiningInput()
+	input.HasActiveTemplate = true
+	input.ActiveTemplateFresh = true
+	input.ActiveTemplateRefreshDue = false
+	input.ActiveTemplateStaleReason = "template unavailable"
+	input.ActiveTemplateRefreshReason = "template_stale: template unavailable"
+	input.CurrentTipHeight = 101
+	input.CurrentTemplateHeight = 102
+	input.CurrentTipHash = "tip"
+	input.ActiveTemplatePrevHash = "tip"
+	input.TemplateAgeSeconds = 5
+	input.TemplateSoftRefreshAgeSeconds = 30
+	input.TemplateMaxAgeSeconds = 20 * 60
+
+	status := CheckSafeToMine(input)
+	if !status.Safe {
+		t.Fatalf("fresh active template should be safe: %+v", status)
+	}
+	if status.ActiveTemplateRefreshDue || status.ActiveTemplateStaleReason != "" || status.ActiveTemplateRefreshReason != "" {
+		t.Fatalf("fresh active template must clear stale/unavailable state, got %+v", status)
+	}
+
+	input.ActiveTemplateRefreshDue = true
+	input.ActiveTemplateRefreshReason = "template_stale: template unavailable"
+	status = CheckSafeToMine(input)
+	if !status.Safe {
+		t.Fatalf("fresh soft-refresh template should be safe: %+v", status)
+	}
+	if status.ActiveTemplateStaleReason != "" || status.ActiveTemplateRefreshReason != "refreshing template in background; current template still valid" {
+		t.Fatalf("fresh soft-refresh template must normalize stale/unavailable wording, got %+v", status)
+	}
+}
+
 func TestCheckSafeToMineBlocksHardTemplateAge(t *testing.T) {
 	input := safeMiningInput()
 	input.HasActiveTemplate = true
@@ -208,6 +375,9 @@ func TestCheckSafeToMineBlocksStaleActiveTemplate(t *testing.T) {
 	if status.Reason == "" || status.StaleRateWarning != "" {
 		t.Fatalf("expected template block reason without stale-rate warning: %+v", status)
 	}
+	if !status.ActiveTemplateRefreshDue || status.ActiveTemplateRefreshReason != "height_mismatch: template height is not current tip height + 1" {
+		t.Fatalf("stale active template must force refresh diagnostics: %+v", status)
+	}
 }
 
 func TestCheckSafeToMineBlocksPrevHashMismatch(t *testing.T) {
@@ -221,6 +391,30 @@ func TestCheckSafeToMineBlocksPrevHashMismatch(t *testing.T) {
 	status := CheckSafeToMine(input)
 	if status.Safe || status.Reason != "Mining paused: template prev hash does not match current tip." {
 		t.Fatalf("expected prev hash mismatch block, got %+v", status)
+	}
+	if !status.ActiveTemplateRefreshDue || status.ActiveTemplateRefreshReason != "prev_hash_mismatch: template prev hash does not match current tip" {
+		t.Fatalf("prev-hash mismatch must force refresh due, got %+v", status)
+	}
+}
+
+func TestCheckSafeToMineStaleTemplateNeverReportsRefreshDueNo(t *testing.T) {
+	input := safeMiningInput()
+	input.HasActiveTemplate = true
+	input.ActiveTemplateFresh = false
+	input.ActiveTemplateStaleReason = "template prev hash does not match current tip"
+	input.CurrentTemplateHeight = 3205
+	input.CurrentTipHeight = 3206
+	input.ActiveTemplatePrevHash = "old-tip"
+	input.CurrentTipHash = "new-tip"
+	status := CheckSafeToMine(input)
+	if status.Safe {
+		t.Fatalf("stale template must block hashing: %+v", status)
+	}
+	if !status.ActiveTemplateRefreshDue {
+		t.Fatalf("stale template must say refresh due yes: %+v", status)
+	}
+	if status.ActiveTemplateRefreshReason != "prev_hash_mismatch: template prev hash does not match current tip" {
+		t.Fatalf("refresh reason = %q", status.ActiveTemplateRefreshReason)
 	}
 }
 
