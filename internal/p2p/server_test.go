@@ -638,6 +638,17 @@ func TestClassifyPeerSafetyKeepsSmallHeightLagCompatible(t *testing.T) {
 	}
 }
 
+func TestClassifyPeerSafetyKeepsSmallLagCompatibleWithOldMetadata(t *testing.T) {
+	category, good, reason := classifyPeerSafety(3315, 3314, true, 0, "poor", "", "", "", "", 75*time.Millisecond)
+	if category != "lagging_1_block" || !good {
+		t.Fatalf("stale metadata 1-block lag category=%q good=%t reason=%q", category, good, reason)
+	}
+	category, good, reason = classifyPeerSafety(3315, 3313, true, 0, "poor", "", "", "", "", 75*time.Millisecond)
+	if category != "lagging_2_blocks" || !good {
+		t.Fatalf("stale metadata 2-block lag category=%q good=%t reason=%q", category, good, reason)
+	}
+}
+
 func TestPeerInfosIncludePingAndSyncFields(t *testing.T) {
 	s, _, cleanup := newP2PTestServerWithGenesis(t)
 	defer cleanup()

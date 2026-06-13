@@ -73,9 +73,6 @@ function Assert-Condition([bool]$Condition, [string]$Message) {
     }
 }
 
-Write-Host "[smoke-miner-eco] starting Eco miner with $Threads thread(s)"
-Invoke-LegacyRpc "startminer" @(@{ threads = $Threads }) | Out-Null
-
 $deadline = (Get-Date).AddSeconds($DurationSeconds)
 $previousHashes = $null
 $previousNonce = $null
@@ -84,11 +81,57 @@ $previousTipHash = ""
 $previousTemplateHeight = $null
 $stuckRefreshSeconds = 0
 $peerPauseSeconds = 0
+$hardStaleSeconds = 0
+$hardStaleRecoveryLimitSeconds = [Math]::Max(30, $PollSeconds * 3)
 $sawPeerSafetyPause = $false
 $sawPeerRecovery = $false
+$sawHardStalePause = $false
+$sawHardStaleRecovery = $false
 $sawRunningProgress = $false
+$startedBySmoke = $false
 
 try {
+    Write-Host "[smoke-miner-eco] starting Eco miner with $Threads thread(s)"
+    $startDeadline = (Get-Date).AddSeconds([Math]::Max(180, $DurationSeconds))
+    while (-not $startedBySmoke) {
+        try {
+            Invoke-LegacyRpc "startminer" @(@{ threads = $Threads }) | Out-Null
+            $startedBySmoke = $true
+            break
+        } catch {
+            $startError = $_.Exception.Message
+            $status = $null
+            try {
+                $status = Invoke-LegacyRpc "getminerstatus"
+            } catch {
+                throw $startError
+            }
+            $state = "$($status.miner_state)"
+            $peerSafetyStartBlock = $startError -match "peer|agreeing|chainwork|conflicting|no peers" -or $state -eq "paused_peer_unsafe"
+            if (-not $peerSafetyStartBlock) {
+                throw $startError
+            }
+            $sawPeerSafetyPause = $true
+            $activeThreads = [int](Number-OrZero $status.active_threads)
+            $peerCount = [int](Number-OrZero $status.peer_count)
+            $agreeingPeers = [int](Number-OrZero $status.current_agreeing_peer_count)
+            $lag1 = [int](Number-OrZero $status.lagging_1_block_peer_count)
+            $lag2 = [int](Number-OrZero $status.lagging_2_blocks_peer_count)
+            $lagMore = [int](Number-OrZero $status.lagging_more_than_2_peer_count)
+            $conflicting = [int](Number-OrZero $status.conflicting_tip_peer_count)
+            $stronger = [int](Number-OrZero $status.stronger_chainwork_peer_count)
+            $unresponsive = [int](Number-OrZero $status.unresponsive_peer_count)
+            $wrongChain = [int](Number-OrZero $status.wrong_chain_peer_count)
+            $protocolError = [int](Number-OrZero $status.protocol_error_peer_count)
+            Write-Host ("[smoke-miner-eco] start waiting for peer safety: active={0} peers={1} agreeing={2} lag1={3} lag2={4} lag_more={5} conflicting={6} stronger={7} unresponsive={8} wrong_chain={9} protocol_error={10} reason={11}" -f $activeThreads, $peerCount, $agreeingPeers, $lag1, $lag2, $lagMore, $conflicting, $stronger, $unresponsive, $wrongChain, $protocolError, $startError)
+            Assert-Condition ($activeThreads -eq 0) "peer-unsafe start wait should have active_threads=0, got $activeThreads"
+            Assert-Condition ($conflicting -eq 0) "conflicting chain peers remain unresolved"
+            Assert-Condition ($stronger -eq 0) "stronger chainwork peers remain unresolved"
+            Assert-Condition ((Get-Date) -lt $startDeadline) "startminer stayed peer-unsafe past startup timeout: $startError"
+            Start-Sleep -Seconds $PollSeconds
+        }
+    }
+
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Seconds $PollSeconds
         $status = Invoke-LegacyRpc "getminerstatus"
@@ -108,6 +151,8 @@ try {
         $tipHash = "$($status.current_tip_hash)"
         $refreshReason = "$($status.active_template_refresh_reason)"
         $lastTemplateError = "$($status.last_template_refresh_error)"
+        $templateRecoveryPending = Bool-OrFalse $status.template_recovery_pending
+        $templateRecoveryAge = [int](Number-OrZero $status.template_recovery_age_seconds)
         $workerStalled = Bool-OrFalse $status.worker_progress_stalled
         $peerCount = [int](Number-OrZero $status.peer_count)
         $agreeingPeers = [int](Number-OrZero $status.current_agreeing_peer_count)
@@ -139,6 +184,23 @@ try {
             continue
         }
 
+        if ($state -eq "paused_hard_stale_template") {
+            $sawHardStalePause = $true
+            $hardStaleSeconds += $PollSeconds
+            Write-Host ("[smoke-miner-eco] hard-stale template recovery: active={0}/{1} old_template={2} tip={3} refresh_due={4} pending={5} recovery_age={6}s reason={7} stale={8}" -f $activeThreads, $configuredThreads, $templateHeight, $tipHeight, $refreshDue, $templateRecoveryPending, $templateRecoveryAge, $refreshReason, $status.active_template_stale_reason)
+            Assert-Condition ($activeThreads -eq 0) "paused_hard_stale_template should have active_threads=0, got $activeThreads"
+            Assert-Condition ($refreshDue) "paused_hard_stale_template must expose active_template_refresh_due=true"
+            Assert-Condition ([string]::IsNullOrWhiteSpace($lastTemplateError) -or $lastTemplateError -eq "-") "hard-stale template recovery failed: $lastTemplateError"
+            Assert-Condition ($hardStaleSeconds -le $hardStaleRecoveryLimitSeconds) "paused_hard_stale_template did not recover within $hardStaleRecoveryLimitSeconds seconds"
+            $previousHashes = $null
+            $previousNonce = $null
+            $previousRefreshCount = $null
+            $previousTipHash = ""
+            $previousTemplateHeight = $null
+            $stuckRefreshSeconds = 0
+            continue
+        }
+
         if ($sawPeerSafetyPause -and ($state -eq "running" -or $state -eq "soft_refreshing_still_mining")) {
             $sawPeerRecovery = $true
         }
@@ -154,6 +216,10 @@ try {
         Assert-Condition ($nonce -gt 0) "active_threads=$activeThreads but last_nonce stayed 0"
         Assert-Condition ($hashps -gt 0) "active_threads=$activeThreads but local_hashps stayed 0"
         $sawRunningProgress = $true
+        if ($sawHardStalePause) {
+            $sawHardStaleRecovery = $true
+            $hardStaleSeconds = 0
+        }
 
         if ($null -ne $previousHashes) {
             Assert-Condition ($hashes -gt $previousHashes) "session_hashes did not increase: previous=$previousHashes current=$hashes"
@@ -183,10 +249,13 @@ try {
     if ($sawPeerSafetyPause) {
         Assert-Condition ($sawPeerRecovery) "paused_peer_unsafe was observed but automatic recovery was not confirmed"
     }
+    if ($sawHardStalePause) {
+        Assert-Condition ($sawHardStaleRecovery) "paused_hard_stale_template was observed but automatic template recovery was not confirmed"
+    }
     Write-Host "[smoke-miner-eco] PASS: miner produced live hash progress for $DurationSeconds seconds"
 }
 finally {
-    if (-not $LeaveRunning) {
+    if (-not $LeaveRunning -and $startedBySmoke) {
         Write-Host "[smoke-miner-eco] stopping miner"
         try {
             Invoke-LegacyRpc "stopminer" @(@{ reason = "smoke_test_complete" }) | Out-Null

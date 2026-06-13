@@ -854,9 +854,6 @@ func classifyPeerSafety(localHeight, peerHeight int32, stale bool, missedPongs i
 	if missedPongs >= 3 {
 		return "unresponsive", false, "timeout"
 	}
-	if strings.EqualFold(quality, "poor") {
-		return "unresponsive", false, "poor peer quality"
-	}
 	if localHeight > 0 && peerHeight <= 0 {
 		return "stale_chain_data", false, "unknown height"
 	}
@@ -876,6 +873,9 @@ func classifyPeerSafety(localHeight, peerHeight int32, stale bool, missedPongs i
 		default:
 			return "lagging_more_than_2", false, "lagging by more than 2 blocks"
 		}
+	}
+	if strings.EqualFold(quality, "poor") {
+		return "unresponsive", false, "poor peer quality"
 	}
 	if stale {
 		return "stale_chain_data", false, "stale chain data"

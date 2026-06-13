@@ -1753,10 +1753,6 @@ function BackupPage({ snap, run, refresh }: PageProps) {
 function MiningPage({ snap, run, refresh, notify }: PageProps) {
   const mining = snap.mining || {};
   const netHash = networkHashDiagnostics(mining.network_hashps);
-  const estimatedNetworkShare = estimatedHashrateShareLabel(
-    { hps: mining.local_hashps_live ?? mining.local_hashps },
-    mining.network_hashps,
-  );
   const netSource = String(mining.network_hashps_source || "unavailable");
   const avgBlockTimeSeconds = Number(snap.chain_timing?.average_block_time_seconds || 0);
   const [threads, setThreads] = useState<number>(mining.configured_threads || snap.settings?.defaultThreads || 1);
@@ -1768,6 +1764,9 @@ function MiningPage({ snap, run, refresh, notify }: PageProps) {
   const immatureSummary = buildImmatureRewardSummary(snap.wallet || {}, snap.blockchain?.height ?? snap.wallet?.height);
   const rpcOffline = Boolean(mining.rpc_offline);
   const activeMining = minerView.activeMining;
+  const estimatedNetworkShare = activeMining
+    ? estimatedHashrateShareLabel({ hps: mining.local_hashps_live ?? mining.local_hashps }, mining.network_hashps)
+    : "-";
   const miningEnabled = Boolean(mining.mining_session_active ?? mining.mining_enabled);
   const miningStart = buildMiningStartState(mining, snap.wallet || {}, minerView);
   const canStartMining = miningStart.canStartMining;
@@ -1974,6 +1973,8 @@ function MiningPage({ snap, run, refresh, notify }: PageProps) {
           ["Template freshness", minerView.templateFreshnessLabel],
           ["Template status reason", minerView.templateStaleReasonLabel],
           ["Template refresh due", mining.active_template_refresh_due === undefined ? "-" : yesNo(mining.active_template_refresh_due)],
+          ["Template recovery pending", mining.template_recovery_pending === undefined ? "-" : yesNo(mining.template_recovery_pending)],
+          ["Template recovery age", mining.template_recovery_pending ? seconds(mining.template_recovery_age_seconds) : "-"],
           ["Template refresh reason", mining.active_template_refresh_reason || "-"],
           ["Last template refresh", miningEnabled && mining.last_template_refresh_time ? dateTime(mining.last_template_refresh_time) : minerView.templateRefreshLabel],
           ["Template age", miningEnabled ? seconds(mining.active_template_age_seconds ?? mining.last_template_refresh_ago_seconds) : minerView.templateAgeLabel],

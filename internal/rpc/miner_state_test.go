@@ -133,6 +133,22 @@ func TestResolveMinerRuntimeStateHardStalePausesWorkers(t *testing.T) {
 	}
 }
 
+func TestResolveMinerRuntimeStateTemplateRefreshFailureIsActionable(t *testing.T) {
+	input := safeMinerRuntimeInput()
+	input.WorkersHashing = false
+	input.TemplateFresh = false
+	input.TemplateRefreshDue = true
+	input.TemplateStaleReason = "template prev hash does not match current tip"
+	input.TemplateRefreshError = "template_refresh_failed: recovery timeout waiting for fresh block template"
+	state := ResolveMinerRuntimeState(input)
+	if state.State != MinerStatePausedHardStaleTemplate {
+		t.Fatalf("template refresh failure should remain a template recovery state, got %+v", state)
+	}
+	if strings.Contains(strings.ToLower(state.Reason), "internal") {
+		t.Fatalf("template recovery failure must not become generic internal_error: %+v", state)
+	}
+}
+
 func TestResolveMinerRuntimeStateUnsafePeersPauseAndRecovery(t *testing.T) {
 	input := safeMinerRuntimeInput()
 	input.SafetySafe = false
@@ -330,6 +346,20 @@ func TestMarkStaleTemplateRefreshLockedSetsDueAndSkip(t *testing.T) {
 	if s.minerLastTemplateRefreshAttempt.IsZero() {
 		t.Fatalf("expected refresh attempt timestamp")
 	}
+	if !s.minerTemplateRecoveryPending || s.minerTemplateRecoveryStartedAt.IsZero() {
+		t.Fatalf("expected template recovery pending with start time")
+	}
+}
+
+func TestMarkStaleTemplateRefreshLockedNamesRecoveryTimeout(t *testing.T) {
+	s := &Server{minerTemplateRecoveryStartedAt: time.Now().Add(-miningTemplateRecoveryTimeout() - time.Second)}
+	s.markStaleTemplateRefreshLocked("template prev hash does not match current tip", true)
+	if s.minerLastTemplateRefreshReason != "template_refresh_failed" {
+		t.Fatalf("refresh reason = %q, want template_refresh_failed", s.minerLastTemplateRefreshReason)
+	}
+	if !strings.Contains(s.minerLastTemplateRefreshError, "recovery timeout") {
+		t.Fatalf("expected recovery timeout error, got %q", s.minerLastTemplateRefreshError)
+	}
 }
 
 func TestClearValidTemplateStateDropsStaleUnavailableReason(t *testing.T) {
@@ -343,6 +373,8 @@ func TestClearValidTemplateStateDropsStaleUnavailableReason(t *testing.T) {
 		minerLastTemplateRefreshDue:    true,
 		minerLastTemplateRefreshReason: "template_stale: template unavailable",
 		minerLastTemplateRefreshError:  "previous getblocktemplate timeout",
+		minerTemplateRecoveryPending:   true,
+		minerTemplateRecoveryStartedAt: templateAt.Add(-5 * time.Second),
 	}
 	s.clearValidTemplateStateIfCurrent(3229, "tip", templateAt)
 	if !s.minerLastTemplateFresh {
@@ -350,6 +382,9 @@ func TestClearValidTemplateStateDropsStaleUnavailableReason(t *testing.T) {
 	}
 	if s.minerLastTemplateRefreshDue || s.minerLastTemplateStaleReason != "" || s.minerLastTemplateRefreshReason != "" || s.minerLastTemplateRefreshError != "" {
 		t.Fatalf("valid current template must clear stale/unavailable state: due=%t stale=%q reason=%q error=%q", s.minerLastTemplateRefreshDue, s.minerLastTemplateStaleReason, s.minerLastTemplateRefreshReason, s.minerLastTemplateRefreshError)
+	}
+	if s.minerTemplateRecoveryPending || !s.minerTemplateRecoveryStartedAt.IsZero() {
+		t.Fatalf("valid current template must clear recovery state")
 	}
 }
 
@@ -369,5 +404,8 @@ func TestAcceptedBlockMarksTemplateRefreshDue(t *testing.T) {
 	}
 	if s.minerStaleTemplateRefreshAttempts != 1 {
 		t.Fatalf("accepted block should count a refresh attempt, got %d", s.minerStaleTemplateRefreshAttempts)
+	}
+	if !s.minerTemplateRecoveryPending || s.minerTemplateRecoveryStartedAt.IsZero() {
+		t.Fatalf("accepted block should start template recovery")
 	}
 }

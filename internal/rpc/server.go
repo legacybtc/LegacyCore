@@ -96,6 +96,8 @@ type Server struct {
 	minerPeerAgreementLostSince       time.Time
 	minerPeerAgreementRecoveredSince  time.Time
 	minerPeerAgreementPaused          bool
+	minerTemplateRecoveryPending      bool
+	minerTemplateRecoveryStartedAt    time.Time
 	defaultTxFee                      int64
 }
 
@@ -4487,6 +4489,8 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 	staleTemplateRefreshAttempts := s.minerStaleTemplateRefreshAttempts
 	staleTemplateSkips := s.minerStaleTemplateSkips
 	lastTemplateRefreshError := s.minerLastTemplateRefreshError
+	templateRecoveryPending := s.minerTemplateRecoveryPending
+	templateRecoveryStartedAt := s.minerTemplateRecoveryStartedAt
 	acceptedRecords := append([]minerAcceptedRecord(nil), s.minerAcceptedRecords...)
 	s.minerMu.Unlock()
 	uptime := int64(0)
@@ -4544,9 +4548,15 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 	}
 	lastTemplateAge := float64(-1)
 	lastTemplateTimeValue := int64(0)
+	templateRecoveryAge := float64(0)
+	templateRecoveryStartedAtValue := int64(0)
 	if !lastTemplateTime.IsZero() {
 		lastTemplateTimeValue = lastTemplateTime.Unix()
 		lastTemplateAge = time.Since(lastTemplateTime).Seconds()
+	}
+	if templateRecoveryPending && !templateRecoveryStartedAt.IsZero() {
+		templateRecoveryStartedAtValue = templateRecoveryStartedAt.Unix()
+		templateRecoveryAge = time.Since(templateRecoveryStartedAt).Seconds()
 	}
 	hasActiveTemplate := minerEnabled && !lastTemplateTime.IsZero() && lastTemplateHeight > 0
 	if hasActiveTemplate {
@@ -4766,6 +4776,10 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 		"last_template_refresh_attempt_time":    unixOrZero(lastTemplateRefreshAttempt),
 		"last_template_refresh_success_time":    lastTemplateTimeValue,
 		"last_template_refresh_error":           lastTemplateRefreshError,
+		"template_recovery_pending":             templateRecoveryPending,
+		"template_recovery_started_time":        templateRecoveryStartedAtValue,
+		"template_recovery_age_seconds":         templateRecoveryAge,
+		"template_recovery_timeout_seconds":     miningTemplateRecoveryTimeoutSeconds(),
 		"last_template_refresh_tip_height":      lastTemplateTipHeight,
 		"last_template_refresh_tip_hash":        lastTemplateTipHash,
 		"template_refresh_count":                templateRefreshCount,
@@ -5499,9 +5513,12 @@ func (s *Server) clearValidTemplateStateIfCurrent(templateHeight int32, template
 	s.minerLastTemplateRefreshDue = false
 	s.minerLastTemplateRefreshReason = ""
 	s.minerLastTemplateRefreshError = ""
+	s.minerTemplateRecoveryPending = false
+	s.minerTemplateRecoveryStartedAt = time.Time{}
 }
 
 func (s *Server) markStaleTemplateRefreshLocked(staleReason string, incrementSkip bool) {
+	now := time.Now()
 	staleReason = strings.TrimSpace(staleReason)
 	if staleReason == "" {
 		staleReason = "template is stale"
@@ -5513,7 +5530,15 @@ func (s *Server) markStaleTemplateRefreshLocked(staleReason string, incrementSki
 	s.minerLastTemplateRefreshDue = true
 	s.minerLastTemplateRefreshReason = staleTemplateRefreshReason(staleReason)
 	s.minerLastTemplateRefreshError = ""
-	s.minerLastTemplateRefreshAttempt = time.Now()
+	s.minerLastTemplateRefreshAttempt = now
+	s.minerTemplateRecoveryPending = true
+	if s.minerTemplateRecoveryStartedAt.IsZero() {
+		s.minerTemplateRecoveryStartedAt = now
+	}
+	if now.Sub(s.minerTemplateRecoveryStartedAt) > miningTemplateRecoveryTimeout() {
+		s.minerLastTemplateRefreshReason = "template_refresh_failed"
+		s.minerLastTemplateRefreshError = "template_refresh_failed: recovery timeout waiting for fresh block template"
+	}
 	s.minerStaleTemplateRefreshAttempts++
 	if incrementSkip {
 		s.minerStaleTemplateSkips++
@@ -5521,12 +5546,17 @@ func (s *Server) markStaleTemplateRefreshLocked(staleReason string, incrementSki
 }
 
 func (s *Server) markAcceptedBlockTemplateRefreshLocked() {
+	now := time.Now()
 	s.minerLastTemplateRefreshDue = true
 	s.minerLastTemplateRefreshReason = "accepted_block_refresh: accepted block connected; refreshing template for new tip"
-	s.minerLastTemplateRefreshAttempt = time.Now()
+	s.minerLastTemplateRefreshAttempt = now
 	s.minerLastTemplateRefreshError = ""
 	s.minerLastTemplateFresh = false
 	s.minerLastTemplateStaleReason = "accepted block connected; template belongs to previous tip"
+	s.minerTemplateRecoveryPending = true
+	if s.minerTemplateRecoveryStartedAt.IsZero() {
+		s.minerTemplateRecoveryStartedAt = now
+	}
 	s.minerStaleTemplateRefreshAttempts++
 }
 
@@ -5675,6 +5705,8 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 		s.minerLastTemplateRefreshDue = false
 		s.minerLastTemplateRefreshReason = ""
 		s.minerLastTemplateRefreshError = ""
+		s.minerTemplateRecoveryPending = false
+		s.minerTemplateRecoveryStartedAt = time.Time{}
 		s.minerTemplateRefreshCount++
 		epochBaseHashes := s.minerSessionHashes
 		s.minerWorkerEpochStartedAt = time.Now()
@@ -5697,6 +5729,8 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 			}
 			if p.TemplateHeight > 0 {
 				s.minerLastTemplateHeight = p.TemplateHeight
+				s.minerTemplateRecoveryPending = false
+				s.minerTemplateRecoveryStartedAt = time.Time{}
 			}
 			if strings.TrimSpace(p.TemplatePrevHash) != "" {
 				s.minerLastTemplatePrevHash = p.TemplatePrevHash
@@ -5752,6 +5786,10 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 				}
 				s.minerLastTemplateRefreshAttempt = time.Now()
 				s.minerLastTemplateRefreshError = ""
+				s.minerTemplateRecoveryPending = true
+				if s.minerTemplateRecoveryStartedAt.IsZero() {
+					s.minerTemplateRecoveryStartedAt = s.minerLastTemplateRefreshAttempt
+				}
 				s.minerHashing = true
 				s.minerMu.Unlock()
 				continue
@@ -5768,6 +5806,30 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 				s.minerPausedReason = ""
 				s.minerMu.Unlock()
 				timer := time.NewTimer(250 * time.Millisecond)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					exitStopReason = MinerStopNodeShutdown
+					return
+				case <-timer.C:
+				}
+				continue
+			}
+			s.minerMu.Lock()
+			refreshingTemplate := s.minerTemplateRecoveryPending
+			s.minerMu.Unlock()
+			if refreshingTemplate && !errors.Is(err, blockchain.ErrBadPrevBlock) {
+				s.minerMu.Lock()
+				s.minerLastError = "template_refresh_failed: " + err.Error()
+				s.minerPausedReason = "Mining paused: template refresh failed; retrying with the current tip."
+				s.minerLastTemplateRefreshDue = true
+				s.minerLastTemplateRefreshError = s.minerLastError
+				s.minerLastTemplateRefreshReason = "template_refresh_failed"
+				s.minerLastTemplateRefreshAttempt = time.Now()
+				s.minerHashing = false
+				s.minerLocalHashPS = 0
+				s.minerMu.Unlock()
+				timer := time.NewTimer(3 * time.Second)
 				select {
 				case <-ctx.Done():
 					timer.Stop()

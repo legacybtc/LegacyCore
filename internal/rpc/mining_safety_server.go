@@ -320,6 +320,14 @@ func miningTemplateHardStaleAgeSeconds() float64 {
 	return miningTemplateHardStaleAge().Seconds()
 }
 
+func miningTemplateRecoveryTimeout() time.Duration {
+	return 30 * time.Second
+}
+
+func miningTemplateRecoveryTimeoutSeconds() float64 {
+	return miningTemplateRecoveryTimeout().Seconds()
+}
+
 func goodMiningPeerCount(peers []p2p.PeerInfo, localHeight int32) int {
 	return assessMiningPeers(peers, localHeight).Compatible
 }

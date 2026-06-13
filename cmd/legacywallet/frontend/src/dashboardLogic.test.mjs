@@ -581,6 +581,8 @@ test("stale active template with refresh due displays active recovery", () => {
     active_template_age_seconds: 10 * 60,
     active_template_is_fresh: false,
     active_template_refresh_due: true,
+    template_recovery_pending: true,
+    template_recovery_age_seconds: 10,
     active_template_stale_reason: "template prev hash does not match current tip",
     active_template_refresh_reason: "prev_hash_mismatch: template prev hash does not match current tip",
     active_template_prev_hash: "old-tip",
@@ -588,11 +590,13 @@ test("stale active template with refresh due displays active recovery", () => {
     stale_template_skip_count: 1,
   }, overnightWalletSummary);
   assert.equal(state.activeMining, false);
-  assert.equal(state.status, "starting");
-  assert.equal(state.templateRefreshLabel, "stale / refreshing");
-  assert.equal(state.templateFreshnessLabel, "stale / refresh required");
-  assert.equal(state.templateStaleReasonLabel, "template prev hash does not match current tip");
-  assert.equal(state.miningLoopLabel, "starting / confirming");
+  assert.equal(state.status, "retrying");
+  assert.equal(state.templateRefreshLabel, "refreshing");
+  assert.equal(state.templateFreshnessLabel, "refreshing / waiting for fresh template");
+  assert.match(state.templateStaleReasonLabel, /Waiting for fresh template: template prev hash does not match current tip/);
+  assert.equal(state.sessionModeLabel, "refreshing template / waiting for fresh template");
+  assert.equal(state.miningLoopLabel, "paused: New tip detected; refreshing mining template");
+  assert.equal(state.pausedReasonLabel, "New tip detected; refreshing mining template");
 });
 
 test("soft template refresh stays running and reads as still valid", () => {
@@ -636,6 +640,26 @@ test("estimated network hashrate share explains local share", () => {
   assert.equal(estimatedHashrateShareLabel({ hps: 914 }, { khps: 6.279 }), "~14.56%");
   assert.equal(estimatedHashrateShareLabel({ hps: 37.43 }, { hps: 1000 }), "~3.74%");
   assert.match(ESTIMATED_NETWORK_HASHRATE_NOTE, /not a live sum of all miners/i);
+});
+
+test("paused miner dashboard exposes no live thread/share calculations", () => {
+  const state = buildMinerDashboardState({
+    ...stoppedMinerStatus,
+    mining_enabled: true,
+    active_mining: false,
+    miner_state: "paused_hard_stale_template",
+    mining_safe: false,
+    active_threads: 0,
+    configured_threads: 1,
+    active_template_is_fresh: false,
+    active_template_refresh_due: true,
+    template_recovery_pending: true,
+    active_template_stale_reason: "template prev hash does not match current tip",
+  }, overnightWalletSummary);
+  assert.equal(state.liveActiveThreads, 0);
+  assert.equal(state.threadMetricLabel, "not currently mining / 1 configured");
+  assert.match(state.hashrateMetricLabel, /^0 KH\/s/);
+  assert.equal(estimatedHashrateShareLabel({ hps: 0 }, { hps: 1000 }), "-");
 });
 
 test("unowned payout hash is rendered as a blocking wallet safety warning", () => {

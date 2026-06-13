@@ -295,3 +295,87 @@ func TestMineBlockReportsStartupHashProgress(t *testing.T) {
 		}
 	}
 }
+
+func TestMineBlockReturnsStaleTemplateThenFreshTemplateAfterTipAdvance(t *testing.T) {
+	params := chaincfg.MainNet
+	genesisBlock, err := genesis.NewBlock(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	genesisHash, err := lowHashTestHasher{}.HashHeader(genesisBlock.Header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params.GenesisHash = genesisHash.String()
+	chain, err := blockchain.New(params, lowHashTestHasher{}, storage.NewFileStore(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.EnsureGenesis(); err != nil {
+		t.Fatal(err)
+	}
+
+	pubHash := bytes.Repeat([]byte{0x77}, 20)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	progressc := make(chan Progress, 16)
+	done := make(chan error, 1)
+	go func() {
+		_, err := MineBlock(ctx, chain, mempool.New(), neverSolveTestHasher{}, pubHash, 1, func(p Progress) {
+			progressc <- p
+		})
+		done <- err
+	}()
+
+	waitForProgress(t, progressc, func(p Progress) bool {
+		return p.Attempts > 0 && p.TemplateHeight == 1 && p.TemplateFresh
+	})
+	connected, _, err := NewBlockTemplate(chain, mempool.New(), pubHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.ConnectBlock(connected); err != nil {
+		t.Fatalf("connect external tip block: %v", err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrStaleTemplate) {
+			t.Fatalf("MineBlock returned %v, want ErrStaleTemplate", err)
+		}
+	case <-time.After(3 * time.Second):
+		cancel()
+		t.Fatalf("MineBlock did not stop stale template after tip advance")
+	}
+
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	progressc2 := make(chan Progress, 16)
+	done2 := make(chan error, 1)
+	go func() {
+		_, err := MineBlock(ctx2, chain, mempool.New(), neverSolveTestHasher{}, pubHash, 1, func(p Progress) {
+			progressc2 <- p
+		})
+		done2 <- err
+	}()
+	tip := chain.Tip()
+	waitForProgress(t, progressc2, func(p Progress) bool {
+		return p.TemplateHeight == tip.Height+1 && p.TemplatePrevHash == tip.Hash && p.TemplateFresh
+	})
+	cancel2()
+	<-done2
+}
+
+func waitForProgress(t *testing.T, progressc <-chan Progress, want func(Progress) bool) {
+	t.Helper()
+	timeout := time.After(3 * time.Second)
+	for {
+		select {
+		case p := <-progressc:
+			if want(p) {
+				return
+			}
+		case <-timeout:
+			t.Fatalf("timed out waiting for expected mining progress")
+		}
+	}
+}
