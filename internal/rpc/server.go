@@ -93,6 +93,9 @@ type Server struct {
 	minerLastSupervisorCancelTime     time.Time
 	minerLastRestartSuccessTime       time.Time
 	minerLastRestartFailure           string
+	minerPeerAgreementLostSince       time.Time
+	minerPeerAgreementRecoveredSince  time.Time
+	minerPeerAgreementPaused          bool
 	defaultTxFee                      int64
 }
 
@@ -5287,6 +5290,27 @@ func (s *Server) configureMiner(params json.RawMessage) (any, *rpcError) {
 			}
 			_ = config.AppendConfigLine(s.miningConfigPath(), "mining_min_good_peers", fmt.Sprint(n))
 			set["min_good_peers"] = n
+		case "min_agreeing_peers", "mining_min_agreeing_peers":
+			n := intFromAny(v)
+			if n < 0 {
+				return nil, &rpcError{Code: -32602, Message: "min_agreeing_peers cannot be negative"}
+			}
+			_ = config.AppendConfigLine(s.miningConfigPath(), "mining_min_agreeing_peers", fmt.Sprint(n))
+			set["min_agreeing_peers"] = n
+		case "peer_grace_seconds", "mining_peer_grace_seconds":
+			n := intFromAny(v)
+			if n < 0 {
+				return nil, &rpcError{Code: -32602, Message: "peer_grace_seconds cannot be negative"}
+			}
+			_ = config.AppendConfigLine(s.miningConfigPath(), "mining_peer_grace_seconds", fmt.Sprint(n))
+			set["peer_grace_seconds"] = n
+		case "peer_recovery_seconds", "mining_peer_recovery_seconds":
+			n := intFromAny(v)
+			if n < 0 {
+				return nil, &rpcError{Code: -32602, Message: "peer_recovery_seconds cannot be negative"}
+			}
+			_ = config.AppendConfigLine(s.miningConfigPath(), "mining_peer_recovery_seconds", fmt.Sprint(n))
+			set["peer_recovery_seconds"] = n
 		case "blocks_behind_allowed", "mining_blocks_behind_allowed":
 			n := intFromAny(v)
 			if n < 0 {
@@ -5361,7 +5385,7 @@ func (s *Server) configureMiner(params json.RawMessage) (any, *rpcError) {
 	}
 	cfg, _ := config.LoadMiningConfig(s.miningConfigPath())
 	dest := s.miningDestinationStatus(cfg)
-	return map[string]any{"updated": set, "config": s.miningConfigPath(), "miner": map[string]any{"threads": cfg.Threads, "max_threads": cfg.MaxThreads, "auto_start": cfg.AutoStart, "peer_required": cfg.PeerRequired, "safe_required": cfg.SafeRequired, "allow_unsafe": cfg.AllowUnsafe, "min_good_peers": cfg.MinGoodPeers, "blocks_behind_allowed": cfg.BlocksBehindOK, "reject_unsafe_templates": cfg.RejectUnsafeGBT, "stop_after_blocks": cfg.StopAfterBlocks, "address": dest.Address, "pubkey_hash": dest.PubKeyHashHex, "wallet_owned": dest.Owned, "external_payout": dest.External, "destination_error": dest.Error}}, nil
+	return map[string]any{"updated": set, "config": s.miningConfigPath(), "miner": map[string]any{"threads": cfg.Threads, "max_threads": cfg.MaxThreads, "auto_start": cfg.AutoStart, "peer_required": cfg.PeerRequired, "safe_required": cfg.SafeRequired, "allow_unsafe": cfg.AllowUnsafe, "min_good_peers": cfg.MinGoodPeers, "min_agreeing_peers": cfg.MinAgreeingPeers, "peer_grace_seconds": cfg.PeerGraceSeconds, "peer_recovery_seconds": cfg.PeerRecoverySeconds, "blocks_behind_allowed": cfg.BlocksBehindOK, "reject_unsafe_templates": cfg.RejectUnsafeGBT, "stop_after_blocks": cfg.StopAfterBlocks, "address": dest.Address, "pubkey_hash": dest.PubKeyHashHex, "wallet_owned": dest.Owned, "external_payout": dest.External, "destination_error": dest.Error}}, nil
 }
 
 func hashesPerThread(total float64, threads int) float64 {
@@ -5421,6 +5445,10 @@ func (s *Server) miningPeerDiagnostics(localHeight int32) (map[string]int, []map
 	rows := make([]map[string]any, 0, len(peers))
 	for _, peer := range peers {
 		reason := strings.TrimSpace(peer.GoodPeerReason)
+		category := strings.TrimSpace(peer.PeerSafetyCategory)
+		if category == "" {
+			category = "unknown"
+		}
 		if reason == "" {
 			if peer.GoodPeer {
 				reason = "current enough"
@@ -5440,6 +5468,8 @@ func (s *Server) miningPeerDiagnostics(localHeight int32) (map[string]int, []map
 			"direction":                        peer.Direction,
 			"good_peer":                        peer.GoodPeer,
 			"good_peer_reason":                 reason,
+			"peer_safety_category":             category,
+			"peer_safety_reason":               peer.PeerSafetyReason,
 			"peer_quality":                     peer.PeerQuality,
 			"reported_height":                  peer.ReportedHeight,
 			"lag_from_local_height":            lag,

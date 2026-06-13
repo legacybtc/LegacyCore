@@ -3,127 +3,187 @@ package rpc
 import "strings"
 
 const (
-	defaultMiningMinGoodPeers      = 3
-	defaultMiningBlocksBehindLimit = 1
-	minerStaleWarningRate          = 0.10
-	minerStaleStrongWarningRate    = 0.30
-	minerStalePauseRate            = 0.50
+	defaultMiningMinGoodPeers        = 3
+	defaultMiningMinAgreeingPeers    = 2
+	defaultMiningPeerGraceSeconds    = 90
+	defaultMiningPeerRecoverySeconds = 30
+	defaultMiningBlocksBehindLimit   = 1
+	minerStaleWarningRate            = 0.10
+	minerStaleStrongWarningRate      = 0.30
+	minerStalePauseRate              = 0.50
 )
 
 type MiningSafetyInput struct {
-	RPCHealth                     string
-	StorageOK                     bool
-	StorageError                  string
-	DestinationOK                 bool
-	DestinationError              string
-	SafeRequired                  bool
-	AllowUnsafe                   bool
-	MinGoodPeers                  int
-	BlocksBehindAllowed           int
-	LocalHeight                   int32
-	BestPeerHeight                int32
-	BlocksBehind                  int32
-	PeerCount                     int
-	GoodPeerCount                 int
-	StalePeerCount                int
-	SyncState                     string
-	RequestInFlight               bool
-	NoUsefulChainData             bool
-	LastSyncError                 string
-	RecentReorg                   bool
-	PeerSplit                     bool
-	AcceptedBlocks                int64
-	StaleBlocks                   int64
-	RejectedBlocks                int64
-	HasActiveTemplate             bool
-	ActiveTemplateFresh           bool
-	ActiveTemplateRefreshDue      bool
-	ActiveTemplateStaleReason     string
-	ActiveTemplateRefreshReason   string
-	ActiveTemplatePrevHash        string
-	CurrentTipHash                string
-	TemplateAgeSeconds            float64
-	CurrentTemplateHeight         int32
-	CurrentTipHeight              int32
-	TemplateSoftRefreshAgeSeconds float64
-	TemplateMaxAgeSeconds         float64
-	StaleRatePauseActive          bool
+	RPCHealth                      string
+	StorageOK                      bool
+	StorageError                   string
+	DestinationOK                  bool
+	DestinationError               string
+	SafeRequired                   bool
+	AllowUnsafe                    bool
+	MinGoodPeers                   int
+	MinAgreeingPeers               int
+	PeerGraceSeconds               int
+	PeerRecoverySeconds            int
+	BlocksBehindAllowed            int
+	LocalHeight                    int32
+	BestPeerHeight                 int32
+	BlocksBehind                   int32
+	PeerCount                      int
+	GoodPeerCount                  int
+	AgreeingPeerCount              int
+	CompatiblePeerCount            int
+	Lagging1PeerCount              int
+	Lagging2PeerCount              int
+	LaggingMorePeerCount           int
+	StaleChainDataPeerCount        int
+	UnresponsivePeerCount          int
+	ConflictingTipPeerCount        int
+	StrongerChainworkPeerCount     int
+	WrongChainPeerCount            int
+	ProtocolErrorPeerCount         int
+	StalePeerCount                 int
+	SyncState                      string
+	RequestInFlight                bool
+	NoUsefulChainData              bool
+	LastSyncError                  string
+	RecentReorg                    bool
+	PeerSplit                      bool
+	AcceptedBlocks                 int64
+	StaleBlocks                    int64
+	RejectedBlocks                 int64
+	HasActiveTemplate              bool
+	ActiveTemplateFresh            bool
+	ActiveTemplateRefreshDue       bool
+	ActiveTemplateStaleReason      string
+	ActiveTemplateRefreshReason    string
+	ActiveTemplatePrevHash         string
+	CurrentTipHash                 string
+	TemplateAgeSeconds             float64
+	CurrentTemplateHeight          int32
+	CurrentTipHeight               int32
+	TemplateSoftRefreshAgeSeconds  float64
+	TemplateMaxAgeSeconds          float64
+	StaleRatePauseActive           bool
+	PeerAgreementGraceActive       bool
+	PeerAgreementGraceRemaining    int
+	PeerAgreementRecoveryActive    bool
+	PeerAgreementRecoveryRemaining int
+	PeerSafetyPauseActive          bool
 }
 
 type MiningSafetyStatus struct {
-	Safe                          bool
-	State                         string
-	Reason                        string
-	RPCHealth                     string
-	LocalHeight                   int32
-	BestPeerHeight                int32
-	BlocksBehind                  int32
-	PeerCount                     int
-	GoodPeerCount                 int
-	StalePeerCount                int
-	SyncState                     string
-	RequestInFlight               bool
-	NoUsefulChainData             bool
-	RecentReorg                   bool
-	PeerSplit                     bool
-	StaleRate                     float64
-	StaleRateWarning              string
-	UnsafeOverride                bool
-	StorageOK                     bool
-	DestinationOK                 bool
-	HasActiveTemplate             bool
-	ActiveTemplateFresh           bool
-	ActiveTemplateRefreshDue      bool
-	ActiveTemplateStaleReason     string
-	ActiveTemplateRefreshReason   string
-	ActiveTemplatePrevHash        string
-	CurrentTipHash                string
-	TemplateAgeSeconds            float64
-	CurrentTipHeight              int32
-	CurrentTemplateHeight         int32
-	TemplateSoftRefreshAgeSeconds float64
-	TemplateMaxAgeSeconds         float64
-	StaleRatePauseActive          bool
+	Safe                           bool
+	State                          string
+	Reason                         string
+	RPCHealth                      string
+	LocalHeight                    int32
+	BestPeerHeight                 int32
+	BlocksBehind                   int32
+	PeerCount                      int
+	GoodPeerCount                  int
+	AgreeingPeerCount              int
+	CompatiblePeerCount            int
+	Lagging1PeerCount              int
+	Lagging2PeerCount              int
+	LaggingMorePeerCount           int
+	StaleChainDataPeerCount        int
+	UnresponsivePeerCount          int
+	ConflictingTipPeerCount        int
+	StrongerChainworkPeerCount     int
+	WrongChainPeerCount            int
+	ProtocolErrorPeerCount         int
+	MinAgreeingPeers               int
+	PeerGraceSeconds               int
+	PeerRecoverySeconds            int
+	PeerAgreementGraceActive       bool
+	PeerAgreementGraceRemaining    int
+	PeerAgreementRecoveryActive    bool
+	PeerAgreementRecoveryRemaining int
+	PeerSafetyPauseActive          bool
+	StalePeerCount                 int
+	SyncState                      string
+	RequestInFlight                bool
+	NoUsefulChainData              bool
+	RecentReorg                    bool
+	PeerSplit                      bool
+	StaleRate                      float64
+	StaleRateWarning               string
+	UnsafeOverride                 bool
+	StorageOK                      bool
+	DestinationOK                  bool
+	HasActiveTemplate              bool
+	ActiveTemplateFresh            bool
+	ActiveTemplateRefreshDue       bool
+	ActiveTemplateStaleReason      string
+	ActiveTemplateRefreshReason    string
+	ActiveTemplatePrevHash         string
+	CurrentTipHash                 string
+	TemplateAgeSeconds             float64
+	CurrentTipHeight               int32
+	CurrentTemplateHeight          int32
+	TemplateSoftRefreshAgeSeconds  float64
+	TemplateMaxAgeSeconds          float64
+	StaleRatePauseActive           bool
 }
 
 func (s MiningSafetyStatus) Fields() map[string]any {
 	return map[string]any{
-		"safe_to_mine":                      s.Safe,
-		"mining_safe":                       s.Safe,
-		"mining_safety_state":               s.State,
-		"mining_blocked_reason":             s.Reason,
-		"mining_safety_reason":              s.Reason,
-		"rpc_health":                        s.RPCHealth,
-		"sync_state":                        s.SyncState,
-		"blocks_behind":                     s.BlocksBehind,
-		"peer_count":                        s.PeerCount,
-		"good_peer_count":                   s.GoodPeerCount,
-		"stale_peer_count":                  s.StalePeerCount,
-		"best_peer_height":                  s.BestPeerHeight,
-		"local_height":                      s.LocalHeight,
-		"request_in_flight":                 s.RequestInFlight,
-		"no_useful_chain_data":              s.NoUsefulChainData,
-		"recent_reorg":                      s.RecentReorg,
-		"peer_split":                        s.PeerSplit,
-		"stale_rate":                        s.StaleRate,
-		"stale_rate_warning":                s.StaleRateWarning,
-		"unsafe_override":                   s.UnsafeOverride,
-		"storage_ok":                        s.StorageOK,
-		"destination_ok":                    s.DestinationOK,
-		"has_active_template":               s.HasActiveTemplate,
-		"active_template_is_fresh":          s.ActiveTemplateFresh,
-		"active_template_refresh_due":       s.ActiveTemplateRefreshDue,
-		"active_template_stale_reason":      s.ActiveTemplateStaleReason,
-		"active_template_refresh_reason":    s.ActiveTemplateRefreshReason,
-		"active_template_prev_hash":         s.ActiveTemplatePrevHash,
-		"current_tip_hash":                  s.CurrentTipHash,
-		"last_template_age":                 s.TemplateAgeSeconds,
-		"current_template_height":           s.CurrentTemplateHeight,
-		"current_tip_height":                s.CurrentTipHeight,
-		"template_soft_refresh_age_seconds": s.TemplateSoftRefreshAgeSeconds,
-		"template_max_age_seconds":          s.TemplateMaxAgeSeconds,
-		"template_hard_stale_age_seconds":   s.TemplateMaxAgeSeconds,
-		"stale_rate_pause_active":           s.StaleRatePauseActive,
+		"safe_to_mine":                              s.Safe,
+		"mining_safe":                               s.Safe,
+		"mining_safety_state":                       s.State,
+		"mining_blocked_reason":                     s.Reason,
+		"mining_safety_reason":                      s.Reason,
+		"rpc_health":                                s.RPCHealth,
+		"sync_state":                                s.SyncState,
+		"blocks_behind":                             s.BlocksBehind,
+		"peer_count":                                s.PeerCount,
+		"good_peer_count":                           s.GoodPeerCount,
+		"current_agreeing_peer_count":               s.AgreeingPeerCount,
+		"compatible_peer_count":                     s.CompatiblePeerCount,
+		"lagging_1_block_peer_count":                s.Lagging1PeerCount,
+		"lagging_2_blocks_peer_count":               s.Lagging2PeerCount,
+		"lagging_more_than_2_peer_count":            s.LaggingMorePeerCount,
+		"stale_chain_data_peer_count":               s.StaleChainDataPeerCount,
+		"unresponsive_peer_count":                   s.UnresponsivePeerCount,
+		"conflicting_tip_peer_count":                s.ConflictingTipPeerCount,
+		"stronger_chainwork_peer_count":             s.StrongerChainworkPeerCount,
+		"wrong_chain_peer_count":                    s.WrongChainPeerCount,
+		"protocol_error_peer_count":                 s.ProtocolErrorPeerCount,
+		"min_agreeing_peers":                        s.MinAgreeingPeers,
+		"peer_safety_grace_seconds":                 s.PeerGraceSeconds,
+		"peer_safety_recovery_seconds":              s.PeerRecoverySeconds,
+		"peer_agreement_grace_active":               s.PeerAgreementGraceActive,
+		"peer_agreement_grace_remaining_seconds":    s.PeerAgreementGraceRemaining,
+		"peer_agreement_recovery_active":            s.PeerAgreementRecoveryActive,
+		"peer_agreement_recovery_remaining_seconds": s.PeerAgreementRecoveryRemaining,
+		"peer_safety_pause_active":                  s.PeerSafetyPauseActive,
+		"stale_peer_count":                          s.StalePeerCount,
+		"best_peer_height":                          s.BestPeerHeight,
+		"local_height":                              s.LocalHeight,
+		"request_in_flight":                         s.RequestInFlight,
+		"no_useful_chain_data":                      s.NoUsefulChainData,
+		"recent_reorg":                              s.RecentReorg,
+		"peer_split":                                s.PeerSplit,
+		"stale_rate":                                s.StaleRate,
+		"stale_rate_warning":                        s.StaleRateWarning,
+		"unsafe_override":                           s.UnsafeOverride,
+		"storage_ok":                                s.StorageOK,
+		"destination_ok":                            s.DestinationOK,
+		"has_active_template":                       s.HasActiveTemplate,
+		"active_template_is_fresh":                  s.ActiveTemplateFresh,
+		"active_template_refresh_due":               s.ActiveTemplateRefreshDue,
+		"active_template_stale_reason":              s.ActiveTemplateStaleReason,
+		"active_template_refresh_reason":            s.ActiveTemplateRefreshReason,
+		"active_template_prev_hash":                 s.ActiveTemplatePrevHash,
+		"current_tip_hash":                          s.CurrentTipHash,
+		"last_template_age":                         s.TemplateAgeSeconds,
+		"current_template_height":                   s.CurrentTemplateHeight,
+		"current_tip_height":                        s.CurrentTipHeight,
+		"template_soft_refresh_age_seconds":         s.TemplateSoftRefreshAgeSeconds,
+		"template_max_age_seconds":                  s.TemplateMaxAgeSeconds,
+		"template_hard_stale_age_seconds":           s.TemplateMaxAgeSeconds,
+		"stale_rate_pause_active":                   s.StaleRatePauseActive,
 	}
 }
 
@@ -139,6 +199,18 @@ func CheckSafeToMine(input MiningSafetyInput) MiningSafetyStatus {
 	minGoodPeers := input.MinGoodPeers
 	if minGoodPeers <= 0 {
 		minGoodPeers = defaultMiningMinGoodPeers
+	}
+	minAgreeingPeers := input.MinAgreeingPeers
+	if minAgreeingPeers <= 0 {
+		minAgreeingPeers = defaultMiningMinAgreeingPeers
+	}
+	peerGraceSeconds := input.PeerGraceSeconds
+	if peerGraceSeconds <= 0 {
+		peerGraceSeconds = defaultMiningPeerGraceSeconds
+	}
+	peerRecoverySeconds := input.PeerRecoverySeconds
+	if peerRecoverySeconds <= 0 {
+		peerRecoverySeconds = defaultMiningPeerRecoverySeconds
 	}
 	blocksBehindAllowed := input.BlocksBehindAllowed
 	if blocksBehindAllowed < 0 {
@@ -165,38 +237,57 @@ func CheckSafeToMine(input MiningSafetyInput) MiningSafetyStatus {
 		staleWarning = "Mining warning: high stale rate. Refreshing mining template."
 	}
 	status := MiningSafetyStatus{
-		Safe:                          true,
-		State:                         "safe",
-		Reason:                        "",
-		RPCHealth:                     rpcHealth,
-		LocalHeight:                   input.LocalHeight,
-		BestPeerHeight:                input.BestPeerHeight,
-		BlocksBehind:                  blocksBehind,
-		PeerCount:                     input.PeerCount,
-		GoodPeerCount:                 input.GoodPeerCount,
-		StalePeerCount:                input.StalePeerCount,
-		SyncState:                     syncState,
-		RequestInFlight:               input.RequestInFlight,
-		NoUsefulChainData:             input.NoUsefulChainData,
-		RecentReorg:                   input.RecentReorg,
-		PeerSplit:                     input.PeerSplit,
-		StaleRate:                     staleRate,
-		StaleRateWarning:              staleWarning,
-		StorageOK:                     input.StorageOK,
-		DestinationOK:                 input.DestinationOK,
-		HasActiveTemplate:             input.HasActiveTemplate,
-		ActiveTemplateFresh:           input.ActiveTemplateFresh,
-		ActiveTemplateRefreshDue:      input.ActiveTemplateRefreshDue,
-		ActiveTemplateStaleReason:     strings.TrimSpace(input.ActiveTemplateStaleReason),
-		ActiveTemplateRefreshReason:   strings.TrimSpace(input.ActiveTemplateRefreshReason),
-		ActiveTemplatePrevHash:        strings.TrimSpace(input.ActiveTemplatePrevHash),
-		CurrentTipHash:                strings.TrimSpace(input.CurrentTipHash),
-		TemplateAgeSeconds:            input.TemplateAgeSeconds,
-		CurrentTemplateHeight:         input.CurrentTemplateHeight,
-		CurrentTipHeight:              input.CurrentTipHeight,
-		TemplateSoftRefreshAgeSeconds: input.TemplateSoftRefreshAgeSeconds,
-		TemplateMaxAgeSeconds:         input.TemplateMaxAgeSeconds,
-		StaleRatePauseActive:          input.StaleRatePauseActive,
+		Safe:                           true,
+		State:                          "safe",
+		Reason:                         "",
+		RPCHealth:                      rpcHealth,
+		LocalHeight:                    input.LocalHeight,
+		BestPeerHeight:                 input.BestPeerHeight,
+		BlocksBehind:                   blocksBehind,
+		PeerCount:                      input.PeerCount,
+		GoodPeerCount:                  input.GoodPeerCount,
+		AgreeingPeerCount:              input.AgreeingPeerCount,
+		CompatiblePeerCount:            input.CompatiblePeerCount,
+		Lagging1PeerCount:              input.Lagging1PeerCount,
+		Lagging2PeerCount:              input.Lagging2PeerCount,
+		LaggingMorePeerCount:           input.LaggingMorePeerCount,
+		StaleChainDataPeerCount:        input.StaleChainDataPeerCount,
+		UnresponsivePeerCount:          input.UnresponsivePeerCount,
+		ConflictingTipPeerCount:        input.ConflictingTipPeerCount,
+		StrongerChainworkPeerCount:     input.StrongerChainworkPeerCount,
+		WrongChainPeerCount:            input.WrongChainPeerCount,
+		ProtocolErrorPeerCount:         input.ProtocolErrorPeerCount,
+		MinAgreeingPeers:               minAgreeingPeers,
+		PeerGraceSeconds:               peerGraceSeconds,
+		PeerRecoverySeconds:            peerRecoverySeconds,
+		PeerAgreementGraceActive:       input.PeerAgreementGraceActive,
+		PeerAgreementGraceRemaining:    input.PeerAgreementGraceRemaining,
+		PeerAgreementRecoveryActive:    input.PeerAgreementRecoveryActive,
+		PeerAgreementRecoveryRemaining: input.PeerAgreementRecoveryRemaining,
+		PeerSafetyPauseActive:          input.PeerSafetyPauseActive,
+		StalePeerCount:                 input.StalePeerCount,
+		SyncState:                      syncState,
+		RequestInFlight:                input.RequestInFlight,
+		NoUsefulChainData:              input.NoUsefulChainData,
+		RecentReorg:                    input.RecentReorg,
+		PeerSplit:                      input.PeerSplit,
+		StaleRate:                      staleRate,
+		StaleRateWarning:               staleWarning,
+		StorageOK:                      input.StorageOK,
+		DestinationOK:                  input.DestinationOK,
+		HasActiveTemplate:              input.HasActiveTemplate,
+		ActiveTemplateFresh:            input.ActiveTemplateFresh,
+		ActiveTemplateRefreshDue:       input.ActiveTemplateRefreshDue,
+		ActiveTemplateStaleReason:      strings.TrimSpace(input.ActiveTemplateStaleReason),
+		ActiveTemplateRefreshReason:    strings.TrimSpace(input.ActiveTemplateRefreshReason),
+		ActiveTemplatePrevHash:         strings.TrimSpace(input.ActiveTemplatePrevHash),
+		CurrentTipHash:                 strings.TrimSpace(input.CurrentTipHash),
+		TemplateAgeSeconds:             input.TemplateAgeSeconds,
+		CurrentTemplateHeight:          input.CurrentTemplateHeight,
+		CurrentTipHeight:               input.CurrentTipHeight,
+		TemplateSoftRefreshAgeSeconds:  input.TemplateSoftRefreshAgeSeconds,
+		TemplateMaxAgeSeconds:          input.TemplateMaxAgeSeconds,
+		StaleRatePauseActive:           input.StaleRatePauseActive,
 	}
 	staleTemplateReason := ""
 	if input.HasActiveTemplate && !input.ActiveTemplateFresh {
@@ -258,8 +349,17 @@ func CheckSafeToMine(input MiningSafetyInput) MiningSafetyStatus {
 	if input.PeerCount == 0 || syncState == "no_peers" || syncState == "offline" {
 		return block("Mining blocked: node has no peers.")
 	}
-	if input.GoodPeerCount < minGoodPeers {
-		return block("Mining blocked: waiting for more reliable peers.")
+	if input.StrongerChainworkPeerCount > 0 {
+		return block("Mining paused: peer reports a stronger chain candidate.")
+	}
+	if input.ConflictingTipPeerCount > 0 {
+		return block("Mining paused: connected peers report a conflicting tip.")
+	}
+	if input.WrongChainPeerCount > 0 {
+		return block("Mining paused: wrong-chain peer detected.")
+	}
+	if input.ProtocolErrorPeerCount > 0 {
+		return block("Mining paused: peer protocol/header/block error detected.")
 	}
 	if blocksBehind > int32(blocksBehindAllowed) {
 		return block("Mining blocked: node is behind peers by " + int32String(blocksBehind) + " blocks.")
@@ -272,6 +372,23 @@ func CheckSafeToMine(input MiningSafetyInput) MiningSafetyStatus {
 	}
 	if input.RequestInFlight && !miningSyncStateCurrent(syncState, blocksBehind, int32(blocksBehindAllowed)) {
 		return block("Mining blocked: sync request is still in progress.")
+	}
+	agreeingPeerCount := input.AgreeingPeerCount
+	if agreeingPeerCount == 0 && input.CompatiblePeerCount == 0 && input.GoodPeerCount > 0 {
+		agreeingPeerCount = input.GoodPeerCount
+		status.AgreeingPeerCount = agreeingPeerCount
+		status.CompatiblePeerCount = input.GoodPeerCount
+	}
+	if minAgreeingPeers > 0 && agreeingPeerCount < minAgreeingPeers {
+		if input.PeerAgreementGraceActive {
+			status.State = "degraded"
+			status.Reason = "Mining degraded: waiting for more current agreeing peers; grace period active."
+			return status
+		}
+		if input.PeerAgreementRecoveryActive {
+			return block("Mining paused: waiting for peer agreement recovery hysteresis.")
+		}
+		return block("Mining paused: fewer than " + int32String(int32(minAgreeingPeers)) + " current agreeing peer(s).")
 	}
 	if input.NoUsefulChainData {
 		return block("Mining blocked: peer data is stale.")

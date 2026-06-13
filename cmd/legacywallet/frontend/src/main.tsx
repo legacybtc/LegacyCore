@@ -1892,6 +1892,7 @@ function MiningPage({ snap, run, refresh, notify }: PageProps) {
         <Metric label="Sync state" value={mining.sync_state || "-"} />
         <Metric label="Blocks behind" value={mining.blocks_behind ?? 0} />
         <Metric label="Good peers" value={mining.good_peer_count ?? "-"} />
+        <Metric label="Agreeing peers" value={mining.current_agreeing_peer_count ?? "-"} />
         <Metric label="Estimated Network KH/s" value={networkRateLabel} />
         <Metric label="Source" value={friendlyNetworkSource(netSource)} />
         <Metric label={minerView.acceptedLabel} value={mining.accepted_blocks || 0} />
@@ -1949,6 +1950,19 @@ function MiningPage({ snap, run, refresh, notify }: PageProps) {
           ["Blocks behind", mining.blocks_behind ?? 0],
           ["Peer count", mining.peer_count ?? mining.peers ?? "-"],
           ["Good peer count", mining.good_peer_count ?? "-"],
+          ["Current agreeing peers", mining.current_agreeing_peer_count ?? "-"],
+          ["Lagging by 1 block", mining.lagging_1_block_peer_count ?? "-"],
+          ["Lagging by 2 blocks", mining.lagging_2_blocks_peer_count ?? "-"],
+          ["Lagging by more than 2", mining.lagging_more_than_2_peer_count ?? "-"],
+          ["Stale chain-data peers", mining.stale_chain_data_peer_count ?? "-"],
+          ["Unresponsive peers", mining.unresponsive_peer_count ?? "-"],
+          ["Conflicting-tip peers", mining.conflicting_tip_peer_count ?? "-"],
+          ["Stronger-chainwork peers", mining.stronger_chainwork_peer_count ?? "-"],
+          ["Wrong-chain peers", mining.wrong_chain_peer_count ?? "-"],
+          ["Protocol-error peers", mining.protocol_error_peer_count ?? "-"],
+          ["Mining peer threshold", `${mining.min_agreeing_peers ?? 2} agreeing peer(s)`],
+          ["Peer pause grace", mining.peer_agreement_grace_active ? `${mining.peer_agreement_grace_remaining_seconds ?? 0}s before pause` : `${mining.peer_safety_grace_seconds ?? 90}s`],
+          ["Peer resume hysteresis", mining.peer_agreement_recovery_active ? `${mining.peer_agreement_recovery_remaining_seconds ?? 0}s before resume` : `${mining.peer_safety_recovery_seconds ?? 30}s`],
           ["Mining loop", minerView.miningLoopLabel],
           ["Reason", minerView.reasonLabel],
           ["Session mode", minerView.sessionModeLabel],
@@ -1980,7 +1994,7 @@ function MiningPage({ snap, run, refresh, notify }: PageProps) {
           ["Effective threads", minerView.effectiveThreadsLabel],
           ["Hashes per thread", fmtNumber(mining.hashes_per_thread)],
           ["Session hashes", fmtNumber(mining.session_hashes)],
-          ["Estimated time to block", `${seconds(mining.estimated_time_to_block_seconds)} (probabilistic)`],
+          ["Estimated time to block", activeMining ? `${seconds(mining.estimated_time_to_block_seconds)} (probabilistic)` : miningEnabled ? "paused" : "-"],
           ["Estimated Network H/s", netHash.hpsLabel],
           ["Estimated Network KH/s", netHash.khsLabel !== "-" ? netHash.khsLabel : `Unavailable - ${netHash.unavailableReason || "not enough safe data"}`],
           ["Estimated Network MH/s", netHash.mhsLabel],
@@ -2207,6 +2221,8 @@ function NetworkPage({ snap, run, refresh }: PageProps) {
                 <span>Last sync error: {p.last_sync_error || "-"}</span>
                 <span>Good peer: {p.good_peer === undefined ? "not reported" : yesNo(p.good_peer)}</span>
                 <span>Good-peer reason: {p.good_peer_reason || "-"}</span>
+                <span>Peer safety category: {p.peer_safety_category || "-"}</span>
+                <span>Peer safety reason: {p.peer_safety_reason || "-"}</span>
                 <span>Lag from local height: {p.lag_from_local_height ?? p.peer_height_gap ?? "-"}</span>
                 <span>Blocks requested / served: {p.blocks_requested ?? 0} / {p.blocks_served ?? 0}</span>
               </div>

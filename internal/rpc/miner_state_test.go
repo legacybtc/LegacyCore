@@ -135,7 +135,8 @@ func TestResolveMinerRuntimeStateHardStalePausesWorkers(t *testing.T) {
 
 func TestResolveMinerRuntimeStateUnsafePeersPauseAndRecovery(t *testing.T) {
 	input := safeMinerRuntimeInput()
-	input.GoodPeerCount = 2
+	input.SafetySafe = false
+	input.SafetyReason = "Mining paused: fewer than 2 current agreeing peer(s)."
 	state := ResolveMinerRuntimeState(input)
 	if state.State != MinerStatePausedPeerUnsafe {
 		t.Fatalf("state = %q, want %q", state.State, MinerStatePausedPeerUnsafe)
@@ -144,7 +145,8 @@ func TestResolveMinerRuntimeStateUnsafePeersPauseAndRecovery(t *testing.T) {
 		t.Fatalf("unsafe peers should pause with reason, got %+v", state)
 	}
 
-	input.GoodPeerCount = 3
+	input.SafetySafe = true
+	input.SafetyReason = ""
 	state = ResolveMinerRuntimeState(input)
 	if state.State != MinerStateRunning || state.ActiveThreads != 1 {
 		t.Fatalf("peer recovery should resume running state, got %+v", state)
@@ -276,6 +278,13 @@ func TestParseMinerStopReasonAllowsForceStop(t *testing.T) {
 	reason := parseMinerStopReason([]byte(`[{"reason":"user_force_stop"}]`), MinerStopRPCStopMiner)
 	if reason != MinerStopUserForceStop {
 		t.Fatalf("reason = %q, want %q", reason, MinerStopUserForceStop)
+	}
+}
+
+func TestParseMinerStopReasonTreatsSmokeCleanupAsUserStop(t *testing.T) {
+	reason := parseMinerStopReason([]byte(`[{"reason":"smoke_test_complete"}]`), MinerStopRPCStopMiner)
+	if reason != MinerStopUserStop {
+		t.Fatalf("reason = %q, want %q", reason, MinerStopUserStop)
 	}
 }
 

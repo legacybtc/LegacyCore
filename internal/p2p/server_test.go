@@ -623,6 +623,21 @@ func TestPeerMarkPingPongTracksMissedPongs(t *testing.T) {
 	}
 }
 
+func TestClassifyPeerSafetyKeepsSmallHeightLagCompatible(t *testing.T) {
+	category, good, reason := classifyPeerSafety(3310, 3309, true, 0, "healthy", "", "", "", "", 75*time.Millisecond)
+	if category != "lagging_1_block" || !good {
+		t.Fatalf("1-block lag category=%q good=%t reason=%q", category, good, reason)
+	}
+	category, good, reason = classifyPeerSafety(3310, 3308, true, 0, "healthy", "", "", "", "", 75*time.Millisecond)
+	if category != "lagging_2_blocks" || !good {
+		t.Fatalf("2-block lag category=%q good=%t reason=%q", category, good, reason)
+	}
+	category, good, reason = classifyPeerSafety(3310, 3307, true, 0, "healthy", "", "", "", "", 75*time.Millisecond)
+	if category != "stale_chain_data" || good {
+		t.Fatalf("stale >2-block lag category=%q good=%t reason=%q", category, good, reason)
+	}
+}
+
 func TestPeerInfosIncludePingAndSyncFields(t *testing.T) {
 	s, _, cleanup := newP2PTestServerWithGenesis(t)
 	defer cleanup()

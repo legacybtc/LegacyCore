@@ -357,7 +357,7 @@ export function estimatedHashrateShareLabel(localHash: any, networkHash: any): s
   const localHps = hashpsFromValue(localHash);
   const networkHps = hashpsFromValue(networkHash);
   if (localHps <= 0 || networkHps <= 0) return "-";
-  return `~${fmtNumber((localHps / networkHps) * 100)}%`;
+  return `~${((localHps / networkHps) * 100).toFixed(2)}%`;
 }
 
 export function buildMinerDashboardState(mining: DashboardDict = {}, wallet: DashboardDict = {}): MinerDashboardState {

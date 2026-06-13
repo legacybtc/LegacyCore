@@ -633,8 +633,8 @@ test("peer status uses good-peer reason when peer is not suitable", () => {
 });
 
 test("estimated network hashrate share explains local share", () => {
-  assert.match(estimatedHashrateShareLabel({ hps: 914 }, { khps: 6.279 }), /^~14[.,]55[67]%$/);
-  assert.match(estimatedHashrateShareLabel({ khps: 0.914 }, { hps: 6279 }), /^~14[.,]55[67]%$/);
+  assert.equal(estimatedHashrateShareLabel({ hps: 914 }, { khps: 6.279 }), "~14.56%");
+  assert.equal(estimatedHashrateShareLabel({ hps: 37.43 }, { hps: 1000 }), "~3.74%");
   assert.match(ESTIMATED_NETWORK_HASHRATE_NOTE, /not a live sum of all miners/i);
 });
 

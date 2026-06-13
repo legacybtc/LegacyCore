@@ -30,7 +30,7 @@ func normalizeMinerStopReason(reason string) string {
 	normalized = strings.ReplaceAll(normalized, " ", "_")
 	normalized = strings.ReplaceAll(normalized, "-", "_")
 	switch normalized {
-	case MinerStopUserStop, "stopped_by_user", "user", "stopminer":
+	case MinerStopUserStop, "stopped_by_user", "user", "stopminer", "smoke_test_complete":
 		return MinerStopUserStop
 	case MinerStopUserForceStop, "force_stop", "force":
 		return MinerStopUserForceStop

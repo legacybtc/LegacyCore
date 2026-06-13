@@ -168,12 +168,6 @@ func firstMinerBlockerReason(input MinerRuntimeInput) string {
 	if input.RecentReorg {
 		return "Mining blocked: recent reorg detected; waiting for chain stability."
 	}
-	if input.MinGoodPeers <= 0 {
-		input.MinGoodPeers = defaultMiningMinGoodPeers
-	}
-	if input.GoodPeerCount < input.MinGoodPeers {
-		return "Mining blocked: waiting for more reliable peers."
-	}
 	if input.BlocksBehindAllowed < 0 {
 		input.BlocksBehindAllowed = defaultMiningBlocksBehindLimit
 	}
