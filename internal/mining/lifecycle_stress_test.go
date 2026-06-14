@@ -96,8 +96,6 @@ func TestMinerLifecycleExtendedStress(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				defer func() { exitedCount.Add(1); activeCount.Add(-1) }()
-				runtime.LockOSThread()
-				defer runtime.UnlockOSThread()
 				template, _, err := NewBlockTemplate(chain, mempool.New(), pubHash)
 				if err != nil {
 					return

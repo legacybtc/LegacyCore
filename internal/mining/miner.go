@@ -289,8 +289,6 @@ func MineBlock(ctx context.Context, chain *blockchain.Chain, pool *mempool.Pool,
 		wg.Add(1)
 		go func(worker int) {
 			defer wg.Done()
-			defer runtime.UnlockOSThread()
-			runtime.LockOSThread()
 			block := *template
 			block.Transactions = template.Transactions
 			step := uint32(workers)

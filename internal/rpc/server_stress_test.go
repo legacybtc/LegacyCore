@@ -347,8 +347,6 @@ func TestMinerLifecycleWorkerGoroutineStability(t *testing.T) {
 				defer wg.Done()
 				defer activeWorkers.Add(-1)
 				defer exited.Add(1)
-				runtime.LockOSThread()
-				defer runtime.UnlockOSThread()
 				template, _, err := mining.NewBlockTemplate(chain, mempool.New(), pubHash)
 				if err != nil {
 					return
