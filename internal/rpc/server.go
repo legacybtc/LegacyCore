@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -96,9 +97,23 @@ type Server struct {
 	minerPeerAgreementLostSince       time.Time
 	minerPeerAgreementRecoveredSince  time.Time
 	minerPeerAgreementPaused          bool
+	minerLocalBlockGraceActive        bool
+	minerLocalBlockGraceStartedAt     time.Time
+	minerLocalBlockGraceHeight        int32
+	minerLocalBlockGraceHash          string
+	minerLastLocalBlockAnnouncement   time.Time
+	minerLocalBlockAnnouncementPeers  int
 	minerTemplateRecoveryPending      bool
 	minerTemplateRecoveryStartedAt    time.Time
 	defaultTxFee                      int64
+
+	rpcDiagMu          sync.Mutex
+	rpcActiveRequests  int64
+	rpcOldestRequestAt time.Time
+	rpcTotalCalls      int64
+	rpcTotalDuration   time.Duration
+	rpcTimeoutCount    int64
+	rpcErrorCount      int64
 }
 
 type minerAcceptedRecord struct {
@@ -463,7 +478,43 @@ func (s *Server) handleRPCRequest(ctx context.Context, req request) response {
 	if len(bytes.TrimSpace(params)) == 0 {
 		params = json.RawMessage("[]")
 	}
+
+	s.rpcDiagMu.Lock()
+	s.rpcActiveRequests++
+	s.rpcTotalCalls++
+	if s.rpcActiveRequests == 1 {
+		s.rpcOldestRequestAt = time.Now()
+	}
+	s.rpcDiagMu.Unlock()
+
+	defer func() {
+		s.rpcDiagMu.Lock()
+		s.rpcActiveRequests--
+		if s.rpcActiveRequests == 0 {
+			s.rpcOldestRequestAt = time.Time{}
+		}
+		s.rpcDiagMu.Unlock()
+	}()
+
+	start := time.Now()
 	result, rpcErr := s.call(ctx, req.Method, params)
+	duration := time.Since(start)
+
+	if duration > 30*time.Second {
+		s.rpcDiagMu.Lock()
+		s.rpcTimeoutCount++
+		s.rpcDiagMu.Unlock()
+	}
+	if rpcErr != nil {
+		s.rpcDiagMu.Lock()
+		s.rpcErrorCount++
+		s.rpcDiagMu.Unlock()
+	}
+
+	s.rpcDiagMu.Lock()
+	s.rpcTotalDuration += duration
+	s.rpcDiagMu.Unlock()
+
 	return response{ID: req.ID, Result: result, Error: rpcErr}
 }
 
@@ -4839,8 +4890,42 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 		"storage":                     storage,
 		"wallet":                      s.wallet.SecurityInfo(),
 		"config":                      s.miningConfigPath(),
-		"control_rpcs":                []string{"startminer", "stopminer", "restartminer", "getminerstatus", "benchmarkminer", "autotuneminer", "setminerthreads", "setminingaddress", "configureminer"},
+		"control_rpcs": []string{"startminer", "stopminer", "restartminer", "getminerstatus", "benchmarkminer", "autotuneminer", "setminerthreads", "setminingaddress", "configureminer"},
 	}
+	out["rpc_active_requests"] = func() int64 {
+		s.rpcDiagMu.Lock()
+		defer s.rpcDiagMu.Unlock()
+		return s.rpcActiveRequests
+	}()
+	out["rpc_oldest_request_age_seconds"] = func() float64 {
+		s.rpcDiagMu.Lock()
+		defer s.rpcDiagMu.Unlock()
+		if s.rpcOldestRequestAt.IsZero() {
+			return 0
+		}
+		return time.Since(s.rpcOldestRequestAt).Seconds()
+	}()
+	out["rpc_total_calls"] = func() int64 {
+		s.rpcDiagMu.Lock()
+		defer s.rpcDiagMu.Unlock()
+		return s.rpcTotalCalls
+	}()
+	out["rpc_total_duration_seconds"] = func() float64 {
+		s.rpcDiagMu.Lock()
+		defer s.rpcDiagMu.Unlock()
+		return s.rpcTotalDuration.Seconds()
+	}()
+	out["rpc_timeout_count"] = func() int64 {
+		s.rpcDiagMu.Lock()
+		defer s.rpcDiagMu.Unlock()
+		return s.rpcTimeoutCount
+	}()
+	out["rpc_error_count"] = func() int64 {
+		s.rpcDiagMu.Lock()
+		defer s.rpcDiagMu.Unlock()
+		return s.rpcErrorCount
+	}()
+	out["node_goroutine_count"] = runtime.NumGoroutine()
 	for key, value := range safety.Fields() {
 		out[key] = value
 	}
@@ -5876,6 +5961,11 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 		s.minerLocalHashPS = 0
 		s.minerMu.Unlock()
 		if s.p2p != nil {
+			peers := len(s.p2p.PeerInfos())
+			s.minerMu.Lock()
+			s.minerLastLocalBlockAnnouncement = time.Now()
+			s.minerLocalBlockAnnouncementPeers = peers
+			s.minerMu.Unlock()
 			s.p2p.AnnounceBlock(result.Hash)
 		}
 		s.minerMu.Lock()
@@ -5894,6 +5984,10 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 			PayoutHash:   strings.ToLower(hex.EncodeToString(pubHash)),
 			CoinbaseTxID: coinbaseTxID(result.Block),
 		})
+		s.minerLocalBlockGraceActive = true
+		s.minerLocalBlockGraceStartedAt = time.Now()
+		s.minerLocalBlockGraceHeight = result.Height
+		s.minerLocalBlockGraceHash = result.Hash.String()
 		s.markAcceptedBlockTemplateRefreshLocked()
 		s.minerMu.Unlock()
 	}

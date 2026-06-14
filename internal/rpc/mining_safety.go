@@ -3,14 +3,15 @@ package rpc
 import "strings"
 
 const (
-	defaultMiningMinGoodPeers        = 3
-	defaultMiningMinAgreeingPeers    = 2
-	defaultMiningPeerGraceSeconds    = 90
-	defaultMiningPeerRecoverySeconds = 30
-	defaultMiningBlocksBehindLimit   = 1
-	minerStaleWarningRate            = 0.10
-	minerStaleStrongWarningRate      = 0.30
-	minerStalePauseRate              = 0.50
+	defaultMiningMinGoodPeers           = 3
+	defaultMiningMinAgreeingPeers       = 2
+	defaultMiningPeerGraceSeconds       = 90
+	defaultMiningPeerRecoverySeconds    = 30
+	defaultMiningBlocksBehindLimit      = 1
+	defaultLocalBlockPropagationSeconds = 120
+	minerStaleWarningRate               = 0.10
+	minerStaleStrongWarningRate         = 0.30
+	minerStalePauseRate                 = 0.50
 )
 
 type MiningSafetyInput struct {
@@ -70,6 +71,13 @@ type MiningSafetyInput struct {
 	PeerAgreementRecoveryActive    bool
 	PeerAgreementRecoveryRemaining int
 	PeerSafetyPauseActive          bool
+	LocalBlockPropagationGraceActive      bool
+	LocalBlockPropagationGraceRemaining   int
+	LocalBlockPropagationHeight           int32
+	LocalBlockPropagationHash             string
+	LastLocalBlockAnnouncementTime        int64
+	LocalBlockAnnouncementPeerCount       int
+	ExactAgreeingPeerCount                int
 }
 
 type MiningSafetyStatus struct {
@@ -125,6 +133,13 @@ type MiningSafetyStatus struct {
 	TemplateSoftRefreshAgeSeconds  float64
 	TemplateMaxAgeSeconds          float64
 	StaleRatePauseActive           bool
+	LocalBlockPropagationGraceActive      bool
+	LocalBlockPropagationGraceRemaining   int
+	LocalBlockPropagationHeight           int32
+	LocalBlockPropagationHash             string
+	LastLocalBlockAnnouncementTime        int64
+	LocalBlockAnnouncementPeerCount       int
+	ExactAgreeingPeerCount                int
 }
 
 func (s MiningSafetyStatus) Fields() map[string]any {
@@ -184,6 +199,13 @@ func (s MiningSafetyStatus) Fields() map[string]any {
 		"template_max_age_seconds":                  s.TemplateMaxAgeSeconds,
 		"template_hard_stale_age_seconds":           s.TemplateMaxAgeSeconds,
 		"stale_rate_pause_active":                   s.StaleRatePauseActive,
+		"local_block_propagation_grace_active":      s.LocalBlockPropagationGraceActive,
+		"local_block_propagation_grace_remaining":   s.LocalBlockPropagationGraceRemaining,
+		"local_block_propagation_height":            s.LocalBlockPropagationHeight,
+		"local_block_propagation_hash":              s.LocalBlockPropagationHash,
+		"last_local_block_announcement_time":        s.LastLocalBlockAnnouncementTime,
+		"local_block_announcement_peer_count":       s.LocalBlockAnnouncementPeerCount,
+		"exact_agreeing_peer_count":                 s.ExactAgreeingPeerCount,
 	}
 }
 
@@ -379,7 +401,24 @@ func CheckSafeToMine(input MiningSafetyInput) MiningSafetyStatus {
 		status.AgreeingPeerCount = agreeingPeerCount
 		status.CompatiblePeerCount = input.GoodPeerCount
 	}
+	status.ExactAgreeingPeerCount = agreeingPeerCount
+	status.LocalBlockPropagationGraceActive = input.LocalBlockPropagationGraceActive
+	status.LocalBlockPropagationGraceRemaining = input.LocalBlockPropagationGraceRemaining
+	status.LocalBlockPropagationHeight = input.LocalBlockPropagationHeight
+	status.LocalBlockPropagationHash = input.LocalBlockPropagationHash
+	status.LastLocalBlockAnnouncementTime = input.LastLocalBlockAnnouncementTime
+	status.LocalBlockAnnouncementPeerCount = input.LocalBlockAnnouncementPeerCount
 	if minAgreeingPeers > 0 && agreeingPeerCount < minAgreeingPeers {
+		if input.LocalBlockPropagationGraceActive {
+			graceState := "degraded"
+			graceReason := "Locally mined block is propagating to peers; mining continues during a bounded safety grace."
+			if input.PeerAgreementGraceActive {
+				graceReason = "Locally mined block is propagating to peers; mining continues during a bounded safety grace."
+			}
+			status.State = graceState
+			status.Reason = graceReason
+			return status
+		}
 		if input.PeerAgreementGraceActive {
 			status.State = "degraded"
 			status.Reason = "Mining degraded: waiting for more current agreeing peers; grace period active."
@@ -389,6 +428,10 @@ func CheckSafeToMine(input MiningSafetyInput) MiningSafetyStatus {
 			return block("Mining paused: waiting for peer agreement recovery hysteresis.")
 		}
 		return block("Mining paused: fewer than " + int32String(int32(minAgreeingPeers)) + " current agreeing peer(s).")
+	}
+	if input.LocalBlockPropagationGraceActive {
+		input.LocalBlockPropagationGraceActive = false
+		status.LocalBlockPropagationGraceActive = false
 	}
 	if input.NoUsefulChainData {
 		return block("Mining blocked: peer data is stale.")

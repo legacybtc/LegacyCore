@@ -311,11 +311,11 @@ func MineBlock(ctx context.Context, chain *blockchain.Chain, pool *mempool.Pool,
 				}
 				attempts.Add(1)
 				lastNonce.Store(nonce)
-				yieldCounter++
-				if yieldCounter&0xff == 0 {
-					runtime.Gosched()
-				}
-				if consensus.CheckProofOfWork(hash, block.Header.Bits) == nil {
+			yieldCounter++
+			if yieldCounter&0x3f == 0 {
+				runtime.Gosched()
+			}
+			if consensus.CheckProofOfWork(hash, block.Header.Bits) == nil {
 					found := block
 					select {
 					case resultc <- mineResult{block: &found, hash: hash}:
