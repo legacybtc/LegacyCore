@@ -91,6 +91,7 @@ type Server struct {
 	minerStaleRatePauseActive         bool
 	minerAcceptedRecords              []minerAcceptedRecord
 	minerSupervisorRestartAttempts    int64
+	minerLoopWg                       sync.WaitGroup
 	minerLastSupervisorCancelTime     time.Time
 	minerLastRestartSuccessTime       time.Time
 	minerLastRestartFailure           string
@@ -5158,6 +5159,7 @@ func (s *Server) startMiner(parent context.Context, params json.RawMessage) (any
 	_ = config.AppendConfigLine(s.miningConfigPath(), "mining_stop_after_blocks", fmt.Sprint(stopAfter))
 	_ = config.AppendConfigLine(s.miningConfigPath(), "mining_peer_required", fmt.Sprint(peerRequired))
 
+	s.minerLoopWg.Add(1)
 	go s.minerLoop(minerCtx, pubHash, threads)
 	out := map[string]any{
 		"active_mining":               true,
@@ -5201,6 +5203,7 @@ func (s *Server) stopMiner(reason string) map[string]any {
 	s.minerLastStopReason = stopReason
 	s.minerLocalHashPS = 0
 	s.minerMu.Unlock()
+	s.minerLoopWg.Wait()
 	_ = config.AppendConfigLine(s.miningConfigPath(), "mining_enabled", "false")
 	uptime := int64(0)
 	if !startedAt.IsZero() {
@@ -5648,6 +5651,7 @@ func (s *Server) markAcceptedBlockTemplateRefreshLocked() {
 func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 	exitStopReason := MinerStopWorkerExitUnexpected
 	defer func() {
+		s.minerLoopWg.Done()
 		s.minerMu.Lock()
 		if requested := strings.TrimSpace(s.minerRequestedStopReason); requested != "" {
 			exitStopReason = requested
@@ -5984,6 +5988,9 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 			PayoutHash:   strings.ToLower(hex.EncodeToString(pubHash)),
 			CoinbaseTxID: coinbaseTxID(result.Block),
 		})
+		if len(s.minerAcceptedRecords) > 500 {
+			s.minerAcceptedRecords = s.minerAcceptedRecords[len(s.minerAcceptedRecords)-250:]
+		}
 		s.minerLocalBlockGraceActive = true
 		s.minerLocalBlockGraceStartedAt = time.Now()
 		s.minerLocalBlockGraceHeight = result.Height

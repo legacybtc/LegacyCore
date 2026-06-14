@@ -504,7 +504,7 @@ export function buildMinerDashboardState(mining: DashboardDict = {}, wallet: Das
     staleLabel: activeMining ? "Stale" : "Last session stale",
     rejectedLabel: activeMining ? "Rejected" : "Last session rejected",
     displayLastError,
-    lastActionLabel: normalStop ? cleanString(mining.last_stop_reason || "stopped by user/RPC") : (cleanString(mining.last_action || mining.last_stop_reason) || "-"),
+    lastActionLabel: rpcOffline && miningEnabled ? "status unavailable (RPC timeout)" : normalStop ? cleanString(mining.last_stop_reason || "stopped by user/RPC") : (cleanString(mining.last_action || mining.last_stop_reason) || "-"),
     historicalEventLabel: historicalRetry ? rawLastError : cleanString(mining.last_historical_event),
     activeRewardHash,
     currentDefaultMiningAddress,
@@ -542,7 +542,8 @@ function minerDataFresh(mining: DashboardDict = {}, rpcOffline = minerRPCOffline
 }
 
 function deriveMinerStatus(opts: { rpcOffline: boolean; activeMining: boolean; lastKnownActiveMining: boolean; miningEnabled: boolean; miningSafe: boolean; pausedReason: string; displayLastError: string; userStop: boolean }): MinerDashboardState["status"] {
-  if (opts.userStop) return "stopped";
+  if (opts.userStop && !opts.rpcOffline) return "stopped";
+  if (opts.userStop && opts.rpcOffline && !opts.miningEnabled) return "stopped";
   if (opts.rpcOffline) {
     if (!opts.miningEnabled) return "last_known_stopped";
     return opts.lastKnownActiveMining ? "last_known_running" : "last_known_stopped";

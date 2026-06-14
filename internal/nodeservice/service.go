@@ -1961,7 +1961,12 @@ func (s *Service) GetMinerStatus() (map[string]any, error) {
 		"session_hashes":                sessionHashes,
 		"last_nonce":                    lastNonce,
 		"last_error":                    "",
-		"last_stop_reason":              stopReason,
+		"last_stop_reason": func() string {
+			if miningNow {
+				return ""
+			}
+			return stopReason
+		}(),
 		"last_historical_event":         "RPC offline: miner status is local fallback",
 		"current_mining_state":          map[bool]string{true: "running (fallback)", false: "unavailable"}[miningNow],
 		"current_safety_state": func() string {
@@ -2534,6 +2539,7 @@ func (s *Service) StartMiner(threads int) (map[string]any, error) {
 	s.minerActive = true
 	s.minerThreads = threads
 	s.minerStarted = started
+	s.minerStopReason = ""
 	s.minerMu.Unlock()
 	if out, ok := result.(map[string]any); ok {
 		out["status_source"] = "rpc"

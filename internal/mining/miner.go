@@ -289,6 +289,7 @@ func MineBlock(ctx context.Context, chain *blockchain.Chain, pool *mempool.Pool,
 		wg.Add(1)
 		go func(worker int) {
 			defer wg.Done()
+			runtime.LockOSThread()
 			block := *template
 			block.Transactions = template.Transactions
 			step := uint32(workers)
@@ -372,15 +373,15 @@ func MineBlock(ctx context.Context, chain *blockchain.Chain, pool *mempool.Pool,
 			if !status.ActiveTemplateIsFresh {
 				select {
 				case resultc <- mineResult{err: fmt.Errorf("%w: %s", ErrStaleTemplate, status.ActiveTemplateStaleReason)}:
-					cancel()
 				default:
 				}
+				cancel()
 			} else if status.ActiveTemplateRefreshDue {
 				select {
 				case resultc <- mineResult{err: fmt.Errorf("%w: %s", ErrTemplateRefreshRequired, status.ActiveTemplateRefreshReason)}:
-					cancel()
 				default:
 				}
+				cancel()
 			}
 		case <-done:
 			select {
