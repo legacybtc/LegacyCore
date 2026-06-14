@@ -1006,3 +1006,70 @@ test("RPC recovery clears fallback and restores authoritative running immediatel
   assert.notEqual(state.status, "last_known_running");
   assert.equal(state.lastActionLabel, "-");
 });
+
+test("backend auto-mining active must not display stopped in GUI", () => {
+  // mining_enabled=true in config causes auto-start.
+  // If the backend IS mining (active_mining=true, miner_state=running),
+  // the GUI must never show "stopped" or last_known_stopped.
+  const state = buildMinerDashboardState({
+    ...stoppedMinerStatus,
+    status_source: "active_rpc",
+    rpc_offline: false,
+    rpc_health: "ok",
+    data_unavailable: false,
+    fallback_stale: false,
+    dashboard_data_fresh: true,
+    active_mining: true,
+    mining_enabled: true,
+    mining_safe: true,
+    safe_to_mine: true,
+    active_threads: 4,
+    configured_threads: 4,
+    local_khps: 1.2,
+    local_khps_live: 1.2,
+    sync_state: "current",
+    blocks_behind: 0,
+    good_peer_count: 4,
+    last_stop_reason: "",
+    last_error: "",
+    miner_state: "running",
+    current_mining_state: "running",
+  }, overnightWalletSummary);
+  assert.equal(state.status, "running", "backend mining active must show running");
+  assert.notEqual(state.status, "stopped");
+  assert.notEqual(state.status, "last_known_stopped");
+  assert.equal(state.activeMining, true);
+  assert.equal(state.safetyLabel, "safe");
+  assert.equal(state.liveActiveThreads, 4);
+});
+
+test("backend stopped after stopminer must never show running", () => {
+  // After stopminer: mining_enabled=false, active_mining=false, active_threads=0,
+  // miner_state=stopped. GUI must not fabricate "running" from stale data.
+  const state = buildMinerDashboardState({
+    ...stoppedMinerStatus,
+    status_source: "active_rpc",
+    rpc_offline: false,
+    rpc_health: "ok",
+    dashboard_data_fresh: true,
+    active_mining: false,
+    mining_enabled: false,
+    mining_safe: true,
+    safe_to_mine: true,
+    active_threads: 0,
+    configured_threads: 4,
+    local_khps: 0,
+    sync_state: "current",
+    blocks_behind: 0,
+    good_peer_count: 4,
+    last_stop_reason: "rpc stopminer",
+    last_error: "rpc stopminer",
+    miner_state: "stopped",
+    current_mining_state: "stopped",
+  }, overnightWalletSummary);
+  assert.equal(state.status, "stopped");
+  assert.notEqual(state.status, "running");
+  assert.notEqual(state.status, "last_known_running");
+  assert.equal(state.activeMining, false);
+  assert.equal(state.liveActiveThreads, 0);
+});
