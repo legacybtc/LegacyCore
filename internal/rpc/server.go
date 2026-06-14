@@ -500,7 +500,7 @@ func (s *Server) handleRPCRequest(ctx context.Context, req request) response {
 	result, rpcErr := s.call(ctx, req.Method, params)
 	duration := time.Since(start)
 
-	if duration > 30*time.Second {
+	if duration > 15*time.Second {
 		s.rpcDiagMu.Lock()
 		s.rpcTimeoutCount++
 		s.rpcDiagMu.Unlock()

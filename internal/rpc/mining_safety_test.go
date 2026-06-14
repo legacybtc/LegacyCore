@@ -1,11 +1,74 @@
 package rpc
 
 import (
+	"math"
 	"testing"
 	"time"
 
+	"legacycoin/legacy-go/internal/blockchain"
+	"legacycoin/legacy-go/internal/chaincfg"
+	"legacycoin/legacy-go/internal/chainhash"
 	"legacycoin/legacy-go/internal/p2p"
+	"legacycoin/legacy-go/internal/script"
+	"legacycoin/legacy-go/internal/storage"
+	"legacycoin/legacy-go/internal/wire"
 )
+
+type safetyTestHasher struct{}
+
+func (safetyTestHasher) HashHeader(h wire.BlockHeader) (chainhash.Hash, error) {
+	var out chainhash.Hash
+	out[0] = 0xaa
+	out[1] = byte(h.Nonce)
+	out[2] = byte(h.Nonce >> 8)
+	out[3] = byte(h.Nonce >> 16)
+	out[4] = byte(h.Nonce >> 24)
+	out[5] = byte(h.Timestamp)
+	out[6] = byte(h.Timestamp >> 8)
+	out[7] = byte(h.Timestamp >> 16)
+	out[8] = byte(h.Timestamp >> 24)
+	return out, nil
+}
+
+func safetyTestGenesisBlock() (*wire.MsgBlock, error) {
+	height := int32(0)
+	pubHash := make([]byte, 20)
+	pubHash[0] = 0x42
+	pkScript, err := script.PayToPubKeyHashScript(pubHash)
+	if err != nil {
+		return nil, err
+	}
+	heightBytes := []byte{byte(height), byte(height >> 8), byte(height >> 16), byte(height >> 24)}
+	sigScript := append([]byte{byte(len(heightBytes))}, heightBytes...)
+	sigScript = append(sigScript, []byte("/Legacy-GO-Test/")...)
+	block := &wire.MsgBlock{
+		Header: wire.BlockHeader{
+			Version:   1,
+			PrevBlock: chainhash.Hash{},
+			Timestamp: uint32(time.Now().UTC().Unix()),
+			Bits:      chaincfg.MainNet.GenesisBits,
+			Nonce:     0x42,
+		},
+		Transactions: []*wire.MsgTx{{
+			Version: 1,
+			TxIn: []wire.TxIn{{
+				PreviousOutPoint: wire.OutPoint{Hash: chainhash.Hash{}, Index: math.MaxUint32},
+				SignatureScript:  sigScript,
+				Sequence:         math.MaxUint32,
+			}},
+			TxOut: []wire.TxOut{{
+				Value:    chaincfg.BlockSubsidy(height),
+				PkScript: pkScript,
+			}},
+		}},
+	}
+	root, err := block.BuildMerkleRoot()
+	if err != nil {
+		return nil, err
+	}
+	block.Header.MerkleRoot = root
+	return block, nil
+}
 
 func safeMiningInput() MiningSafetyInput {
 	return MiningSafetyInput{
@@ -428,5 +491,822 @@ func TestCheckSafeToMineExpertOverrideMustBeExplicit(t *testing.T) {
 	status := CheckSafeToMine(input)
 	if !status.Safe || !status.UnsafeOverride {
 		t.Fatalf("explicit unsafe override should allow with warning, got %+v", status)
+	}
+}
+
+func graceInput() MiningSafetyInput {
+	return MiningSafetyInput{
+		RPCHealth:                       "ok",
+		StorageOK:                       true,
+		DestinationOK:                   true,
+		SafeRequired:                    true,
+		MinGoodPeers:                    3,
+		MinAgreeingPeers:                2,
+		BlocksBehindAllowed:             1,
+		LocalHeight:                     100,
+		BestPeerHeight:                  101,
+		BlocksBehind:                    1,
+		PeerCount:                       4,
+		GoodPeerCount:                   4,
+		CompatiblePeerCount:             4,
+		AgreeingPeerCount:               0,
+		SyncState:                       "current",
+		LocalBlockPropagationGraceActive: true,
+		LocalBlockPropagationGraceRemaining: 90,
+		LocalBlockPropagationHeight:         100,
+		LocalBlockPropagationHash:           "abc123",
+		LastLocalBlockAnnouncementTime:     1000,
+		LocalBlockAnnouncementTargetCount:   5,
+	}
+}
+
+func TestCheckSafeToMineLocalGraceAllowsZeroAgreeingWithEnoughTime(t *testing.T) {
+	input := graceInput()
+	status := CheckSafeToMine(input)
+	if !status.Safe || status.State != "degraded" {
+		t.Fatalf("local block propagation grace should allow zero agreeing peers: %+v", status)
+	}
+	if !status.LocalBlockPropagationGraceActive {
+		t.Fatalf("local block propagation grace flag must be preserved in output: %+v", status)
+	}
+	if status.Reason == "" {
+		t.Fatalf("degraded state must have a reason: %q", status.Reason)
+	}
+}
+
+func TestCheckSafeToMineLocalGraceBlockedByConflictingTip(t *testing.T) {
+	input := graceInput()
+	input.ConflictingTipPeerCount = 1
+	status := CheckSafeToMine(input)
+	if status.Safe {
+		t.Fatalf("conflicting tip must block even during grace: %+v", status)
+	}
+	if status.LocalBlockPropagationGraceActive {
+		t.Fatalf("conflicting tip must clear grace: %+v", status)
+	}
+}
+
+func TestCheckSafeToMineLocalGraceBlockedByStrongerChainwork(t *testing.T) {
+	input := graceInput()
+	input.StrongerChainworkPeerCount = 1
+	status := CheckSafeToMine(input)
+	if status.Safe {
+		t.Fatalf("stronger chainwork must block even during grace: %+v", status)
+	}
+	if status.LocalBlockPropagationGraceActive {
+		t.Fatalf("stronger chainwork must clear grace: %+v", status)
+	}
+}
+
+func TestCheckSafeToMineLocalGraceBlockedByWrongChain(t *testing.T) {
+	input := graceInput()
+	input.WrongChainPeerCount = 1
+	status := CheckSafeToMine(input)
+	if status.Safe {
+		t.Fatalf("wrong-chain peer must block even during grace: %+v", status)
+	}
+	if status.LocalBlockPropagationGraceActive {
+		t.Fatalf("wrong-chain peer must clear grace: %+v", status)
+	}
+}
+
+func TestCheckSafeToMineLocalGraceBlockedByProtocolError(t *testing.T) {
+	input := graceInput()
+	input.ProtocolErrorPeerCount = 1
+	status := CheckSafeToMine(input)
+	if status.Safe {
+		t.Fatalf("protocol error peer must block even during grace: %+v", status)
+	}
+	if status.LocalBlockPropagationGraceActive {
+		t.Fatalf("protocol error must clear grace: %+v", status)
+	}
+}
+
+func TestCheckSafeToMineLocalGraceBlockedByLocalNodeBehind(t *testing.T) {
+	input := graceInput()
+	input.BlocksBehind = 2
+	input.BestPeerHeight = 102
+	status := CheckSafeToMine(input)
+	if status.Safe {
+		t.Fatalf("local node behind by 2 must block even during grace: %+v", status)
+	}
+	if status.LocalBlockPropagationGraceActive {
+		t.Fatalf("local node behind must clear grace: %+v", status)
+	}
+}
+
+func TestCheckSafeToMineLocalGraceAllowsDuringCompatiblePeerDrop(t *testing.T) {
+	input := graceInput()
+	input.CompatiblePeerCount = 1
+	status := CheckSafeToMine(input)
+	if !status.Safe {
+		t.Fatalf("local block grace should allow even with few compatible peers (server-level validates this): %+v", status)
+	}
+	if !status.LocalBlockPropagationGraceActive {
+		t.Fatalf("grace must remain active at CheckSafeToMine level: %+v", status)
+	}
+}
+
+func TestCheckSafeToMineLocalGraceClearsWhenAgreeingPeersReachTarget(t *testing.T) {
+	input := graceInput()
+	input.AgreeingPeerCount = 2
+	status := CheckSafeToMine(input)
+	if !status.Safe {
+		t.Fatalf("2 agreeing peers should be safe: %+v", status)
+	}
+	if status.LocalBlockPropagationGraceActive {
+		t.Fatalf("sufficient agreeing peers should clear grace: %+v", status)
+	}
+}
+
+func TestCheckSafeToMineLocalGraceCannotBeActivatedByDefaultInput(t *testing.T) {
+	input := safeMiningInput()
+	status := CheckSafeToMine(input)
+	if status.LocalBlockPropagationGraceActive {
+		t.Fatalf("default input must not have grace active: %+v", status)
+	}
+}
+
+func TestCheckSafeToMineLocalGracePassesThroughRemaining(t *testing.T) {
+	input := graceInput()
+	input.LocalBlockPropagationGraceRemaining = 0
+	status := CheckSafeToMine(input)
+	if !status.Safe {
+		t.Fatalf("CheckSafeToMine keeps grace active as long as flag is set; server clears expired grace before calling: %+v", status)
+	}
+	if !status.LocalBlockPropagationGraceActive {
+		t.Fatalf("grace must remain active at CheckSafeToMine level: %+v", status)
+	}
+	if status.LocalBlockPropagationGraceRemaining != 0 {
+		t.Fatalf("remaining = %d, want 0", status.LocalBlockPropagationGraceRemaining)
+	}
+}
+
+func TestCheckSafeToMineLocalGraceFieldsPreservedInOutput(t *testing.T) {
+	input := graceInput()
+	status := CheckSafeToMine(input)
+	if status.LocalBlockPropagationHeight != 100 {
+		t.Fatalf("propagation height = %d, want 100", status.LocalBlockPropagationHeight)
+	}
+	if status.LocalBlockPropagationHash != "abc123" {
+		t.Fatalf("propagation hash = %q, want abc123", status.LocalBlockPropagationHash)
+	}
+	if status.LastLocalBlockAnnouncementTime != 1000 {
+		t.Fatalf("announcement time = %d, want 1000", status.LastLocalBlockAnnouncementTime)
+	}
+	if status.LocalBlockAnnouncementTargetCount != 5 {
+		t.Fatalf("announcement target count = %d, want 5", status.LocalBlockAnnouncementTargetCount)
+	}
+}
+
+func TestCheckSafeToMineLocalGraceWithoutHeightHashIsSafe(t *testing.T) {
+	input := safeMiningInput()
+	input.AgreeingPeerCount = 1
+	input.LocalBlockPropagationGraceActive = true
+	status := CheckSafeToMine(input)
+	if !status.Safe {
+		t.Fatalf("grace with flag set should be safe even without height/hash: %+v", status)
+	}
+}
+
+func TestCheckSafeToMineLocalGraceDoesNotFallBackToPeerGrace(t *testing.T) {
+	input := graceInput()
+	status := CheckSafeToMine(input)
+	if status.PeerAgreementGraceActive {
+		t.Fatalf("local block grace active should prevent fallback to peer grace: %+v", status)
+	}
+	if status.PeerSafetyPauseActive {
+		t.Fatalf("local block grace active should prevent safety pause: %+v", status)
+	}
+}
+
+func TestCheckSafeToMineLocalGraceWithRemoteBlockOnly(t *testing.T) {
+	input := safeMiningInput()
+	input.LocalBlockPropagationHeight = 0
+	input.LocalBlockPropagationHash = ""
+	input.LocalBlockPropagationGraceActive = false
+	input.LocalBlockPropagationGraceRemaining = 0
+	status := CheckSafeToMine(input)
+	if status.LocalBlockPropagationGraceActive {
+		t.Fatalf("no local block must not activate grace: %+v", status)
+	}
+}
+
+func TestCheckSafeToMineStartupCannotActivateGrace(t *testing.T) {
+	input := safeMiningInput()
+	input.LocalHeight = 0
+	input.BestPeerHeight = 50
+	input.BlocksBehind = 50
+	input.AgreeingPeerCount = 0
+	input.LocalBlockPropagationGraceActive = false
+	status := CheckSafeToMine(input)
+	if status.Safe {
+		t.Fatalf("startup with no local block and far behind must block: %+v", status)
+	}
+	if status.LocalBlockPropagationGraceActive {
+		t.Fatalf("startup must not activate grace: %+v", status)
+	}
+}
+
+func TestCheckSafeToMineTwoLaggingPeersUnderGrace(t *testing.T) {
+	input := graceInput()
+	input.AgreeingPeerCount = 0
+	input.CompatiblePeerCount = 4
+	input.Lagging1PeerCount = 2
+	input.Lagging2PeerCount = 2
+	status := CheckSafeToMine(input)
+	if !status.Safe || status.State != "degraded" {
+		t.Fatalf("2 lagging peers should still be degraded/safe under grace: %+v", status)
+	}
+	if !status.LocalBlockPropagationGraceActive {
+		t.Fatalf("lagging peers should not clear grace: %+v", status)
+	}
+}
+
+func TestServerLocalGraceAnnouncementFieldsSetAfterBlockAcceptance(t *testing.T) {
+	// Verify that the announcement fields set by the miner loop after block
+	// acceptance are correctly propagated through applyLocalBlockPropagationGraceLocked.
+	chain, err := blockchain.New(chaincfg.MainNet, safetyTestHasher{}, storage.NewFileStore(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	genesis, err := safetyTestGenesisBlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.ProcessBlock(genesis); err != nil {
+		t.Fatal(err)
+	}
+	tip := chain.Tip()
+	now := time.Now()
+	s := &Server{chain: chain}
+	s.minerMu.Lock()
+	s.minerLastLocalBlockAnnouncement = now
+	s.minerLocalBlockAnnouncementPeers = 7
+	s.minerLocalBlockGraceActive = true
+	s.minerLocalBlockGraceStartedAt = now
+	s.minerLocalBlockGraceHeight = tip.Height
+	s.minerLocalBlockGraceHash = tip.Hash
+	s.minerMu.Unlock()
+	input := MiningSafetyInput{
+		PeerCount:           7,
+		MinAgreeingPeers:    2,
+		BlocksBehindAllowed: 1,
+		AgreeingPeerCount:   0,
+		CompatiblePeerCount: 7,
+	}
+	s.minerMu.Lock()
+	result := s.applyLocalBlockPropagationGraceLocked(&input, now, 2)
+	s.minerMu.Unlock()
+	if !input.LocalBlockPropagationGraceActive {
+		t.Fatalf("grace must be active when all conditions pass: %+v", input)
+	}
+	if input.LocalBlockPropagationHeight != tip.Height {
+		t.Fatalf("height = %d, want %d", input.LocalBlockPropagationHeight, tip.Height)
+	}
+	if input.LocalBlockPropagationHash != tip.Hash {
+		t.Fatalf("hash = %q, want %q", input.LocalBlockPropagationHash, tip.Hash)
+	}
+	if input.LastLocalBlockAnnouncementTime != now.Unix() {
+		t.Fatalf("announcement time = %d, want %d", input.LastLocalBlockAnnouncementTime, now.Unix())
+	}
+	if input.LocalBlockAnnouncementTargetCount != 7 {
+		t.Fatalf("announcement target count = %d, want 7", input.LocalBlockAnnouncementTargetCount)
+	}
+	if result {
+		t.Fatalf("grace must not be denied: result=%v", result)
+	}
+}
+
+func TestCheckSafeToMineLocalGraceAnnouncementFieldIsTargetCount(t *testing.T) {
+	// Verify the diagnostic field is documented as target count, not successful receipt.
+	input := graceInput()
+	input.LocalBlockAnnouncementTargetCount = 5
+	status := CheckSafeToMine(input)
+	if status.LocalBlockAnnouncementTargetCount != 5 {
+		t.Fatalf("target count = %d, want 5", status.LocalBlockAnnouncementTargetCount)
+	}
+}
+
+func TestCheckSafeToMineLocalGraceReorgDoesNotAffectSafety(t *testing.T) {
+	input := graceInput()
+	input.CurrentTipHeight = 101
+	input.CurrentTipHash = "newtip"
+	input.CurrentTemplateHeight = 102
+	input.ActiveTemplatePrevHash = "newtip"
+	status := CheckSafeToMine(input)
+	if !status.Safe {
+		t.Fatalf("reorg data in input should not change grace at CheckSafeToMine level: %+v", status)
+	}
+}
+
+func TestServerLocalGraceClearsWithNilChain(t *testing.T) {
+	s := &Server{}
+	s.minerMu.Lock()
+	s.minerLocalBlockGraceActive = true
+	s.minerLocalBlockGraceStartedAt = time.Now()
+	s.minerLocalBlockGraceHeight = 100
+	s.minerLocalBlockGraceHash = "abc123"
+	s.minerLastLocalBlockAnnouncement = time.Now()
+	s.minerLocalBlockAnnouncementPeers = 5
+	s.minerMu.Unlock()
+	input := MiningSafetyInput{
+		PeerCount:           4,
+		MinAgreeingPeers:    2,
+		BlocksBehindAllowed: 1,
+		AgreeingPeerCount:   0,
+		CompatiblePeerCount: 4,
+	}
+	s.applyMiningPeerAgreementWindow(&input)
+	if input.LocalBlockPropagationGraceActive {
+		t.Fatalf("nil chain must clear grace: %+v", input)
+	}
+}
+
+func TestServerLocalGraceClearsWithExpiredTime(t *testing.T) {
+	s := &Server{}
+	s.minerMu.Lock()
+	s.minerLocalBlockGraceActive = true
+	s.minerLocalBlockGraceStartedAt = time.Now().Add(-121 * time.Second)
+	s.minerLocalBlockGraceHeight = 100
+	s.minerLocalBlockGraceHash = "abc123"
+	s.minerMu.Unlock()
+	input := MiningSafetyInput{
+		PeerCount:           4,
+		MinAgreeingPeers:    2,
+		BlocksBehindAllowed: 1,
+		AgreeingPeerCount:   0,
+		CompatiblePeerCount: 4,
+	}
+	s.applyMiningPeerAgreementWindow(&input)
+	if input.LocalBlockPropagationGraceActive {
+		t.Fatalf("expired time must clear grace: %+v", input)
+	}
+}
+
+func TestServerLocalGraceClearsWithNodeBehind(t *testing.T) {
+	s := &Server{}
+	s.minerMu.Lock()
+	s.minerLocalBlockGraceActive = true
+	s.minerLocalBlockGraceStartedAt = time.Now()
+	s.minerLocalBlockGraceHeight = 100
+	s.minerLocalBlockGraceHash = "abc123"
+	s.minerMu.Unlock()
+	input := MiningSafetyInput{
+		PeerCount:           4,
+		MinAgreeingPeers:    2,
+		BlocksBehindAllowed: 1,
+		BlocksBehind:        2,
+		BestPeerHeight:      103,
+		AgreeingPeerCount:   0,
+		CompatiblePeerCount: 4,
+		SyncState:           "current",
+	}
+	s.applyMiningPeerAgreementWindow(&input)
+	if input.LocalBlockPropagationGraceActive {
+		t.Fatalf("node behind canaries must clear grace: %+v", input)
+	}
+}
+
+func TestServerLocalGraceClearsWithInsufficientCompatiblePeers(t *testing.T) {
+	s := &Server{}
+	s.minerMu.Lock()
+	s.minerLocalBlockGraceActive = true
+	s.minerLocalBlockGraceStartedAt = time.Now()
+	s.minerLocalBlockGraceHeight = 100
+	s.minerLocalBlockGraceHash = "abc123"
+	s.minerMu.Unlock()
+	input := MiningSafetyInput{
+		PeerCount:           4,
+		MinAgreeingPeers:    2,
+		BlocksBehindAllowed: 1,
+		AgreeingPeerCount:   0,
+		CompatiblePeerCount: 1,
+		SyncState:           "current",
+	}
+	s.applyMiningPeerAgreementWindow(&input)
+	if input.LocalBlockPropagationGraceActive {
+		t.Fatalf("insufficient compatible peers must clear grace: %+v", input)
+	}
+}
+
+func TestServerLocalGraceClearsWithConflictingTip(t *testing.T) {
+	s := &Server{}
+	s.minerMu.Lock()
+	s.minerLocalBlockGraceActive = true
+	s.minerLocalBlockGraceStartedAt = time.Now()
+	s.minerLocalBlockGraceHeight = 100
+	s.minerLocalBlockGraceHash = "abc123"
+	s.minerMu.Unlock()
+	input := MiningSafetyInput{
+		PeerCount:               4,
+		MinAgreeingPeers:        2,
+		BlocksBehindAllowed:     1,
+		AgreeingPeerCount:       0,
+		CompatiblePeerCount:     4,
+		ConflictingTipPeerCount: 1,
+		SyncState:               "current",
+	}
+	s.applyMiningPeerAgreementWindow(&input)
+	if input.LocalBlockPropagationGraceActive {
+		t.Fatalf("conflicting tip must clear grace: %+v", input)
+	}
+}
+
+func TestServerLocalGraceClearsWhenAgreeingPeersReached(t *testing.T) {
+	s := &Server{}
+	s.minerMu.Lock()
+	s.minerLocalBlockGraceActive = true
+	s.minerLocalBlockGraceStartedAt = time.Now()
+	s.minerLocalBlockGraceHeight = 100
+	s.minerLocalBlockGraceHash = "abc123"
+	s.minerMu.Unlock()
+	input := MiningSafetyInput{
+		PeerCount:           4,
+		MinAgreeingPeers:    2,
+		BlocksBehindAllowed: 1,
+		AgreeingPeerCount:   2,
+		CompatiblePeerCount: 4,
+		SyncState:           "current",
+	}
+	s.applyMiningPeerAgreementWindow(&input)
+	if input.LocalBlockPropagationGraceActive {
+		t.Fatalf("sufficient agreeing peers must clear grace: %+v", input)
+	}
+}
+
+func TestServerLocalGraceExpiredPausesImmediately(t *testing.T) {
+	s := &Server{}
+	s.minerMu.Lock()
+	s.minerLocalBlockGraceActive = true
+	s.minerLocalBlockGraceStartedAt = time.Now().Add(-121 * time.Second)
+	s.minerLocalBlockGraceHeight = 100
+	s.minerLocalBlockGraceHash = "abc123"
+	s.minerMu.Unlock()
+	input := MiningSafetyInput{
+		PeerCount:           4,
+		MinAgreeingPeers:    2,
+		BlocksBehindAllowed: 1,
+		AgreeingPeerCount:   0,
+		CompatiblePeerCount: 1,
+		SyncState:           "current",
+	}
+	s.applyMiningPeerAgreementWindow(&input)
+	if input.LocalBlockPropagationGraceActive {
+		t.Fatalf("expired local grace must not remain active: %+v", input)
+	}
+	if input.PeerAgreementGraceActive {
+		t.Fatalf("expired local grace must not fall back to peer agreement grace: %+v", input)
+	}
+	status := CheckSafeToMine(input)
+	if status.Safe {
+		t.Fatalf("expired local grace with no agreeing peers must produce unsafe: %+v", status)
+	}
+	if status.State != "unsafe" {
+		t.Fatalf("expired local grace must produce state=unsafe, got %q: %+v", status.State, status)
+	}
+}
+
+func TestServerLocalGraceInsufficientCompatiblePeersPausesImmediately(t *testing.T) {
+	s := &Server{}
+	s.minerMu.Lock()
+	s.minerLocalBlockGraceActive = true
+	s.minerLocalBlockGraceStartedAt = time.Now()
+	s.minerLocalBlockGraceHeight = 100
+	s.minerLocalBlockGraceHash = "abc123"
+	s.minerMu.Unlock()
+	input := MiningSafetyInput{
+		PeerCount:           4,
+		MinAgreeingPeers:    2,
+		BlocksBehindAllowed: 1,
+		AgreeingPeerCount:   0,
+		CompatiblePeerCount: 1,
+		SyncState:           "current",
+	}
+	s.applyMiningPeerAgreementWindow(&input)
+	if input.LocalBlockPropagationGraceActive {
+		t.Fatalf("<2 compatible peers must clear grace: %+v", input)
+	}
+	if input.PeerAgreementGraceActive {
+		t.Fatalf("<2 compatible peers must not start peer grace: %+v", input)
+	}
+	status := CheckSafeToMine(input)
+	if status.Safe {
+		t.Fatalf("<2 compatible peers with no agreeing must produce unsafe: %+v", status)
+	}
+	if status.State != "unsafe" {
+		t.Fatalf("<2 compatible peers must produce state=unsafe, got %q: %+v", status.State, status)
+	}
+}
+
+func TestServerLocalGraceReorgPausesImmediately(t *testing.T) {
+	chain, err := blockchain.New(chaincfg.MainNet, safetyTestHasher{}, storage.NewFileStore(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	genesis, err := safetyTestGenesisBlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.ProcessBlock(genesis); err != nil {
+		t.Fatal(err)
+	}
+	tip := chain.Tip()
+	s := &Server{chain: chain}
+	s.minerMu.Lock()
+	s.minerLocalBlockGraceActive = true
+	s.minerLocalBlockGraceStartedAt = time.Now()
+	s.minerLocalBlockGraceHeight = tip.Height + 5
+	s.minerLocalBlockGraceHash = "different_hash"
+	s.minerMu.Unlock()
+	input := MiningSafetyInput{
+		PeerCount:           4,
+		MinAgreeingPeers:    2,
+		BlocksBehindAllowed: 1,
+		AgreeingPeerCount:   0,
+		CompatiblePeerCount: 4,
+		SyncState:           "current",
+	}
+	s.applyMiningPeerAgreementWindow(&input)
+	if input.LocalBlockPropagationGraceActive {
+		t.Fatalf("reorg/orphan must clear grace: %+v", input)
+	}
+	if input.PeerAgreementGraceActive {
+		t.Fatalf("reorg/orphan must not start peer grace: %+v", input)
+	}
+	status := CheckSafeToMine(input)
+	if status.Safe {
+		t.Fatalf("reorg/orphan with no agreeing must produce unsafe: %+v", status)
+	}
+}
+
+func TestServerImmediateRiskStrongerChainworkClearsGrace(t *testing.T) {
+	chain, err := blockchain.New(chaincfg.MainNet, safetyTestHasher{}, storage.NewFileStore(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	genesis, err := safetyTestGenesisBlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.ProcessBlock(genesis); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{chain: chain}
+	s.minerMu.Lock()
+	s.minerLocalBlockGraceActive = true
+	s.minerLocalBlockGraceStartedAt = time.Now()
+	s.minerLocalBlockGraceHeight = chain.Tip().Height
+	s.minerLocalBlockGraceHash = chain.Tip().Hash
+	s.minerPeerAgreementLostSince = time.Now().Add(-60 * time.Second)
+	s.minerMu.Unlock()
+
+	input := MiningSafetyInput{
+		PeerCount:                   4,
+		MinAgreeingPeers:            2,
+		BlocksBehindAllowed:         1,
+		BlocksBehind:                0,
+		AgreeingPeerCount:           0,
+		CompatiblePeerCount:         4,
+		SyncState:                   "current",
+		StrongerChainworkPeerCount:  1,
+		PeerGraceSeconds:            90,
+		PeerRecoverySeconds:         30,
+	}
+	s.applyMiningPeerAgreementWindow(&input)
+	if input.LocalBlockPropagationGraceActive {
+		t.Fatalf("stronger chainwork must clear local grace: %+v", input)
+	}
+	if input.PeerAgreementGraceActive {
+		t.Fatalf("stronger chainwork must not activate peer grace: %+v", input)
+	}
+	status := CheckSafeToMine(input)
+	if status.Safe {
+		t.Fatalf("stronger chainwork must produce unsafe: %+v", status)
+	}
+	if status.PeerAgreementGraceActive {
+		t.Fatalf("stronger chainwork must bypass peer grace: %+v", status)
+	}
+}
+
+func TestServerImmediateRiskWrongChainClearsGrace(t *testing.T) {
+	chain, err := blockchain.New(chaincfg.MainNet, safetyTestHasher{}, storage.NewFileStore(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	genesis, err := safetyTestGenesisBlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.ProcessBlock(genesis); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{chain: chain}
+	s.minerMu.Lock()
+	s.minerLocalBlockGraceActive = true
+	s.minerLocalBlockGraceStartedAt = time.Now()
+	s.minerLocalBlockGraceHeight = chain.Tip().Height
+	s.minerLocalBlockGraceHash = chain.Tip().Hash
+	s.minerMu.Unlock()
+
+	input := MiningSafetyInput{
+		PeerCount:            4,
+		MinAgreeingPeers:     2,
+		BlocksBehindAllowed:  1,
+		BlocksBehind:         0,
+		AgreeingPeerCount:    0,
+		CompatiblePeerCount:  4,
+		SyncState:            "current",
+		WrongChainPeerCount:  1,
+		PeerGraceSeconds:     90,
+		PeerRecoverySeconds:  30,
+	}
+	s.applyMiningPeerAgreementWindow(&input)
+	if input.LocalBlockPropagationGraceActive {
+		t.Fatalf("wrong chain must clear local grace: %+v", input)
+	}
+	if input.PeerAgreementGraceActive {
+		t.Fatalf("wrong chain must not activate peer grace: %+v", input)
+	}
+	status := CheckSafeToMine(input)
+	if status.Safe {
+		t.Fatalf("wrong chain must produce unsafe: %+v", status)
+	}
+	if status.PeerAgreementGraceActive {
+		t.Fatalf("wrong chain must bypass peer grace: %+v", status)
+	}
+}
+
+func TestServerImmediateRiskProtocolErrorClearsGrace(t *testing.T) {
+	chain, err := blockchain.New(chaincfg.MainNet, safetyTestHasher{}, storage.NewFileStore(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	genesis, err := safetyTestGenesisBlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.ProcessBlock(genesis); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{chain: chain}
+	s.minerMu.Lock()
+	s.minerLocalBlockGraceActive = true
+	s.minerLocalBlockGraceStartedAt = time.Now()
+	s.minerLocalBlockGraceHeight = chain.Tip().Height
+	s.minerLocalBlockGraceHash = chain.Tip().Hash
+	s.minerMu.Unlock()
+
+	input := MiningSafetyInput{
+		PeerCount:              4,
+		MinAgreeingPeers:       2,
+		BlocksBehindAllowed:    1,
+		BlocksBehind:           0,
+		AgreeingPeerCount:      0,
+		CompatiblePeerCount:    4,
+		SyncState:              "current",
+		ProtocolErrorPeerCount: 1,
+		PeerGraceSeconds:       90,
+		PeerRecoverySeconds:    30,
+	}
+	s.applyMiningPeerAgreementWindow(&input)
+	if input.LocalBlockPropagationGraceActive {
+		t.Fatalf("protocol error must clear local grace: %+v", input)
+	}
+	if input.PeerAgreementGraceActive {
+		t.Fatalf("protocol error must not activate peer grace: %+v", input)
+	}
+	status := CheckSafeToMine(input)
+	if status.Safe {
+		t.Fatalf("protocol error must produce unsafe: %+v", status)
+	}
+	if status.PeerAgreementGraceActive {
+		t.Fatalf("protocol error must bypass peer grace: %+v", status)
+	}
+}
+
+func TestCheckSafeToMineStorageFailureBlocksImmediately(t *testing.T) {
+	input := graceInput()
+	input.StorageOK = false
+	input.StorageError = "disk full"
+	input.AgreeingPeerCount = 4
+	input.LocalBlockPropagationGraceActive = true
+	input.PeerAgreementGraceActive = true
+	status := CheckSafeToMine(input)
+	if status.Safe {
+		t.Fatalf("storage failure must produce unsafe: %+v", status)
+	}
+	if status.State != "unsafe" {
+		t.Fatalf("storage failure must be unsafe: %+v", status)
+	}
+	if status.Reason == "" {
+		t.Fatal("storage failure must have a reason")
+	}
+}
+
+func TestCheckSafeToMineInvalidPayoutBlocksImmediately(t *testing.T) {
+	input := graceInput()
+	input.DestinationOK = false
+	input.DestinationError = "reward address is not owned by this wallet"
+	input.AgreeingPeerCount = 4
+	input.LocalBlockPropagationGraceActive = true
+	input.PeerAgreementGraceActive = true
+	status := CheckSafeToMine(input)
+	if status.Safe {
+		t.Fatalf("invalid payout must produce unsafe: %+v", status)
+	}
+	if status.State != "unsafe" {
+		t.Fatalf("invalid payout must be unsafe: %+v", status)
+	}
+	if status.Reason == "" {
+		t.Fatal("invalid payout must have a reason")
+	}
+}
+
+func TestCheckSafeToMineRPCTimeoutBlocksEvenWithGrace(t *testing.T) {
+	input := graceInput()
+	input.RPCHealth = "timeout"
+	input.AgreeingPeerCount = 4
+	input.LocalBlockPropagationGraceActive = true
+	input.PeerAgreementGraceActive = true
+	status := CheckSafeToMine(input)
+	if status.Safe {
+		t.Fatalf("RPC timeout must produce unsafe: %+v", status)
+	}
+	if status.State != "unsafe" {
+		t.Fatalf("RPC timeout must be unsafe even with grace: %+v", status)
+	}
+}
+
+func TestCheckSafeToMineHardStaleTemplateBlocksEvenWithGrace(t *testing.T) {
+	input := graceInput()
+	input.HasActiveTemplate = true
+	input.ActiveTemplateFresh = true
+	input.CurrentTipHeight = 101
+	input.CurrentTemplateHeight = 102
+	input.CurrentTipHash = "tip"
+	input.ActiveTemplatePrevHash = "tip"
+	input.TemplateAgeSeconds = 21 * 60
+	input.TemplateSoftRefreshAgeSeconds = 30
+	input.TemplateMaxAgeSeconds = 20 * 60
+	input.AgreeingPeerCount = 4
+	input.LocalBlockPropagationGraceActive = true
+	input.PeerAgreementGraceActive = true
+	status := CheckSafeToMine(input)
+	if status.Safe {
+		t.Fatalf("hard stale template must produce unsafe: %+v", status)
+	}
+	if status.State != "unsafe" {
+		t.Fatalf("hard stale template must be unsafe even with grace: %+v", status)
+	}
+}
+
+func TestCheckSafeToMinePrevHashMismatchBlocksEvenWithGrace(t *testing.T) {
+	input := graceInput()
+	input.HasActiveTemplate = true
+	input.ActiveTemplateFresh = true
+	input.CurrentTemplateHeight = 102
+	input.CurrentTipHeight = 101
+	input.ActiveTemplatePrevHash = "old"
+	input.CurrentTipHash = "new"
+	input.AgreeingPeerCount = 4
+	input.LocalBlockPropagationGraceActive = true
+	input.PeerAgreementGraceActive = true
+	status := CheckSafeToMine(input)
+	if status.Safe {
+		t.Fatalf("prev hash mismatch must produce unsafe: %+v", status)
+	}
+	if status.State != "unsafe" {
+		t.Fatalf("prev hash mismatch must be unsafe even with grace: %+v", status)
+	}
+}
+
+func TestCheckSafeToMineGraceDoesNotResetOnRepeatedEvaluation(t *testing.T) {
+	input := MiningSafetyInput{
+		PeerCount:                         4,
+		MinAgreeingPeers:                  2,
+		BlocksBehindAllowed:               1,
+		BlocksBehind:                      1,
+		AgreeingPeerCount:                 0,
+		CompatiblePeerCount:               2,
+		SyncState:                         "current",
+		PeerGraceSeconds:                  90,
+		PeerRecoverySeconds:               30,
+		ConflictingTipPeerCount:           1,
+		RPCHealth:                         "ok",
+		StorageOK:                         true,
+		DestinationOK:                     true,
+	}
+	for i := 0; i < 5; i++ {
+		status := CheckSafeToMine(input)
+		if status.Safe {
+			t.Fatalf("iteration %d: conflicting tip must be unsafe: %+v", i, status)
+		}
+		if status.PeerAgreementGraceActive {
+			t.Fatalf("iteration %d: conflicting tip must not activate peer grace: %+v", i, status)
+		}
+		if status.State != "unsafe" {
+			t.Fatalf("iteration %d: conflicting tip must remain unsafe: %+v", i, status)
+		}
 	}
 }

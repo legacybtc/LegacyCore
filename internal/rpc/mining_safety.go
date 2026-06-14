@@ -76,7 +76,7 @@ type MiningSafetyInput struct {
 	LocalBlockPropagationHeight           int32
 	LocalBlockPropagationHash             string
 	LastLocalBlockAnnouncementTime        int64
-	LocalBlockAnnouncementPeerCount       int
+	LocalBlockAnnouncementTargetCount       int
 	ExactAgreeingPeerCount                int
 }
 
@@ -138,7 +138,7 @@ type MiningSafetyStatus struct {
 	LocalBlockPropagationHeight           int32
 	LocalBlockPropagationHash             string
 	LastLocalBlockAnnouncementTime        int64
-	LocalBlockAnnouncementPeerCount       int
+	LocalBlockAnnouncementTargetCount       int
 	ExactAgreeingPeerCount                int
 }
 
@@ -204,7 +204,7 @@ func (s MiningSafetyStatus) Fields() map[string]any {
 		"local_block_propagation_height":            s.LocalBlockPropagationHeight,
 		"local_block_propagation_hash":              s.LocalBlockPropagationHash,
 		"last_local_block_announcement_time":        s.LastLocalBlockAnnouncementTime,
-		"local_block_announcement_peer_count":       s.LocalBlockAnnouncementPeerCount,
+		"local_block_announcement_target_count":       s.LocalBlockAnnouncementTargetCount,
 		"exact_agreeing_peer_count":                 s.ExactAgreeingPeerCount,
 	}
 }
@@ -407,7 +407,7 @@ func CheckSafeToMine(input MiningSafetyInput) MiningSafetyStatus {
 	status.LocalBlockPropagationHeight = input.LocalBlockPropagationHeight
 	status.LocalBlockPropagationHash = input.LocalBlockPropagationHash
 	status.LastLocalBlockAnnouncementTime = input.LastLocalBlockAnnouncementTime
-	status.LocalBlockAnnouncementPeerCount = input.LocalBlockAnnouncementPeerCount
+	status.LocalBlockAnnouncementTargetCount = input.LocalBlockAnnouncementTargetCount
 	if minAgreeingPeers > 0 && agreeingPeerCount < minAgreeingPeers {
 		if input.LocalBlockPropagationGraceActive {
 			graceState := "degraded"
