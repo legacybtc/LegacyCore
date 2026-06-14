@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"runtime/pprof"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -22,6 +23,7 @@ import (
 	"legacycoin/legacy-go/internal/mining"
 	"legacycoin/legacy-go/internal/pow"
 	"legacycoin/legacy-go/internal/storage"
+	"legacycoin/legacy-go/internal/wallet"
 )
 
 func TestSustainedRPCResponsiveness(t *testing.T) {
@@ -456,5 +458,73 @@ func TestCheckSafeToMineIdleGoroutineStability(t *testing.T) {
 	t.Logf("idle checkSafeToMine: calls=%d goroutines(start=%d max=%d end=%d)", callCount, startG, maxG, endG)
 	if endG > startG+50 {
 		t.Fatalf("goroutine growth during idle safety checks: start=%d end=%d max=%d", startG, endG, maxG)
+	}
+}
+
+func TestFullMinerStatusHandlerIdleStability(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping full handler stability test in short mode")
+	}
+	dir := t.TempDir()
+	wal, err := wallet.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chain, err := blockchain.New(chaincfg.MainNet, safetyTestHasher{}, storage.NewFileStore(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	genesis, err := safetyTestGenesisBlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.ProcessBlock(genesis); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{chain: chain, wallet: wal}
+	s.minerMu.Lock()
+	s.minerActive = false
+	s.minerHashing = false
+	s.minerMu.Unlock()
+	cfg := config.MiningConfig{}
+
+	startG := runtime.NumGoroutine()
+	maxG := startG
+	callCount := 500
+
+	var createBefore int
+	if p := pprof.Lookup("threadcreate"); p != nil {
+		createBefore = p.Count()
+	}
+
+	for i := 0; i < callCount; i++ {
+		_ = s.minerStatus(cfg, nil, false)
+		if g := runtime.NumGoroutine(); g > maxG {
+			maxG = g
+		}
+		if callCount <= 20 || i%(callCount/10) == 0 {
+			createAfter := 0
+			if p := pprof.Lookup("threadcreate"); p != nil {
+				createAfter = p.Count()
+			}
+			t.Logf("  call %4d: goroutines=%d threads_created=%d", i, runtime.NumGoroutine(), createAfter)
+		}
+	}
+	time.Sleep(200 * time.Millisecond)
+	endG := runtime.NumGoroutine()
+
+	var createAfter int
+	if p := pprof.Lookup("threadcreate"); p != nil {
+		createAfter = p.Count()
+	}
+
+	t.Logf("FULL minerStatus: calls=%d goroutines(start=%d max=%d end=%d) threads_created(before=%d after=%d delta=%d)",
+		callCount, startG, maxG, endG, createBefore, createAfter, createAfter-createBefore)
+
+	if endG > startG+100 {
+		t.Fatalf("goroutine growth: start=%d end=%d max=%d", startG, endG, maxG)
+	}
+	if createAfter-createBefore > 10 {
+		t.Fatalf("OS thread creation during idle handler: %d new threads (expected <=10)", createAfter-createBefore)
 	}
 }

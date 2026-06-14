@@ -4884,7 +4884,12 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 		"mining_pubkey_hash":          dest.PubKeyHashHex,
 		"active_reward_hash":          displayRewardHash,
 		"reject_zero_hash":            cfg.RejectZeroHash,
-		"peers":                       s.p2p.PeerCount(),
+		"peers": func() int32 {
+			if s.p2p == nil {
+				return 0
+			}
+			return s.p2p.PeerCount()
+		}(),
 		"good_peer_rejection_reasons": goodPeerReasonCounts,
 		"peer_quality_diagnostics":    peerQualityDiagnostics,
 		"good_peer_diagnostics_note":  "Peer count includes all connected peers; good peers have useful current chain data, acceptable latency/pongs, matching chain ID, and no recent sync or block errors.",
