@@ -17,6 +17,7 @@ import (
 
 	"legacycoin/legacy-go/internal/blockchain"
 	"legacycoin/legacy-go/internal/chaincfg"
+	"legacycoin/legacy-go/internal/config"
 	"legacycoin/legacy-go/internal/mempool"
 	"legacycoin/legacy-go/internal/mining"
 	"legacycoin/legacy-go/internal/pow"
@@ -415,5 +416,45 @@ func TestMinerLifecycleWorkerGoroutineStability(t *testing.T) {
 		if s.pending > threads+2 {
 			t.Fatalf("cycle %d: too many active workers (%d)", i, s.pending)
 		}
+	}
+}
+
+func TestCheckSafeToMineIdleGoroutineStability(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping idle goroutine stability test in short mode")
+	}
+	chain, err := blockchain.New(chaincfg.MainNet, safetyTestHasher{}, storage.NewFileStore(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	genesis, err := safetyTestGenesisBlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.ProcessBlock(genesis); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{chain: chain}
+	s.minerMu.Lock()
+	s.minerActive = false
+	s.minerHashing = false
+	s.minerMu.Unlock()
+
+	startG := runtime.NumGoroutine()
+	maxG := startG
+	callCount := 250
+
+	cfg := config.MiningConfig{}
+	for i := 0; i < callCount; i++ {
+		_ = s.checkSafeToMine(cfg, false)
+		if g := runtime.NumGoroutine(); g > maxG {
+			maxG = g
+		}
+	}
+	time.Sleep(100 * time.Millisecond)
+	endG := runtime.NumGoroutine()
+	t.Logf("idle checkSafeToMine: calls=%d goroutines(start=%d max=%d end=%d)", callCount, startG, maxG, endG)
+	if endG > startG+50 {
+		t.Fatalf("goroutine growth during idle safety checks: start=%d end=%d max=%d", startG, endG, maxG)
 	}
 }
