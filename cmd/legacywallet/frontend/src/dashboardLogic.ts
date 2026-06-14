@@ -453,7 +453,7 @@ export function buildMinerDashboardState(mining: DashboardDict = {}, wallet: Das
           : "starting / confirming"
       : "inactive (miner stopped)";
   const activityStatusLabel = rpcOffline
-    ? (lastKnownActiveMining ? "Miner status unavailable (last known running)" : "Miner status unavailable (RPC offline / last known)")
+    ? (miningEnabled ? "Miner status unavailable (last known running)" : "Miner status unavailable (last known stopped)")
     : status === "error"
       ? `Mining error: ${errorReason || "worker exited unexpectedly"}`
     : hardStaleRecoveryActive
@@ -541,7 +541,10 @@ function minerDataFresh(mining: DashboardDict = {}, rpcOffline = minerRPCOffline
 }
 
 function deriveMinerStatus(opts: { rpcOffline: boolean; activeMining: boolean; lastKnownActiveMining: boolean; miningEnabled: boolean; miningSafe: boolean; pausedReason: string; displayLastError: string }): MinerDashboardState["status"] {
-  if (opts.rpcOffline) return opts.lastKnownActiveMining ? "last_known_running" : "last_known_stopped";
+  if (opts.rpcOffline) {
+    if (!opts.miningEnabled) return "last_known_stopped";
+    return opts.lastKnownActiveMining ? "last_known_running" : "last_known_stopped";
+  }
   if (opts.activeMining && isRetryEvent(opts.pausedReason)) return "retrying";
   if (opts.activeMining && !opts.miningSafe) return "unsafe";
   if (opts.activeMining) return "running";

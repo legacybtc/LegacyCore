@@ -26,8 +26,8 @@ func TestGetMinerStatusFallsBackWhenRPCOffline(t *testing.T) {
 	if status["rpc_offline"] != true {
 		t.Fatalf("expected rpc_offline true, got %v", status["rpc_offline"])
 	}
-	if status["active_mining"] != false {
-		t.Fatalf("expected active_mining false while RPC status is stale, got %v", status["active_mining"])
+	if status["active_mining"] != true {
+		t.Fatalf("expected active_mining true (matches local state) while RPC is offline but miner is running locally, got %v", status["active_mining"])
 	}
 	if status["last_known_active_mining"] != true {
 		t.Fatalf("expected last_known_active_mining true in fallback, got %v", status["last_known_active_mining"])
