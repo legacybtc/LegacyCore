@@ -4,6 +4,7 @@ import (
 	"context"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -14,7 +15,10 @@ import (
 	"legacycoin/legacy-go/internal/storage"
 )
 
-func TestMinerLifecycleResourceStability(t *testing.T) {
+func TestMinerLifecycleExtendedStress(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping extended lifecycle stress in short mode")
+	}
 	if pow.BackendName() != "cgo-c-reference" {
 		t.Skipf("requires production yespower backend")
 	}
@@ -29,28 +33,69 @@ func TestMinerLifecycleResourceStability(t *testing.T) {
 	}
 
 	threads := 4
-	cycles := 50
+	testDuration := 5 * time.Minute
+	cycleDuration := 3 * time.Second
 	pubHash := make([]byte, 20)
 
 	var (
-		maxGoroutines int
-		started       int64
-		exited        int64
-		startG        int
+		startedCount atomic.Int64
+		exitedCount  atomic.Int64
+		activeCount  atomic.Int64
+		startG       = runtime.NumGoroutine()
+		startHeap    uint64
+		maxHeap      uint64
+		minHeap      uint64 = 1<<64 - 1
+		startTS      = time.Now()
+		cycleCount   int
+		maxRPC       time.Duration
+		totalRPC     time.Duration
+		rpcCount     atomic.Int64
 	)
 
-	startG = runtime.NumGoroutine()
-	t.Logf("start: goroutines=%d", startG)
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
+	startHeap = memStats.HeapAlloc
+	minHeap = startHeap
 
-	for cycle := 0; cycle < cycles; cycle++ {
-		ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	maxG := startG
+	minG := startG
+
+	t.Logf("START: goroutines=%d heap=%dKB", startG, startHeap/1024)
+
+	record := func(phase string) {
+		runtime.ReadMemStats(&memStats)
+		g := runtime.NumGoroutine()
+		h := memStats.HeapAlloc
+		if g > maxG {
+			maxG = g
+		}
+		if g < minG {
+			minG = g
+		}
+		if h > maxHeap {
+			maxHeap = h
+		}
+		if h < minHeap {
+			minHeap = h
+		}
+		if cycleCount > 0 && cycleCount%50 == 0 {
+			t.Logf("[%5.0fs] phase=%s goroutines=%d heap=%dKB started=%d exited=%d active=%d",
+				time.Since(startTS).Seconds(), phase, g, h/1024,
+				startedCount.Load(), exitedCount.Load(), activeCount.Load())
+		}
+	}
+
+	for time.Since(startTS) < testDuration {
+		cycleCount++
+		ctx, cancel := context.WithTimeout(context.Background(), cycleDuration)
 		var wg sync.WaitGroup
 		for w := 0; w < threads; w++ {
 			wg.Add(1)
-			started++
+			startedCount.Add(1)
+			activeCount.Add(1)
 			go func() {
 				defer wg.Done()
-				defer func() { exited++ }()
+				defer func() { exitedCount.Add(1); activeCount.Add(-1) }()
 				runtime.LockOSThread()
 				defer runtime.UnlockOSThread()
 				template, _, err := NewBlockTemplate(chain, mempool.New(), pubHash)
@@ -60,15 +105,27 @@ func TestMinerLifecycleResourceStability(t *testing.T) {
 				hasher := pow.YespowerHasher{Personalization: chaincfg.MainNet.YespowerPers}
 				block := *template
 				block.Transactions = template.Transactions
+				var yieldCounter uint32
 				for nonce := uint32(0); ; nonce++ {
 					select {
 					case <-ctx.Done():
 						return
 					default:
 					}
+					rpcStart := time.Now()
 					block.Header.Nonce = nonce
 					hasher.HashHeader(block.Header)
-					if nonce > 8000 {
+					elapsed := time.Since(rpcStart)
+					totalRPC += elapsed
+					rpcCount.Add(1)
+					if elapsed > maxRPC {
+						maxRPC = elapsed
+					}
+					yieldCounter++
+					if yieldCounter&0x3f == 0 {
+						runtime.Gosched()
+					}
+					if nonce > 5000 {
 						return
 					}
 				}
@@ -76,25 +133,37 @@ func TestMinerLifecycleResourceStability(t *testing.T) {
 		}
 		wg.Wait()
 		cancel()
-
-		if g := runtime.NumGoroutine(); g > maxGoroutines {
-			maxGoroutines = g
-		}
-		if cycle == 0 || cycle == cycles/2 || cycle == cycles-1 {
-			t.Logf("cycle %3d: goroutines=%d started=%d exited=%d",
-				cycle, runtime.NumGoroutine(), started, exited)
-		}
+		time.Sleep(100 * time.Millisecond)
+		record("cycle")
 	}
+
 	time.Sleep(500 * time.Millisecond)
-
+	runtime.ReadMemStats(&memStats)
 	endG := runtime.NumGoroutine()
-	t.Logf("end: goroutines=%d (start=%d max=%d) started=%d exited=%d",
-		endG, startG, maxGoroutines, started, exited)
+	endHeap := memStats.HeapAlloc
+	endActive := activeCount.Load()
+	s := startedCount.Load()
+	e := exitedCount.Load()
+	rc := rpcCount.Load()
 
-	if started != exited {
-		t.Fatalf("started(%d) != exited(%d) — worker goroutine leak", started, exited)
+	avgRPC := time.Duration(0)
+	if rc > 0 {
+		avgRPC = time.Duration(totalRPC.Nanoseconds() / rc)
 	}
-	if endG > startG+threads+5 {
-		t.Fatalf("goroutines grew: start=%d end=%d max=%d", startG, endG, maxGoroutines)
+
+	t.Logf("FINAL: goroutines(start=%d end=%d min=%d max=%d) heap(start=%dKB end=%dKB min=%dKB max=%dKB)",
+		startG, endG, minG, maxG, startHeap/1024, endHeap/1024, minHeap/1024, maxHeap/1024)
+	t.Logf("WORKERS: started=%d exited=%d active=%d cycles=%d",
+		s, e, endActive, cycleCount)
+	t.Logf("RPC-HASH: avg=%v max=%v calls=%d", avgRPC, maxRPC, rc)
+
+	if s != e {
+		t.Fatalf("WORKER LEAK: started(%d) != exited(%d)", s, e)
+	}
+	if endActive != 0 {
+		t.Fatalf("ACTIVE WORKERS REMAINING: %d (should be 0)", endActive)
+	}
+	if endG > startG+threads+10 {
+		t.Fatalf("GOROUTINE GROWTH: start=%d end=%d", startG, endG)
 	}
 }
