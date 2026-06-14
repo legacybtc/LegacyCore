@@ -935,3 +935,74 @@ test("wallet-wide immature rewards remain intact during RPC fallback", () => {
   assert.equal(state.staleLabel, "Last session stale");
   assert.equal(state.rejectedLabel, "Last session rejected");
 });
+
+test("RPC timeout with running authoritative state must not show stopped or user_stop", () => {
+  // Bug reproduction: RPC times out while mining WAS running.
+  // Authoritative last snapshot: active_mining=true, mining_enabled=true, active_threads=4.
+  // An old cached user_stop exists as last_stop_reason but is STALE.
+  // Fallback must show last_known_running, NOT stopped, NOT user_stop.
+  const state = buildMinerDashboardState({
+    ...stoppedMinerStatus,
+    status_source: "local_fallback",
+    rpc_offline: true,
+    rpc_health: "timeout",
+    data_unavailable: true,
+    fallback_stale: true,
+    dashboard_data_fresh: false,
+    active_mining: true,
+    mining_enabled: true,
+    last_known_active_mining: true,
+    active_threads: 4,
+    configured_threads: 4,
+    active_threads_last_known: 4,
+    last_stop_reason: "",
+    last_error: "",
+    last_session_khps: 3.1,
+    mining_blocked_reason: "Mining blocked: RPC is not responding.",
+  }, overnightWalletSummary);
+  assert.equal(state.status, "last_known_running", "must show last known running, not stopped");
+  assert.notEqual(state.status, "stopped");
+  assert.equal(state.activeMining, false, "RPC offline means mining is not active");
+  assert.equal(state.safetyLabel, "unknown — RPC timeout");
+  assert.notEqual(state.safetyLabel, "safe");
+  assert.equal(state.liveActiveThreads, 0, "stale thread counts must not show as live");
+  assert.match(state.threadMetricLabel, /configured last known/);
+  assert.notEqual(state.lastActionLabel, "user_stop");
+  assert.match(state.lastActionLabel, /status unavailable/);
+});
+
+test("RPC recovery clears fallback and restores authoritative running immediately", () => {
+  // RPC comes back online. Mining is confirmed running.
+  const state = buildMinerDashboardState({
+    ...stoppedMinerStatus,
+    status_source: "active_rpc",
+    rpc_offline: false,
+    rpc_health: "ok",
+    data_unavailable: false,
+    fallback_stale: false,
+    dashboard_data_fresh: true,
+    active_mining: true,
+    mining_enabled: true,
+    mining_safe: true,
+    safe_to_mine: true,
+    active_threads: 4,
+    configured_threads: 4,
+    local_khps: 3.1,
+    local_khps_live: 3.1,
+    sync_state: "current",
+    blocks_behind: 0,
+    good_peer_count: 4,
+    last_stop_reason: "",
+    last_error: "",
+  }, overnightWalletSummary);
+  assert.equal(state.status, "running");
+  assert.equal(state.activeMining, true);
+  assert.equal(state.safetyLabel, "safe");
+  assert.equal(state.rpcHealthLabel, "ok");
+  assert.equal(state.dataFreshnessLabel, "fresh");
+  assert.equal(state.liveActiveThreads, 4);
+  assert.equal(state.threadMetricLabel, "4 active / 4 configured");
+  assert.doesNotMatch(state.hashrateMetricLabel, /stale/);
+  assert.notEqual(state.status, "last_known_running");
+  assert.equal(state.lastActionLabel, "-");
+});

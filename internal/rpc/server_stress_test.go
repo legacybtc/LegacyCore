@@ -2,6 +2,7 @@ package rpc
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +17,9 @@ import (
 
 	"legacycoin/legacy-go/internal/blockchain"
 	"legacycoin/legacy-go/internal/chaincfg"
+	"legacycoin/legacy-go/internal/mempool"
+	"legacycoin/legacy-go/internal/mining"
+	"legacycoin/legacy-go/internal/pow"
 	"legacycoin/legacy-go/internal/storage"
 )
 
@@ -300,3 +304,118 @@ func BenchmarkMinerYield10Threads(b *testing.B) { benchMinerYield(b, 10, 64) }
 func BenchmarkMinerYieldOld1Thread(b *testing.B)   { benchMinerYield(b, 1, 256) }
 func BenchmarkMinerYieldOld4Threads(b *testing.B)  { benchMinerYield(b, 4, 256) }
 func BenchmarkMinerYieldOld10Threads(b *testing.B) { benchMinerYield(b, 10, 256) }
+
+func TestMinerLifecycleWorkerGoroutineStability(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping lifecycle stress test in short mode")
+	}
+	if pow.BackendName() != "cgo-c-reference" {
+		t.Skipf("requires production yespower backend, got %q", pow.BackendName())
+	}
+
+	dir := t.TempDir()
+	chain, err := blockchain.New(chaincfg.MainNet, pow.YespowerHasher{Personalization: chaincfg.MainNet.YespowerPers}, storage.NewFileStore(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.EnsureGenesis(); err != nil {
+		t.Fatal(err)
+	}
+
+	threads := 4
+	cycles := 50
+	pubHash := bytes.Repeat([]byte{0x55}, 20)
+
+	type sample struct {
+		goroutines int
+		started    int
+		exited     int
+		pending    int
+	}
+	samples := make([]sample, 0, cycles+1)
+
+	var started, exited atomic.Int64
+	var activeWorkers atomic.Int64
+
+	runWorkers := func(ctx context.Context) {
+		var wg sync.WaitGroup
+		for worker := 0; worker < threads; worker++ {
+			wg.Add(1)
+			started.Add(1)
+			activeWorkers.Add(1)
+			go func() {
+				defer wg.Done()
+				defer activeWorkers.Add(-1)
+				defer exited.Add(1)
+				runtime.LockOSThread()
+				defer runtime.UnlockOSThread()
+				template, _, err := mining.NewBlockTemplate(chain, mempool.New(), pubHash)
+				if err != nil {
+					return
+				}
+				hasher := pow.YespowerHasher{Personalization: chaincfg.MainNet.YespowerPers}
+				block := *template
+				block.Transactions = template.Transactions
+				var yieldCounter uint32
+				for nonce := uint32(0); ; nonce++ {
+					select {
+					case <-ctx.Done():
+						return
+					default:
+					}
+					block.Header.Nonce = nonce
+					hasher.HashHeader(block.Header)
+					yieldCounter++
+					if yieldCounter&0x3f == 0 {
+						runtime.Gosched()
+					}
+					if nonce > 5000 {
+						return
+					}
+				}
+			}()
+		}
+		wg.Wait()
+	}
+
+	samples = append(samples, sample{
+		goroutines: runtime.NumGoroutine(),
+		started:    int(started.Load()),
+		exited:     int(exited.Load()),
+		pending:    int(activeWorkers.Load()),
+	})
+
+	for cycle := 0; cycle < cycles; cycle++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		runWorkers(ctx)
+		cancel()
+		samples = append(samples, sample{
+			goroutines: runtime.NumGoroutine(),
+			started:    int(started.Load()),
+			exited:     int(exited.Load()),
+			pending:    int(activeWorkers.Load()),
+		})
+	}
+
+	time.Sleep(500 * time.Millisecond)
+	time.Sleep(500 * time.Millisecond)
+
+	endGoroutines := runtime.NumGoroutine()
+	endActive := int(activeWorkers.Load())
+
+	t.Logf("  cycles=%d  goroutines(start=%d end=%d)  workers(started=%d exited=%d pending=%d)",
+		cycles, samples[0].goroutines, endGoroutines, started.Load(), exited.Load(), endActive)
+
+	if endActive != 0 {
+		t.Fatalf("all workers must exit: got %d active", endActive)
+	}
+	if started.Load() != exited.Load() {
+		t.Fatalf("started(%d) != exited(%d) — goroutine leak", started.Load(), exited.Load())
+	}
+
+	for i, s := range samples {
+		if s.pending > threads+2 {
+			t.Fatalf("cycle %d: too many active workers (%d)", i, s.pending)
+		}
+	}
+}
