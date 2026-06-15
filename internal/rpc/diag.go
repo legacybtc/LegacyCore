@@ -43,7 +43,7 @@ var (
 	diagLastCaptureAt int64 // unix millis
 	diagWarmupDone    int32
 	diagGlobalMu      sync.Mutex
-	diagPrevG         int = -1
+	diagPrevBelow     int32
 )
 
 const maxBundles = 10
@@ -82,12 +82,20 @@ func DiagCounters() map[string]int64 {
 func thresholdCheck() {
 	if atomic.LoadInt32(&diagWarmupDone) == 0 { return }
 	g := runtime.NumGoroutine()
-	trigger := ""
-	if g >= 2500 && diagPrevG < 1500 { trigger = "g2500" }
-	if g >= 2000 && diagPrevG < 1000 { trigger = "g2000" }
-	if g >= 1000 && diagPrevG < 500 { trigger = "g1000" }
-	if g >= 500 && diagPrevG < 300 { trigger = "g500" }
-	diagPrevG = g
+	prev := atomic.LoadInt32(&diagPrevBelow)
+	var trigger string
+	if g >= 2500 && prev < 1500 {
+		trigger = "g2500"
+	} else if g >= 2000 && prev < 1000 {
+		trigger = "g2000"
+	} else if g >= 1000 && prev < 500 {
+		trigger = "g1000"
+	} else if g >= 500 && prev < 300 {
+		trigger = "g500"
+	}
+	if g < 300 {
+		atomic.StoreInt32(&diagPrevBelow, int32(g))
+	}
 	if trigger != "" {
 		_ = triggerCapture(trigger, "")
 	}

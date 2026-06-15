@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -850,5 +851,27 @@ func TestMisbehaviorScoreDecay(t *testing.T) {
 	p.lastMu.Unlock()
 	if score >= 6 {
 		t.Fatalf("expected score decay before second penalty, got %d", score)
+	}
+}
+
+func TestAddNodeBoundedConcurrency(t *testing.T) {
+	s := New(chaincfg.MainNet, nil, nil, log.New(io.Discard, "", 0))
+	ctx, cancel := context.WithCancel(context.Background())
+
+	s.Start(ctx)
+	time.Sleep(100 * time.Millisecond)
+
+	g0 := runtime.NumGoroutine()
+
+	for i := 0; i < 200; i++ {
+		addr := fmt.Sprintf("10.0.0.%d:19555", i%254+1)
+		_ = s.AddNode(ctx, addr)
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	g1 := runtime.NumGoroutine()
+	cancel()
+	if g1 > g0+60 {
+		t.Fatalf("goroutine explosion: before=%d after=%d", g0, g1)
 	}
 }
