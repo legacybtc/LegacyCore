@@ -199,6 +199,10 @@ function App() {
     snapshotLatencyMs: 0,
     maxSnapshotLatencyMs: 0,
     activePollTimers: 0,
+    totalMounts: 1,
+    totalUnmounts: 0,
+    currentMounted: 1,
+    maxMounted: 1,
   });
 
   function pushMessage(tone: AlertTone, title: string, text: string, critical = false) {
@@ -363,6 +367,9 @@ function App() {
 
   useEffect(() => {
     refresh();
+    return () => {
+      setPollStats(s => ({ ...s, totalUnmounts: s.totalUnmounts + 1, currentMounted: Math.max(0, s.currentMounted - 1) }));
+    };
   }, []);
 
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2620,6 +2627,10 @@ function NodePage({
             <div><span>Snapshot latency</span><strong>{pollStats.snapshotLatencyMs}ms</strong></div>
             <div><span>Max Snapshot latency</span><strong>{pollStats.maxSnapshotLatencyMs}ms</strong></div>
             <div><span>Active poll timers</span><strong>{pollStats.activePollTimers}</strong></div>
+            <div><span>Total mounts</span><strong>{pollStats.totalMounts}</strong></div>
+            <div><span>Total unmounts</span><strong>{pollStats.totalUnmounts}</strong></div>
+            <div><span>Current mounted instances</span><strong>{pollStats.currentMounted}</strong></div>
+            <div><span>Max mounted instances</span><strong>{pollStats.maxMounted}</strong></div>
           </div>
         </section>
       )}
