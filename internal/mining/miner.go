@@ -289,6 +289,11 @@ func MineBlock(ctx context.Context, chain *blockchain.Chain, pool *mempool.Pool,
 		wg.Add(1)
 		go func(worker int) {
 			defer wg.Done()
+			var hCtx pow.HasherContext
+			if ch, ok := hasher.(pow.ContextHasher); ok {
+				hCtx = ch.NewContext()
+				defer hCtx.Close()
+			}
 			block := *template
 			block.Transactions = template.Transactions
 			step := uint32(workers)
@@ -300,7 +305,13 @@ func MineBlock(ctx context.Context, chain *blockchain.Chain, pool *mempool.Pool,
 				default:
 				}
 				block.Header.Nonce = nonce
-				hash, err := hasher.HashHeader(block.Header)
+				var hash chainhash.Hash
+				var err error
+				if hCtx != nil {
+					hash, err = pow.HashWithContext(hasher, hCtx, block.Header)
+				} else {
+					hash, err = hasher.HashHeader(block.Header)
+				}
 				if err != nil {
 					select {
 					case resultc <- mineResult{err: err}:
@@ -435,6 +446,11 @@ func BenchmarkHashrate(ctx context.Context, chain *blockchain.Chain, pool *mempo
 		wg.Add(1)
 		go func(worker int) {
 			defer wg.Done()
+			var hCtx pow.HasherContext
+			if ch, ok := hasher.(pow.ContextHasher); ok {
+				hCtx = ch.NewContext()
+				defer hCtx.Close()
+			}
 			block := *template
 			block.Transactions = template.Transactions
 			step := uint32(workers)
@@ -446,9 +462,16 @@ func BenchmarkHashrate(ctx context.Context, chain *blockchain.Chain, pool *mempo
 				default:
 				}
 				block.Header.Nonce = nonce
-				_, err := hasher.HashHeader(block.Header)
-				if err != nil {
-					return
+				if hCtx != nil {
+					_, err := pow.HashWithContext(hasher, hCtx, block.Header)
+					if err != nil {
+						return
+					}
+				} else {
+					_, err := hasher.HashHeader(block.Header)
+					if err != nil {
+						return
+					}
 				}
 				attempts.Add(1)
 				lastNonce.Store(nonce)
