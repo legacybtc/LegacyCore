@@ -410,6 +410,10 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		defer cancel()
 		_ = s.server.Shutdown(shutdownCtx)
 	}()
+	go func() {
+		time.Sleep(120 * time.Second)
+		SetDiagWarmupDone()
+	}()
 	if cfg, err := config.LoadMiningConfig(s.miningConfigPath()); err == nil && !s.policy.SeedNode && (cfg.AutoStart || cfg.Enabled) {
 		go func() {
 			time.Sleep(2 * time.Second)
@@ -1850,6 +1854,8 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		return map[string]any{"count": len(history), "history": history}, nil
 	case "doctor":
 		return s.doctor(), nil
+	case "captureresourcediagnostics":
+		return ManualDiagnosticCapture("rpc-trigger"), nil
 	case "getnewaddress":
 		addr, err := s.wallet.NewAddress()
 		if err != nil {
@@ -4972,6 +4978,8 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 	for key, val := range dc {
 		out["diag_"+key] = val
 	}
+	out["diag_bundle_count"] = atomic.LoadInt32(&diagBundleCount)
+	out["diag_base_dir"] = diagBaseDir()
 	for key, value := range safety.Fields() {
 		out[key] = value
 	}
