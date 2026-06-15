@@ -138,9 +138,10 @@ type UndoData struct {
 }
 
 type Chain struct {
-	params chaincfg.Params
-	hasher pow.Hasher
-	store  Store
+	params    chaincfg.Params
+	hasher    pow.Hasher
+	hasherCtx pow.HasherContext
+	store     Store
 
 	mu  sync.RWMutex
 	tip *BlockIndex
@@ -203,6 +204,9 @@ var nowUnix = func() uint32 {
 // and stop-hash comparisons must use this method whenever they mean the
 // consensus block hash.
 func (c *Chain) HashHeader(header wire.BlockHeader) (chainhash.Hash, error) {
+	if c.hasherCtx != nil {
+		return pow.HashWithContext(c.hasher, c.hasherCtx, header)
+	}
 	return c.hasher.HashHeader(header)
 }
 
@@ -232,6 +236,9 @@ func New(params chaincfg.Params, hasher pow.Hasher, store Store) (*Chain, error)
 		return nil, err
 	}
 	c.tip = tip
+	if ch, ok := hasher.(pow.ContextHasher); ok {
+		c.hasherCtx = ch.NewContext()
+	}
 	if err := c.rebuildActiveChainworkLocked(); err != nil {
 		return nil, err
 	}
