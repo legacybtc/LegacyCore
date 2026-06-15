@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   Archive,
   BadgeCheck,
+  Bot,
   Bug,
   Coins,
   Copy,
@@ -50,6 +51,7 @@ import {
   shouldClearMiningStartNotice,
   syncAlertTone,
 } from "./dashboardLogic";
+import { LegacyAIPage } from "./ai/LegacyAIPage";
 
 const legacyLogo = "/legacy-logo.jpg";
 
@@ -132,6 +134,10 @@ type Backend = {
   SearchExplorer(query: string): Promise<Dict>;
   RunRPCCommand(commandLine: string): Promise<Dict>;
   SaveSettings(settings: SettingsShape): Promise<SettingsShape>;
+  AIHealth(): Promise<Dict>;
+  AIChat(message: string): Promise<Dict>;
+  AIStart(): Promise<Dict>;
+  AIStop(): Promise<Dict>;
 };
 
 declare global {
@@ -158,6 +164,7 @@ const tabs = [
   ["explorer", Globe2, "Explorer"],
   ["address-book", Archive, "Address Book"],
   ["rpc-console", Bug, "RPC Console"],
+  ["legacy-ai", Bot, "Legacy AI"],
   ["settings", Settings, "Settings"],
   ["about", BadgeCheck, "About"],
 ] as const;
@@ -373,6 +380,7 @@ function App() {
     if (tab === "explorer") return <ExplorerPage {...p} />;
     if (tab === "address-book") return <AddressBookPage />;
     if (tab === "rpc-console") return <RPCConsolePage snap={snap} />;
+    if (tab === "legacy-ai") return <LegacyAIPage snap={snap} />;
     if (tab === "settings") return <SettingsPage {...p} />;
     if (tab === "about") return <AboutPage snap={snap} />;
     return <Overview {...p} {...ui} />;
