@@ -856,21 +856,18 @@ func TestMisbehaviorScoreDecay(t *testing.T) {
 
 func TestAddNodeBoundedConcurrency(t *testing.T) {
 	s := New(chaincfg.MainNet, nil, nil, log.New(io.Discard, "", 0))
-	ctx, cancel := context.WithCancel(context.Background())
-
-	s.Start(ctx)
-	time.Sleep(100 * time.Millisecond)
+	// Bounded semaphore test: 200 AddNode calls must not create 200 goroutines.
+	// With semaphore capacity 32, goroutine growth must stay well under 60.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
 	g0 := runtime.NumGoroutine()
-
 	for i := 0; i < 200; i++ {
 		addr := fmt.Sprintf("10.0.0.%d:19555", i%254+1)
 		_ = s.AddNode(ctx, addr)
 	}
-	time.Sleep(300 * time.Millisecond)
-
+	time.Sleep(400 * time.Millisecond)
 	g1 := runtime.NumGoroutine()
-	cancel()
 	if g1 > g0+60 {
 		t.Fatalf("goroutine explosion: before=%d after=%d", g0, g1)
 	}

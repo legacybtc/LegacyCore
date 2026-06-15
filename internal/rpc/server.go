@@ -107,6 +107,7 @@ type Server struct {
 	minerLocalBlockAnnouncementPeers  int
 	minerTemplateRecoveryPending      bool
 	minerTemplateRecoveryStartedAt    time.Time
+	minerStateGen                     int64
 	defaultTxFee                      int64
 
 	rpcDiagMu          sync.Mutex
@@ -4572,6 +4573,9 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 	templateRecoveryPending := s.minerTemplateRecoveryPending
 	templateRecoveryStartedAt := s.minerTemplateRecoveryStartedAt
 	acceptedRecords := append([]minerAcceptedRecord(nil), s.minerAcceptedRecords...)
+	stateGen := s.minerStateGen
+	lifecycleCounters := mining.LifecycleCounters()
+	yespowerCounters := pow.YespowerCounters()
 	s.minerMu.Unlock()
 	uptime := int64(0)
 	startedAt := ""
@@ -4960,14 +4964,13 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 		return s.rpcErrorCount
 	}()
 	out["node_goroutine_count"] = runtime.NumGoroutine()
-	lc := mining.LifecycleCounters()
-	for key, val := range lc {
+	for key, val := range lifecycleCounters {
 		out["lifecycle_"+key] = val
 	}
-	yc := pow.YespowerCounters()
-	for key, val := range yc {
+	for key, val := range yespowerCounters {
 		out["yespower_"+key] = val
 	}
+	out["miner_state_generation"] = stateGen
 	out["diag_miner_status_active"] = s.minerStatusDiagActive.Load()
 	out["diag_miner_status_total"] = s.minerStatusDiagTotal.Load()
 	out["diag_miner_status_max"] = s.minerStatusDiagMax.Load()
@@ -5744,6 +5747,7 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 			s.minerPausedReason = ""
 			s.minerLastStopReason = MinerStopSupervisorShutdown
 			s.minerHashing = false
+			s.minerStateGen++
 			s.minerLocalHashPS = 0
 			s.minerMu.Unlock()
 			exitStopReason = MinerStopSupervisorShutdown
@@ -5754,6 +5758,7 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 			s.minerLastError = "Mining blocked: node has no peers."
 			s.minerPausedReason = s.minerLastError
 			s.minerHashing = false
+			s.minerStateGen++
 			s.minerLocalHashPS = 0
 			s.minerMu.Unlock()
 			timer := time.NewTimer(3 * time.Second)
@@ -5772,6 +5777,7 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 			s.minerPausedReason = s.minerLastError
 			s.minerLastStopReason = MinerStopInternalError
 			s.minerHashing = false
+			s.minerStateGen++
 			s.minerLocalHashPS = 0
 			s.minerMu.Unlock()
 			exitStopReason = MinerStopInternalError
@@ -5795,6 +5801,7 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 				s.minerLastError = safety.Reason
 				s.minerPausedReason = safety.Reason
 				s.minerHashing = false
+			s.minerStateGen++
 				s.minerLocalHashPS = 0
 				s.minerMu.Unlock()
 				retryDelay := 3 * time.Second
@@ -5894,6 +5901,7 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 			if stopReason, shouldExit := classifyMinerContextCancellation(err, ctx); stopReason != "" {
 				s.minerMu.Lock()
 				s.minerHashing = false
+			s.minerStateGen++
 				s.minerLocalHashPS = 0
 				if !shouldExit {
 					s.minerLastError = MinerStopSupervisorCancelled + ": mining worker epoch cancelled; restarting workers."
@@ -5932,12 +5940,14 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 				if s.minerTemplateRecoveryStartedAt.IsZero() {
 					s.minerTemplateRecoveryStartedAt = s.minerLastTemplateRefreshAttempt
 				}
-				s.minerHashing = true
+		s.minerHashing = true
+		s.minerStateGen++
 				s.minerMu.Unlock()
 				continue
 			}
 			s.minerMu.Lock()
 			s.minerHashing = false
+			s.minerStateGen++
 			s.minerLocalHashPS = 0
 			s.minerMu.Unlock()
 			if errors.Is(err, mining.ErrStaleTemplate) {
@@ -5969,6 +5979,7 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 				s.minerLastTemplateRefreshReason = "template_refresh_failed"
 				s.minerLastTemplateRefreshAttempt = time.Now()
 				s.minerHashing = false
+			s.minerStateGen++
 				s.minerLocalHashPS = 0
 				s.minerMu.Unlock()
 				timer := time.NewTimer(3 * time.Second)
@@ -6001,6 +6012,7 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 			s.minerSupervisorRestartAttempts++
 			s.minerLastRestartFailure = err.Error()
 			s.minerHashing = false
+			s.minerStateGen++
 			s.minerLocalHashPS = 0
 			s.minerMu.Unlock()
 			timer := time.NewTimer(1500 * time.Millisecond)
