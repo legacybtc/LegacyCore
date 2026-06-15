@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"legacycoin/legacy-go/internal/address"
@@ -115,6 +116,13 @@ type Server struct {
 	rpcTotalDuration   time.Duration
 	rpcTimeoutCount    int64
 	rpcErrorCount      int64
+
+	minerStatusDiagActive atomic.Int64
+	minerStatusDiagTotal  atomic.Int64
+	minerStatusDiagMax    atomic.Int64
+	netHashDiagActive     atomic.Int64
+	netHashDiagTotal      atomic.Int64
+	netHashDiagMax        atomic.Int64
 }
 
 type minerAcceptedRecord struct {
@@ -4187,6 +4195,12 @@ func (s *Server) doctor() map[string]any {
 }
 
 func (s *Server) estimateNetworkHashPS(window int32) map[string]any {
+	cur := s.netHashDiagActive.Add(1)
+	s.netHashDiagTotal.Add(1)
+	if cur > s.netHashDiagMax.Load() {
+		s.netHashDiagMax.Store(cur)
+	}
+	defer s.netHashDiagActive.Add(-1)
 	tip := s.chain.Tip()
 	if tip == nil || tip.Height < 3 {
 		return map[string]any{
@@ -4501,6 +4515,12 @@ func timingTrend(avg float64) string {
 }
 
 func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady bool) map[string]any {
+	cur := s.minerStatusDiagActive.Add(1)
+	s.minerStatusDiagTotal.Add(1)
+	if cur > s.minerStatusDiagMax.Load() {
+		s.minerStatusDiagMax.Store(cur)
+	}
+	defer s.minerStatusDiagActive.Add(-1)
 	s.minerMu.Lock()
 	minerEnabled := s.minerActive
 	activeMining := s.minerHashing
@@ -4940,6 +4960,12 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 	for key, val := range yc {
 		out["yespower_"+key] = val
 	}
+	out["diag_miner_status_active"] = s.minerStatusDiagActive.Load()
+	out["diag_miner_status_total"] = s.minerStatusDiagTotal.Load()
+	out["diag_miner_status_max"] = s.minerStatusDiagMax.Load()
+	out["diag_net_hash_active"] = s.netHashDiagActive.Load()
+	out["diag_net_hash_total"] = s.netHashDiagTotal.Load()
+	out["diag_net_hash_max"] = s.netHashDiagMax.Load()
 	for key, value := range safety.Fields() {
 		out[key] = value
 	}
