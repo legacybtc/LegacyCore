@@ -495,8 +495,10 @@ func (s *Server) handleRPCRequest(ctx context.Context, req request) response {
 		s.rpcOldestRequestAt = time.Now()
 	}
 	s.rpcDiagMu.Unlock()
+	EnterDiag(&diagFanoutActive, &diagFanoutTotal, &diagFanoutMax)
 
 	defer func() {
+		LeaveDiag(&diagFanoutActive)
 		s.rpcDiagMu.Lock()
 		s.rpcActiveRequests--
 		if s.rpcActiveRequests == 0 {
@@ -4966,6 +4968,10 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 	out["diag_net_hash_active"] = s.netHashDiagActive.Load()
 	out["diag_net_hash_total"] = s.netHashDiagTotal.Load()
 	out["diag_net_hash_max"] = s.netHashDiagMax.Load()
+	dc := DiagCounters()
+	for key, val := range dc {
+		out["diag_"+key] = val
+	}
 	for key, value := range safety.Fields() {
 		out[key] = value
 	}
