@@ -198,16 +198,28 @@ var nowUnix = func() uint32 {
 	return uint32(time.Now().UTC().Unix())
 }
 
+var ErrYespowerContextClosed = errors.New("yespower context is closed")
+
 // HashHeader returns the canonical consensus block hash for this chain.
-// Legacy Coin uses Yespower as block identity, not the wire-level SHA256d
-// header helper. P2P inventory, RPC block announcements, indexes, locators,
-// and stop-hash comparisons must use this method whenever they mean the
-// consensus block hash.
+// For production YespowerHasher, uses the persistent Chain context (no TLS).
+// Test-only hashers without ContextHasher fall back to HashHeader.
 func (c *Chain) HashHeader(header wire.BlockHeader) (chainhash.Hash, error) {
 	if c.hasherCtx != nil {
 		return pow.HashWithContext(c.hasher, c.hasherCtx, header)
 	}
+	if _, ok := c.hasher.(pow.ContextHasher); ok {
+		return chainhash.Hash{}, ErrYespowerContextClosed
+	}
 	return c.hasher.HashHeader(header)
+}
+
+// Close releases the persistent Yespower context.
+// After Close, HashHeader returns ErrYespowerContextClosed for ContextHashers.
+// Safe to call multiple times (idempotent).
+func (c *Chain) Close() {
+	if c.hasherCtx != nil {
+		c.hasherCtx.Close()
+	}
 }
 
 // BlockHash returns the canonical consensus hash for a full block.

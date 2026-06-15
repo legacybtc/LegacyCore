@@ -635,6 +635,7 @@ func (s *Service) Start() error {
 
 	go func() {
 		err := n.Run(ctx, cancel)
+		n.Chain().Close()
 		s.mu.Lock()
 		if err != nil && !errors.Is(err, context.Canceled) {
 			s.err = err

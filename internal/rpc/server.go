@@ -4932,6 +4932,14 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 		return s.rpcErrorCount
 	}()
 	out["node_goroutine_count"] = runtime.NumGoroutine()
+	lc := mining.LifecycleCounters()
+	for key, val := range lc {
+		out["lifecycle_"+key] = val
+	}
+	yc := pow.YespowerCounters()
+	for key, val := range yc {
+		out["yespower_"+key] = val
+	}
 	for key, value := range safety.Fields() {
 		out[key] = value
 	}
