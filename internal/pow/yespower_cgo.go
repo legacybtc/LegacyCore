@@ -87,7 +87,6 @@ type yespowerContext struct {
 func (h YespowerHasher) NewContext() HasherContext {
 	var local C.yespower_local_t
 	C.legacy_yespower_init_local(&local)
-	localInit.Add(1)
 	return &yespowerContext{
 		local:  &local,
 		hasher: h,
@@ -105,7 +104,6 @@ func (c *yespowerContext) Close() {
 	}
 	atomic.StoreInt32(&c.freed, 1)
 	C.legacy_yespower_free_local(c.local)
-	localFree.Add(1)
 	c.local = nil
 }
 
@@ -187,9 +185,9 @@ func YespowerCounters() map[string]int64 {
 	}
 }
 
-// RecordChainContextInit increments the chain-context initialization counter.
-func RecordChainContextInit()  { chainInit.Add(1) }
-// RecordChainContextFree increments the chain-context freed counter.
-func RecordChainContextFree() { chainFree.Add(1) }
+func RecordChainContextInit()   { chainInit.Add(1) }
+func RecordChainContextFree()   { chainFree.Add(1) }
+func RecordWorkerContextInit()  { localInit.Add(1) }
+func RecordWorkerContextFree()  { localFree.Add(1) }
 
 func BackendName() string { return "cgo-c-reference" }

@@ -69,7 +69,9 @@ func TestYespowerContextLifecycle(t *testing.T) {
 	prevFree := localFree.Load()
 	for i := 0; i < 50; i++ {
 		ctx := hasher.NewContext()
+		RecordWorkerContextInit()
 		hash, err := hasher.hashWithContext(ctx, hdr)
+		RecordWorkerContextFree()
 		ctx.Close()
 		if err != nil {
 			t.Fatalf("cycle %d: %v", i, err)
@@ -121,6 +123,8 @@ func TestContextLifecycleCounters(t *testing.T) {
 
 	for i := 0; i < 4; i++ {
 		ctx := hasher.NewContext()
+		RecordWorkerContextInit()
+		RecordWorkerContextFree()
 		ctx.Close()
 	}
 
@@ -165,6 +169,8 @@ func TestCountersAfterAllClosed(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		hasher := YespowerHasher{Personalization: "LegacyCoinPoW"}
 		ctx := hasher.NewContext()
+		RecordWorkerContextInit()
+		RecordWorkerContextFree()
 		ctx.Close()
 	}
 	if localInit.Load() != wInit+3 || localFree.Load() != wFree+3 {

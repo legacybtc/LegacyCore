@@ -322,7 +322,8 @@ func MineBlock(ctx context.Context, chain *blockchain.Chain, pool *mempool.Pool,
 			var hCtx pow.HasherContext
 			if ch, ok := hasher.(pow.ContextHasher); ok {
 				hCtx = ch.NewContext()
-				defer hCtx.Close()
+				pow.RecordWorkerContextInit()
+				defer func() { pow.RecordWorkerContextFree(); hCtx.Close() }()
 			}
 			lifecycleWorkersStarted.Add(1)
 			block := *template
@@ -483,7 +484,8 @@ func BenchmarkHashrate(ctx context.Context, chain *blockchain.Chain, pool *mempo
 			var hCtx pow.HasherContext
 			if ch, ok := hasher.(pow.ContextHasher); ok {
 				hCtx = ch.NewContext()
-				defer hCtx.Close()
+				pow.RecordWorkerContextInit()
+				defer func() { pow.RecordWorkerContextFree(); hCtx.Close() }()
 			}
 			lifecycleWorkersStarted.Add(1)
 			block := *template
