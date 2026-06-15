@@ -109,3 +109,69 @@ func ctxHash(t *testing.T, hasher YespowerHasher, ctx HasherContext, hdr wire.Bl
 	t.Helper()
 	return hasher.hashWithContext(ctx, hdr)
 }
+
+func TestContextLifecycleCounters(t *testing.T) {
+	if BackendName() != "cgo-c-reference" {
+		t.Skipf("requires production yespower backend")
+	}
+	hasher := YespowerHasher{Personalization: "LegacyCoinPoW"}
+
+	prevInit := localInit.Load()
+	prevFree := localFree.Load()
+
+	for i := 0; i < 4; i++ {
+		ctx := hasher.NewContext()
+		ctx.Close()
+	}
+
+	if got := localInit.Load() - prevInit; got != 4 {
+		t.Errorf("worker init delta=%d want 4", got)
+	}
+	if got := localFree.Load() - prevFree; got != 4 {
+		t.Errorf("worker free delta=%d want 4", got)
+	}
+
+	act := (localInit.Load() - localFree.Load()) + (chainInit.Load() - chainFree.Load())
+	t.Logf("worker init=%d free=%d active=%d  chain init=%d free=%d active=%d  total=%d",
+		localInit.Load(), localFree.Load(), localInit.Load()-localFree.Load(),
+		chainInit.Load(), chainFree.Load(), chainInit.Load()-chainFree.Load(), act)
+}
+
+func TestChainContextCounterIncremented(t *testing.T) {
+	if BackendName() != "cgo-c-reference" {
+		t.Skipf("requires production yespower backend")
+	}
+	before := chainInit.Load()
+	RecordChainContextInit()
+	if got := chainInit.Load() - before; got != 1 {
+		t.Errorf("chain init delta=%d want 1", got)
+	}
+	RecordChainContextFree()
+	if got := chainFree.Load() - before; got != 1 {
+		t.Errorf("chain free delta=%d want 1", got)
+	}
+}
+
+func TestCountersAfterAllClosed(t *testing.T) {
+	if BackendName() != "cgo-c-reference" {
+		t.Skipf("requires production yespower backend")
+	}
+	RecordChainContextInit()
+	RecordChainContextInit()
+	RecordChainContextFree()
+	RecordChainContextFree()
+	wInit := localInit.Load()
+	wFree := localFree.Load()
+	for i := 0; i < 3; i++ {
+		hasher := YespowerHasher{Personalization: "LegacyCoinPoW"}
+		ctx := hasher.NewContext()
+		ctx.Close()
+	}
+	if localInit.Load() != wInit+3 || localFree.Load() != wFree+3 {
+		t.Error("worker init/free should both increment by 3")
+	}
+	total := (localInit.Load() - localFree.Load()) + (chainInit.Load() - chainFree.Load())
+	if total != 0 {
+		t.Errorf("total active contexts=%d want 0", total)
+	}
+}

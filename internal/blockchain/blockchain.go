@@ -219,6 +219,7 @@ func (c *Chain) HashHeader(header wire.BlockHeader) (chainhash.Hash, error) {
 func (c *Chain) Close() {
 	if c.hasherCtx != nil {
 		c.hasherCtx.Close()
+		pow.RecordChainContextFree()
 	}
 }
 
@@ -250,6 +251,7 @@ func New(params chaincfg.Params, hasher pow.Hasher, store Store) (*Chain, error)
 	c.tip = tip
 	if ch, ok := hasher.(pow.ContextHasher); ok {
 		c.hasherCtx = ch.NewContext()
+		pow.RecordChainContextInit()
 	}
 	if err := c.rebuildActiveChainworkLocked(); err != nil {
 		return nil, err
