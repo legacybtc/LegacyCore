@@ -18,6 +18,10 @@ export function AISetupWizard({ onComplete }: { onComplete: () => void }) {
   const [error, setError] = useState("");
   const [health, setHealth] = useState<any>(null);
 
+  useEffect(() => {
+    if (step === 1 && !gpu) detectGPU();
+  }, [step]);
+
   async function detectGPU() {
     setDetecting(true); setError("");
     try {
@@ -55,6 +59,13 @@ export function AISetupWizard({ onComplete }: { onComplete: () => void }) {
       icon: <Bot size={48} />,
       action: () => setStep(1),
       actionLabel: "Get Started",
+      extra: (
+        <div style={{marginTop:12}}>
+          <button className="primary" onClick={() => setStep(1)}>
+            <ArrowRight size={14} /> Get Started
+          </button>
+        </div>
+      ),
     },
     {
       title: "GPU Detection",
