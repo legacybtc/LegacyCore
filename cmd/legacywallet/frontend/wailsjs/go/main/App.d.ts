@@ -3,15 +3,19 @@
 import {nodeservice} from '../models';
 import {main} from '../models';
 
-export function AIChat(arg1:string):Promise<Record<string, any>>;
+export function AIChat(arg1:string,arg2:string):Promise<Record<string, any>>;
 
 export function AIDetectGPU():Promise<Record<string, any>>;
 
 export function AIHealth():Promise<Record<string, any>>;
 
+export function AIListTools():Promise<Array<string>>;
+
 export function AIStart():Promise<Record<string, any>>;
 
 export function AIStop():Promise<Record<string, any>>;
+
+export function AIToolExecute(arg1:string):Promise<Record<string, any>>;
 
 export function BackupWallet(arg1:string):Promise<Record<string, any>>;
 

@@ -10,18 +10,38 @@ import (
 )
 
 type LifecycleManager struct {
-	mu        sync.Mutex
-	provider  AIProvider
-	config    AIConfig
-	started   int32
-	modelName string
-	startTime time.Time
-	lastError string
-	logger    *log.Logger
+	mu         sync.Mutex
+	provider   AIProvider
+	config     AIConfig
+	started    int32
+	modelName  string
+	startTime  time.Time
+	lastError  string
+	logger     *log.Logger
+	toolBroker *ToolBroker
 }
 
 func NewLifecycleManager(provider AIProvider, logger *log.Logger) *LifecycleManager {
-	return &LifecycleManager{provider: provider, config: DefaultConfig(), logger: logger}
+	return &LifecycleManager{
+		provider:   provider,
+		config:     DefaultConfig(),
+		logger:     logger,
+		toolBroker: NewToolBroker(),
+	}
+}
+
+func (lm *LifecycleManager) SetToolBroker(tb *ToolBroker) { lm.mu.Lock(); defer lm.mu.Unlock(); lm.toolBroker = tb }
+
+func (lm *LifecycleManager) ExecuteTool(ctx context.Context, cmdLine string) ToolResult {
+	lm.mu.Lock(); tb := lm.toolBroker; lm.mu.Unlock()
+	if tb == nil { return ToolResult{Command: cmdLine, Allowed: false, Stderr: "no tool broker"} }
+	return tb.Execute(ctx, cmdLine)
+}
+
+func (lm *LifecycleManager) ListTools() []string {
+	lm.mu.Lock(); tb := lm.toolBroker; lm.mu.Unlock()
+	if tb == nil { return nil }
+	return tb.ListAllowlist()
 }
 
 func (lm *LifecycleManager) Start(ctx context.Context, cfg AIConfig) error {

@@ -1175,10 +1175,11 @@ func (a *App) AIHealth() map[string]any {
 		"tokens_per_sec": h.TokensPS, "last_latency": h.LastLatency,
 	}
 }
-func (a *App) AIChat(message string) map[string]any {
+func (a *App) AIChat(message string, mode string) map[string]any {
 	if a.aiMgr == nil || !a.aiMgr.IsRunning() { return map[string]any{"content": "AI not running", "error": "stopped"} }
+	if mode == "" { mode = "advisor" }
 	snap := a.Snapshot(); ss := ai.BuildSanitizedSnapshot(snap)
-	ch, err := a.aiMgr.Chat(context.Background(), ai.ChatRequest{Message: message, Snapshot: ss, Mode: "advisor"})
+	ch, err := a.aiMgr.Chat(context.Background(), ai.ChatRequest{Message: message, Snapshot: ss, Mode: mode})
 	if err != nil { return map[string]any{"content": "", "error": err.Error()} }
 	var resp string
 	for evt := range ch {
@@ -1205,4 +1206,19 @@ func (a *App) AIDetectGPU() map[string]any {
 		"recommended": gpu.RecommendedBackend, "fallback_reason": gpu.FallbackReason,
 		"available_backends": gpu.AvailableBackends,
 	}
+}
+
+func (a *App) AIToolExecute(cmdLine string) map[string]any {
+	if a.aiMgr == nil || !a.aiMgr.IsRunning() { return map[string]any{"allowed": false, "stderr": "AI not running"} }
+	r := a.aiMgr.ExecuteTool(context.Background(), cmdLine)
+	return map[string]any{
+		"command": r.Command, "stdout": r.Stdout, "stderr": r.Stderr,
+		"exit_code": r.ExitCode, "duration": r.Duration, "allowed": r.Allowed,
+		"truncated": r.Truncated,
+	}
+}
+
+func (a *App) AIListTools() []string {
+	if a.aiMgr == nil { return []string{} }
+	return a.aiMgr.ListTools()
 }

@@ -50,6 +50,10 @@ func generateMockResponse(req ChatRequest) string {
 	msg := strings.ToLower(req.Message)
 	s := req.Snapshot
 
+	if req.Mode == "developer" {
+		return generateDeveloperResponse(msg, s)
+	}
+
 	switch {
 	case strings.Contains(msg, "miner") && (strings.Contains(msg, "pause") || strings.Contains(msg, "stop")):
 		if s.MiningSafe && s.MinerState == "running" {
@@ -91,4 +95,22 @@ func generateMockResponse(req ChatRequest) string {
 	default:
 		return fmt.Sprintf("I am Legacy AI Companion. Your node is at height %d, synced=%s, with %d peers. Mining: %s. Ask me about sync, peers, mining, rewards, storage, or safety.", s.Height, s.SyncState, s.PeerCount, s.MinerState)
 	}
+}
+
+func generateDeveloperResponse(msg string, s SanitizedSnapshot) string {
+	switch {
+	case strings.Contains(msg, "blockchain"):
+		return "Developer mode: Use /legacycoin-cli getblockchaininfo to query chain state directly."
+	case strings.Contains(msg, "peer"):
+		return "Developer mode: Use /legacycoin-cli getpeerinfo for raw peer data, or /netstat -an | findstr 19555 for connection stats."
+	case strings.Contains(msg, "mining") || strings.Contains(msg, "miner"):
+		return "Developer mode: Use /legacycoin-cli getmininginfo to inspect mining state."
+	case strings.Contains(msg, "mempool"):
+		return "Developer mode: Use /legacycoin-cli getmempoolinfo to inspect the mempool."
+	case strings.Contains(msg, "process"):
+		return "Developer mode: Use /get-process legacywallet or /get-process legacycoind to check running processes."
+	case strings.Contains(msg, "help") || strings.Contains(msg, "tool"):
+		return "Developer mode tools: /legacycoin-cli getblockchaininfo, /legacycoin-cli getpeerinfo, /legacycoin-cli getmininginfo, /get-process legacywallet, /netstat -an | findstr 19555. Prefix commands with / in chat to execute."
+	}
+	return fmt.Sprintf("Developer mode active. Node at height %d, %d peers. Use /help for available tools.", s.Height, s.PeerCount)
 }

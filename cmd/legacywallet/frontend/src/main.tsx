@@ -135,10 +135,12 @@ type Backend = {
   RunRPCCommand(commandLine: string): Promise<Dict>;
   SaveSettings(settings: SettingsShape): Promise<SettingsShape>;
   AIHealth(): Promise<Dict>;
-  AIChat(message: string): Promise<Dict>;
+  AIChat(message: string, mode: string): Promise<Dict>;
   AIStart(): Promise<Dict>;
   AIStop(): Promise<Dict>;
   AIDetectGPU(): Promise<Dict>;
+  AIToolExecute(cmdLine: string): Promise<Dict>;
+  AIListTools(): Promise<string[]>;
 };
 
 declare global {
