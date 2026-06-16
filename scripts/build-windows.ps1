@@ -100,20 +100,16 @@ foreach ($cmd in @("go", "node", "npm")) {
     }
 }
 
-Write-Host "Building wallet frontend..."
+Write-Host "Building wallet frontend (clean build)..."
 Push-Location "cmd\legacywallet\frontend"
 if (-not (Test-Path "node_modules")) {
-    npm install
-    Assert-LastExitCode "npm install"
+    npm ci
+    Assert-LastExitCode "npm ci"
 }
-$frontendDist = Join-Path (Get-Location) "dist"
-$distReady = (Test-Path $frontendDist) -and ((Get-ChildItem -Path $frontendDist -ErrorAction SilentlyContinue | Measure-Object).Count -gt 0)
-if (-not $distReady) {
-    npm run build
-    Assert-LastExitCode "npm run build"
-} else {
-    Write-Host "Using existing frontend dist output."
-}
+# Always rebuild frontend from source — never reuse old dist
+npm run test:dashboard
+npm run build
+Assert-LastExitCode "npm run build"
 Pop-Location
 
 $env:CGO_ENABLED = "1"
