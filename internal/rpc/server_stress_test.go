@@ -574,3 +574,98 @@ func TestMinerStatusSnapshotConsistency(t *testing.T) {
 		}
 	}
 }
+
+func TestForcedPauseResumeTransitionsConsistent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping transition stress test in short mode")
+	}
+	if pow.BackendName() != "cgo-c-reference" {
+		t.Skipf("requires production yespower backend")
+	}
+	chain, err := blockchain.New(chaincfg.MainNet, pow.YespowerHasher{Personalization: chaincfg.MainNet.YespowerPers}, storage.NewFileStore(t.TempDir()))
+	if err != nil { t.Fatal(err) }
+	if err := chain.EnsureGenesis(); err != nil { t.Fatal(err) }
+
+	w, err := wallet.Open(t.TempDir())
+	if err != nil { t.Fatal(err) }
+	s := &Server{chain: chain, wallet: w}
+
+	cfg := config.MiningConfig{}
+	cycles := 200
+	var wg sync.WaitGroup
+	var mixedPaused, mixedStopped atomic.Int64
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < cycles; i++ {
+			s.minerMu.Lock()
+			s.minerActive = true; s.minerHashing = true; s.minerThreads = 4; s.minerStateGen++
+			s.minerMu.Unlock()
+			time.Sleep(time.Millisecond)
+
+			s.minerMu.Lock()
+			s.minerActive = true; s.minerHashing = false; s.minerPausedReason = "peer_unsafe_test"
+			s.minerStateGen++
+			s.minerMu.Unlock()
+			time.Sleep(time.Millisecond)
+
+			s.minerMu.Lock()
+			s.minerActive = true; s.minerHashing = true; s.minerPausedReason = ""
+			s.minerStateGen++
+			s.minerMu.Unlock()
+			time.Sleep(time.Millisecond)
+
+			s.minerMu.Lock()
+			s.minerActive = false; s.minerHashing = false; s.minerPausedReason = ""; s.minerStateGen++
+			s.minerMu.Unlock()
+			time.Sleep(time.Millisecond * 5)
+		}
+	}()
+
+	for p := 0; p < 6; p++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < cycles; i++ {
+				out := s.minerStatus(cfg, nil, false)
+				cons, _ := out["snapshot_consistent"].(bool)
+				active, _ := out["active_mining"].(bool)
+				wActive := intVal(out, "yespower_worker_contexts_active")
+				threads := intVal(out, "active_threads")
+				cgo := intVal(out, "yespower_cgo_calls_active")
+
+				if !cons { continue }
+				if !active && wActive > 0 {
+					mixedStopped.Add(1)
+					t.Errorf("stopped+workers: threads=%d workers=%d cgo=%d", threads, wActive, cgo)
+				}
+				if active && wActive > 0 && threads == 0 {
+					mixedPaused.Add(1)
+					t.Errorf("paused+active-workers: threads=%d workers=%d cgo=%d", threads, wActive, cgo)
+				}
+				time.Sleep(time.Millisecond)
+				_ = i
+			}
+		}()
+	}
+	wg.Wait()
+
+	if mp := mixedPaused.Load(); mp > 0 {
+		t.Fatalf("FAIL: %d mixed paused-plus-active-worker snapshots", mp)
+	}
+	if ms := mixedStopped.Load(); ms > 0 {
+		t.Fatalf("FAIL: %d mixed stopped-plus-active-worker snapshots", ms)
+	}
+}
+
+func intVal(m map[string]any, key string) int64 {
+	v, ok := m[key]
+	if !ok { return 0 }
+	switch n := v.(type) {
+	case int64: return n
+	case float64: return int64(n)
+	case int: return int64(n)
+	}
+	return 0
+}
