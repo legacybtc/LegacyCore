@@ -4577,6 +4577,17 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 	lifecycleCounters := mining.LifecycleCounters()
 	yespowerCounters := pow.YespowerCounters()
 	s.minerMu.Unlock()
+	genAfter := stateGen
+	for retry := 0; retry < 3; retry++ {
+		s.minerMu.Lock()
+		genAfter = s.minerStateGen
+		s.minerMu.Unlock()
+		if genAfter == stateGen {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	snapshotConsistent := genAfter == stateGen
 	uptime := int64(0)
 	startedAt := ""
 	if minerEnabled && !minerStartedAt.IsZero() {
@@ -4971,6 +4982,7 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 		out["yespower_"+key] = val
 	}
 	out["miner_state_generation"] = stateGen
+	out["snapshot_consistent"] = snapshotConsistent
 	out["diag_miner_status_active"] = s.minerStatusDiagActive.Load()
 	out["diag_miner_status_total"] = s.minerStatusDiagTotal.Load()
 	out["diag_miner_status_max"] = s.minerStatusDiagMax.Load()
@@ -5168,6 +5180,7 @@ func (s *Server) startMiner(parent context.Context, params json.RawMessage) (any
 	minerCtx, cancel := context.WithCancel(context.Background())
 	s.minerActive = true
 	s.minerHashing = false
+	s.minerStateGen++
 	s.minerCancel = cancel
 	s.minerThreads = threads
 	s.minerBlocks = 0
@@ -5253,6 +5266,7 @@ func (s *Server) stopMiner(reason string) map[string]any {
 	}
 	s.minerActive = false
 	s.minerHashing = false
+	s.minerStateGen++
 	s.minerCancel = nil
 	s.minerLastError = stopReason
 	s.minerPausedReason = ""
@@ -5865,6 +5879,7 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 		}
 		s.minerPausedReason = ""
 		s.minerHashing = true
+		s.minerStateGen++
 		s.minerLastRestartSuccessTime = time.Now()
 		s.minerLastRestartFailure = ""
 		s.minerMu.Unlock()

@@ -528,3 +528,49 @@ func TestFullMinerStatusHandlerIdleStability(t *testing.T) {
 		t.Fatalf("OS thread creation during idle handler: %d new threads (expected <=10)", createAfter-createBefore)
 	}
 }
+
+func TestMinerStatusSnapshotConsistency(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping snapshot consistency test in short mode")
+	}
+	chain, err := blockchain.New(chaincfg.MainNet, safetyTestHasher{}, storage.NewFileStore(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	genesis, err := safetyTestGenesisBlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.ProcessBlock(genesis); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{chain: chain}
+	w, err := wallet.Open(t.TempDir())
+	if err != nil { t.Fatal(err) }
+	s.wallet = w
+
+	cfg := config.MiningConfig{}
+	for i := 0; i < 100; i++ {
+		out := s.minerStatus(cfg, nil, false)
+
+		gen, _ := out["miner_state_generation"].(int64)
+		consistent, _ := out["snapshot_consistent"].(bool)
+
+		if !consistent {
+			t.Logf("snapshot %d inconsistent (transitional), generation=%d", i, gen)
+			continue
+		}
+
+		minerActive, _ := out["active_mining"].(bool)
+		workerActive := out["yespower_worker_contexts_active"]
+		cgoActive := out["yespower_cgo_calls_active"]
+		wActive, _ := workerActive.(int64)
+
+		if minerActive && wActive >= 1 && fmt.Sprint(cgoActive) == "0" {
+			t.Logf("snapshot %d: active_mining=true, worker_ctx=%d, cgo=%v — workers may be starting", i, wActive, cgoActive)
+		}
+		if !minerActive && wActive > 0 {
+			t.Fatalf("snapshot %d: active_mining=false but worker_contexts_active=%d", i, wActive)
+		}
+	}
+}
