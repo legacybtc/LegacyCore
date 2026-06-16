@@ -651,6 +651,12 @@ func (s *Server) shouldThrottleOutboundDial(addr string) bool {
 	return false
 }
 
+func (s *Server) clearOutboundThrottle() {
+	s.knownMu.Lock()
+	defer s.knownMu.Unlock()
+	s.outboundLastAttempt = make(map[string]time.Time)
+}
+
 type PeerInfo struct {
 	Addr                             string  `json:"addr"`
 	Direction                        string  `json:"direction"`
@@ -1092,6 +1098,7 @@ func (s *Server) ForceSync(reason string) map[string]any {
 	s.noteSyncRequest()
 	s.log.Printf("p2p force sync requested: %s", reason)
 	if s.PeerCount() == 0 {
+		s.clearOutboundThrottle()
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		s.noteWatchdogAction("force sync with no peers: reconnecting bootstrap peers")
 		s.connectSeeds(ctx)
