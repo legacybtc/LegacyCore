@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"legacycoin/legacy-go/internal/config"
+	"legacycoin/legacy-go/internal/ai"
 	"legacycoin/legacy-go/internal/nodeservice"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -36,6 +37,7 @@ type App struct {
 	mu       sync.Mutex
 	settings Settings
 	service  *nodeservice.Service
+	aiMgr    *ai.LifecycleManager
 	trayEnd  func()
 	logMu    sync.Mutex
 	stopOnce sync.Once
@@ -1153,6 +1155,64 @@ func asInt(v any) int {
 		}
 	}
 	return 0
+}
+
+// Legacy AI Assistant (experimental, read-only, v1.1.0 preview)
+func (a *App) AIHealth() map[string]any {
+	if a.aiMgr == nil {
+		return map[string]any{"status": string(ai.StatusDisabled)}
+	}
+	h, _ := a.aiMgr.Health(context.Background())
+	return map[string]any{
+		"status":       string(h.Status),
+		"pid":          h.PID,
+		"uptime":       h.Uptime,
+		"model_loaded": h.ModelLoaded,
+		"model_name":   h.ModelName,
+		"backend":      h.Backend,
+		"gpu_name":     h.GPUName,
+		"vram_mb":      h.VRAMMB,
+		"ram_mb":       h.RAMMB,
+		"last_error":   h.LastError,
+	}
+}
+func (a *App) AIChat(message string) map[string]any {
+	if a.aiMgr == nil || !a.aiMgr.IsRunning() {
+		return map[string]any{"content": "AI service is not running.", "error": "not_running"}
+	}
+	snap := a.Snapshot()
+	ss := ai.BuildSanitizedSnapshot(snap)
+	ch, err := a.aiMgr.Chat(context.Background(), ai.ChatRequest{Message: message, Snapshot: ss})
+	if err != nil {
+		return map[string]any{"content": "", "error": err.Error()}
+	}
+	var response string
+	for evt := range ch {
+		if evt.Type == "error" {
+			return map[string]any{"content": response, "error": evt.Error}
+		}
+		response += evt.Content
+	}
+	return map[string]any{"content": response}
+}
+func (a *App) AIStart() map[string]any {
+	if a.aiMgr == nil {
+		a.aiMgr = ai.NewLifecycleManager(ai.NewMockProvider(), nil)
+	}
+	err := a.aiMgr.Start(context.Background(), ai.DefaultConfig())
+	if err != nil {
+		return map[string]any{"ok": false, "error": err.Error()}
+	}
+	return map[string]any{"ok": true}
+}
+func (a *App) AIStop() map[string]any {
+	if a.aiMgr == nil {
+		return map[string]any{"ok": true}
+	}
+	if err := a.aiMgr.Stop(context.Background()); err != nil {
+		return map[string]any{"ok": false, "error": err.Error()}
+	}
+	return map[string]any{"ok": true}
 }
 
 // RuntimeDiagnostics returns concurrency and thread counters for profiling.
