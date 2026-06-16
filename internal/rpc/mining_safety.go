@@ -416,6 +416,8 @@ func CheckSafeToMine(input MiningSafetyInput) MiningSafetyStatus {
 			input.StrongerChainworkPeerCount == 0 &&
 			input.WrongChainPeerCount == 0 &&
 			input.ProtocolErrorPeerCount == 0 &&
+			input.StalePeerCount == 0 &&
+			!input.NoUsefulChainData &&
 			input.BlocksBehind <= int32(input.BlocksBehindAllowed) {
 			status.State = "degraded"
 			status.Reason = "Mining degraded: one or more healthy peers are 1 block behind (normal propagation). Mining continues."
