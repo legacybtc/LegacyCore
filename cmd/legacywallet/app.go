@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"legacycoin/legacy-go/internal/config"
+	"legacycoin/legacy-go/internal/ai"
 	"legacycoin/legacy-go/internal/nodeservice"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -36,6 +37,7 @@ type App struct {
 	mu       sync.Mutex
 	settings Settings
 	service  *nodeservice.Service
+	aiMgr    *ai.LifecycleManager
 	trayEnd  func()
 	logMu    sync.Mutex
 	stopOnce sync.Once
@@ -1155,12 +1157,46 @@ func asInt(v any) int {
 	return 0
 }
 
-// RuntimeDiagnostics returns concurrency and thread counters for profiling.
-func (a *App) RuntimeDiagnostics() map[string]any {
+// Legacy AI Companion methods
+func (a *App) AIHealth() map[string]any {
+	if a.aiMgr == nil { return map[string]any{"status": "disabled"} }
+	h, _ := a.aiMgr.Health(context.Background())
 	return map[string]any{
-		"goroutines":                 runtime.NumGoroutine(),
-		"snapshot_active":            snapshotActive.Load(),
-		"snapshot_total":             snapshotTotal.Load(),
-		"snapshot_max_concurrent":    snapshotMax.Load(),
+		"status": string(h.Status), "pid": h.PID, "uptime": h.Uptime,
+		"model_loaded": h.ModelLoaded, "model_name": h.ModelName,
+		"backend": h.Backend, "gpu_name": h.GPUName,
+		"vram_mb": h.VRAMMB, "last_error": h.LastError,
+		"tokens_per_sec": h.TokensPS, "last_latency": h.LastLatency,
+	}
+}
+func (a *App) AIChat(message string) map[string]any {
+	if a.aiMgr == nil || !a.aiMgr.IsRunning() { return map[string]any{"content": "AI not running", "error": "stopped"} }
+	snap := a.Snapshot(); ss := ai.BuildSanitizedSnapshot(snap)
+	ch, err := a.aiMgr.Chat(context.Background(), ai.ChatRequest{Message: message, Snapshot: ss, Mode: "advisor"})
+	if err != nil { return map[string]any{"content": "", "error": err.Error()} }
+	var resp string
+	for evt := range ch {
+		if evt.Type == "error" { return map[string]any{"content": resp, "error": evt.Error} }
+		resp += evt.Content
+	}
+	return map[string]any{"content": resp}
+}
+func (a *App) AIStart() map[string]any {
+	if a.aiMgr == nil { a.aiMgr = ai.NewLifecycleManager(ai.NewMockProvider(), nil) }
+	if err := a.aiMgr.Start(context.Background(), ai.DefaultConfig()); err != nil { return map[string]any{"ok": false, "error": err.Error()} }
+	return map[string]any{"ok": true}
+}
+func (a *App) AIStop() map[string]any {
+	if a.aiMgr == nil { return map[string]any{"ok": true} }
+	if err := a.aiMgr.Stop(context.Background()); err != nil { return map[string]any{"ok": false, "error": err.Error()} }
+	return map[string]any{"ok": true}
+}
+func (a *App) AIDetectGPU() map[string]any {
+	gpu := ai.DetectGPU()
+	return map[string]any{
+		"vendor": gpu.Vendor, "name": gpu.Name, "vram_mb": gpu.VRAMMB,
+		"cuda": gpu.CUDAAvailable, "rocm": gpu.ROCmAvailable, "vulkan": gpu.VulkanAvailable,
+		"recommended": gpu.RecommendedBackend, "fallback_reason": gpu.FallbackReason,
+		"available_backends": gpu.AvailableBackends,
 	}
 }
