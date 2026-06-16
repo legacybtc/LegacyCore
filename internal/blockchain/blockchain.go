@@ -138,9 +138,10 @@ type UndoData struct {
 }
 
 type Chain struct {
-	params chaincfg.Params
-	hasher pow.Hasher
-	store  Store
+	params    chaincfg.Params
+	hasher    pow.Hasher
+	hasherCtx pow.HasherContext
+	store     Store
 
 	mu  sync.RWMutex
 	tip *BlockIndex
@@ -197,13 +198,29 @@ var nowUnix = func() uint32 {
 	return uint32(time.Now().UTC().Unix())
 }
 
+var ErrYespowerContextClosed = errors.New("yespower context is closed")
+
 // HashHeader returns the canonical consensus block hash for this chain.
-// Legacy Coin uses Yespower as block identity, not the wire-level SHA256d
-// header helper. P2P inventory, RPC block announcements, indexes, locators,
-// and stop-hash comparisons must use this method whenever they mean the
-// consensus block hash.
+// For production YespowerHasher, uses the persistent Chain context (no TLS).
+// Test-only hashers without ContextHasher fall back to HashHeader.
 func (c *Chain) HashHeader(header wire.BlockHeader) (chainhash.Hash, error) {
+	if c.hasherCtx != nil {
+		return pow.HashWithContext(c.hasher, c.hasherCtx, header)
+	}
+	if _, ok := c.hasher.(pow.ContextHasher); ok {
+		return chainhash.Hash{}, ErrYespowerContextClosed
+	}
 	return c.hasher.HashHeader(header)
+}
+
+// Close releases the persistent Yespower context.
+// After Close, HashHeader returns ErrYespowerContextClosed for ContextHashers.
+// Safe to call multiple times (idempotent).
+func (c *Chain) Close() {
+	if c.hasherCtx != nil {
+		c.hasherCtx.Close()
+		pow.RecordChainContextFree()
+	}
 }
 
 // BlockHash returns the canonical consensus hash for a full block.
@@ -232,6 +249,10 @@ func New(params chaincfg.Params, hasher pow.Hasher, store Store) (*Chain, error)
 		return nil, err
 	}
 	c.tip = tip
+	if ch, ok := hasher.(pow.ContextHasher); ok {
+		c.hasherCtx = ch.NewContext()
+		pow.RecordChainContextInit()
+	}
 	if err := c.rebuildActiveChainworkLocked(); err != nil {
 		return nil, err
 	}
@@ -416,7 +437,7 @@ func (c *Chain) EnsureGenesis() error {
 	if err != nil {
 		return err
 	}
-	hash, err := c.hasher.HashHeader(block.Header)
+	hash, err := c.HashHeader(block.Header)
 	if err != nil {
 		return fmt.Errorf("hash genesis: %w", err)
 	}
@@ -508,7 +529,7 @@ func (c *Chain) validateActiveBlockLocked(block *wire.MsgBlock) (BlockIndex, *bi
 	if block.Header.Bits != expectedBits {
 		return idx, nil, nil, nil, nil, fmt.Errorf("%w: got %08x, want %08x", ErrBadBits, block.Header.Bits, expectedBits)
 	}
-	hash, err := c.hasher.HashHeader(block.Header)
+	hash, err := c.HashHeader(block.Header)
 	if err != nil {
 		return idx, nil, nil, nil, nil, err
 	}
@@ -572,7 +593,7 @@ func (c *Chain) blockProcessPreviewLocked(block *wire.MsgBlock, mutate bool) (Bl
 		result.NewBestHeight = c.tip.Height
 		result.NewBestHash = c.tip.Hash
 	}
-	hash, err := c.hasher.HashHeader(block.Header)
+	hash, err := c.HashHeader(block.Header)
 	if err != nil {
 		return result, err
 	}
@@ -1166,7 +1187,6 @@ func (c *Chain) ValidateHeaderSequence(headers []wire.BlockHeader) ([]chainhash.
 	tipHeight := c.tip.Height
 	genesisBits := c.params.GenesisBits
 	postGenesisBits := c.params.PostGenesisBits
-	hasher := c.hasher
 	recent, err := c.recentEntriesLocked(tipHeight, consensus.DGWv3PastBlocks)
 	c.mu.RUnlock()
 	if err != nil {
@@ -1200,7 +1220,7 @@ func (c *Chain) ValidateHeaderSequence(headers []wire.BlockHeader) ([]chainhash.
 		if header.Timestamp > maxFuture {
 			return nil, fmt.Errorf("header %d timestamp too far in future", i)
 		}
-		hash, err := hasher.HashHeader(header)
+		hash, err := c.HashHeader(header)
 		if err != nil {
 			return nil, err
 		}

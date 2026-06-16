@@ -432,8 +432,10 @@ func runNode() {
 	}
 	if err := n.Run(ctx, cancel); err != nil {
 		fmt.Fprintf(os.Stderr, "run node: %v\n", err)
+		n.Chain().Close()
 		os.Exit(1)
 	}
+	n.Chain().Close()
 }
 
 func runReindex() {

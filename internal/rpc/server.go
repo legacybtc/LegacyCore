@@ -13,10 +13,12 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"legacycoin/legacy-go/internal/address"
@@ -90,15 +92,38 @@ type Server struct {
 	minerStaleRatePauseActive         bool
 	minerAcceptedRecords              []minerAcceptedRecord
 	minerSupervisorRestartAttempts    int64
+	minerLoopWg                       sync.WaitGroup
 	minerLastSupervisorCancelTime     time.Time
 	minerLastRestartSuccessTime       time.Time
 	minerLastRestartFailure           string
 	minerPeerAgreementLostSince       time.Time
 	minerPeerAgreementRecoveredSince  time.Time
 	minerPeerAgreementPaused          bool
+	minerLocalBlockGraceActive        bool
+	minerLocalBlockGraceStartedAt     time.Time
+	minerLocalBlockGraceHeight        int32
+	minerLocalBlockGraceHash          string
+	minerLastLocalBlockAnnouncement   time.Time
+	minerLocalBlockAnnouncementPeers  int
 	minerTemplateRecoveryPending      bool
 	minerTemplateRecoveryStartedAt    time.Time
+	minerStateGen                     int64
 	defaultTxFee                      int64
+
+	rpcDiagMu          sync.Mutex
+	rpcActiveRequests  int64
+	rpcOldestRequestAt time.Time
+	rpcTotalCalls      int64
+	rpcTotalDuration   time.Duration
+	rpcTimeoutCount    int64
+	rpcErrorCount      int64
+
+	minerStatusDiagActive atomic.Int64
+	minerStatusDiagTotal  atomic.Int64
+	minerStatusDiagMax    atomic.Int64
+	netHashDiagActive     atomic.Int64
+	netHashDiagTotal      atomic.Int64
+	netHashDiagMax        atomic.Int64
 }
 
 type minerAcceptedRecord struct {
@@ -386,6 +411,10 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		defer cancel()
 		_ = s.server.Shutdown(shutdownCtx)
 	}()
+	go func() {
+		time.Sleep(120 * time.Second)
+		SetDiagWarmupDone()
+	}()
 	if cfg, err := config.LoadMiningConfig(s.miningConfigPath()); err == nil && !s.policy.SeedNode && (cfg.AutoStart || cfg.Enabled) {
 		go func() {
 			time.Sleep(2 * time.Second)
@@ -463,7 +492,45 @@ func (s *Server) handleRPCRequest(ctx context.Context, req request) response {
 	if len(bytes.TrimSpace(params)) == 0 {
 		params = json.RawMessage("[]")
 	}
+
+	s.rpcDiagMu.Lock()
+	s.rpcActiveRequests++
+	s.rpcTotalCalls++
+	if s.rpcActiveRequests == 1 {
+		s.rpcOldestRequestAt = time.Now()
+	}
+	s.rpcDiagMu.Unlock()
+	EnterDiag(&diagFanoutActive, &diagFanoutTotal, &diagFanoutMax)
+
+	defer func() {
+		LeaveDiag(&diagFanoutActive)
+		s.rpcDiagMu.Lock()
+		s.rpcActiveRequests--
+		if s.rpcActiveRequests == 0 {
+			s.rpcOldestRequestAt = time.Time{}
+		}
+		s.rpcDiagMu.Unlock()
+	}()
+
+	start := time.Now()
 	result, rpcErr := s.call(ctx, req.Method, params)
+	duration := time.Since(start)
+
+	if duration > 15*time.Second {
+		s.rpcDiagMu.Lock()
+		s.rpcTimeoutCount++
+		s.rpcDiagMu.Unlock()
+	}
+	if rpcErr != nil {
+		s.rpcDiagMu.Lock()
+		s.rpcErrorCount++
+		s.rpcDiagMu.Unlock()
+	}
+
+	s.rpcDiagMu.Lock()
+	s.rpcTotalDuration += duration
+	s.rpcDiagMu.Unlock()
+
 	return response{ID: req.ID, Result: result, Error: rpcErr}
 }
 
@@ -1788,6 +1855,8 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		return map[string]any{"count": len(history), "history": history}, nil
 	case "doctor":
 		return s.doctor(), nil
+	case "captureresourcediagnostics":
+		return ManualDiagnosticCapture("rpc-trigger"), nil
 	case "getnewaddress":
 		addr, err := s.wallet.NewAddress()
 		if err != nil {
@@ -4135,6 +4204,12 @@ func (s *Server) doctor() map[string]any {
 }
 
 func (s *Server) estimateNetworkHashPS(window int32) map[string]any {
+	cur := s.netHashDiagActive.Add(1)
+	s.netHashDiagTotal.Add(1)
+	if cur > s.netHashDiagMax.Load() {
+		s.netHashDiagMax.Store(cur)
+	}
+	defer s.netHashDiagActive.Add(-1)
 	tip := s.chain.Tip()
 	if tip == nil || tip.Height < 3 {
 		return map[string]any{
@@ -4449,6 +4524,12 @@ func timingTrend(avg float64) string {
 }
 
 func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady bool) map[string]any {
+	cur := s.minerStatusDiagActive.Add(1)
+	s.minerStatusDiagTotal.Add(1)
+	if cur > s.minerStatusDiagMax.Load() {
+		s.minerStatusDiagMax.Store(cur)
+	}
+	defer s.minerStatusDiagActive.Add(-1)
 	s.minerMu.Lock()
 	minerEnabled := s.minerActive
 	activeMining := s.minerHashing
@@ -4492,7 +4573,21 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 	templateRecoveryPending := s.minerTemplateRecoveryPending
 	templateRecoveryStartedAt := s.minerTemplateRecoveryStartedAt
 	acceptedRecords := append([]minerAcceptedRecord(nil), s.minerAcceptedRecords...)
+	stateGen := s.minerStateGen
+	lifecycleCounters := mining.LifecycleCounters()
+	yespowerCounters := pow.YespowerCounters()
 	s.minerMu.Unlock()
+	genAfter := stateGen
+	for retry := 0; retry < 3; retry++ {
+		s.minerMu.Lock()
+		genAfter = s.minerStateGen
+		s.minerMu.Unlock()
+		if genAfter == stateGen {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	snapshotConsistent := genAfter == stateGen
 	uptime := int64(0)
 	startedAt := ""
 	if minerEnabled && !minerStartedAt.IsZero() {
@@ -4832,15 +4927,74 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 		"mining_pubkey_hash":          dest.PubKeyHashHex,
 		"active_reward_hash":          displayRewardHash,
 		"reject_zero_hash":            cfg.RejectZeroHash,
-		"peers":                       s.p2p.PeerCount(),
+		"peers": func() int32 {
+			if s.p2p == nil {
+				return 0
+			}
+			return s.p2p.PeerCount()
+		}(),
 		"good_peer_rejection_reasons": goodPeerReasonCounts,
 		"peer_quality_diagnostics":    peerQualityDiagnostics,
 		"good_peer_diagnostics_note":  "Peer count includes all connected peers; good peers have useful current chain data, acceptable latency/pongs, matching chain ID, and no recent sync or block errors.",
 		"storage":                     storage,
 		"wallet":                      s.wallet.SecurityInfo(),
 		"config":                      s.miningConfigPath(),
-		"control_rpcs":                []string{"startminer", "stopminer", "restartminer", "getminerstatus", "benchmarkminer", "autotuneminer", "setminerthreads", "setminingaddress", "configureminer"},
+		"control_rpcs": []string{"startminer", "stopminer", "restartminer", "getminerstatus", "benchmarkminer", "autotuneminer", "setminerthreads", "setminingaddress", "configureminer"},
 	}
+	out["rpc_active_requests"] = func() int64 {
+		s.rpcDiagMu.Lock()
+		defer s.rpcDiagMu.Unlock()
+		return s.rpcActiveRequests
+	}()
+	out["rpc_oldest_request_age_seconds"] = func() float64 {
+		s.rpcDiagMu.Lock()
+		defer s.rpcDiagMu.Unlock()
+		if s.rpcOldestRequestAt.IsZero() {
+			return 0
+		}
+		return time.Since(s.rpcOldestRequestAt).Seconds()
+	}()
+	out["rpc_total_calls"] = func() int64 {
+		s.rpcDiagMu.Lock()
+		defer s.rpcDiagMu.Unlock()
+		return s.rpcTotalCalls
+	}()
+	out["rpc_total_duration_seconds"] = func() float64 {
+		s.rpcDiagMu.Lock()
+		defer s.rpcDiagMu.Unlock()
+		return s.rpcTotalDuration.Seconds()
+	}()
+	out["rpc_timeout_count"] = func() int64 {
+		s.rpcDiagMu.Lock()
+		defer s.rpcDiagMu.Unlock()
+		return s.rpcTimeoutCount
+	}()
+	out["rpc_error_count"] = func() int64 {
+		s.rpcDiagMu.Lock()
+		defer s.rpcDiagMu.Unlock()
+		return s.rpcErrorCount
+	}()
+	out["node_goroutine_count"] = runtime.NumGoroutine()
+	for key, val := range lifecycleCounters {
+		out["lifecycle_"+key] = val
+	}
+	for key, val := range yespowerCounters {
+		out["yespower_"+key] = val
+	}
+	out["miner_state_generation"] = stateGen
+	out["snapshot_consistent"] = snapshotConsistent
+	out["diag_miner_status_active"] = s.minerStatusDiagActive.Load()
+	out["diag_miner_status_total"] = s.minerStatusDiagTotal.Load()
+	out["diag_miner_status_max"] = s.minerStatusDiagMax.Load()
+	out["diag_net_hash_active"] = s.netHashDiagActive.Load()
+	out["diag_net_hash_total"] = s.netHashDiagTotal.Load()
+	out["diag_net_hash_max"] = s.netHashDiagMax.Load()
+	dc := DiagCounters()
+	for key, val := range dc {
+		out["diag_"+key] = val
+	}
+	out["diag_bundle_count"] = atomic.LoadInt32(&diagBundleCount)
+	out["diag_base_dir"] = diagBaseDir()
 	for key, value := range safety.Fields() {
 		out[key] = value
 	}
@@ -5026,6 +5180,7 @@ func (s *Server) startMiner(parent context.Context, params json.RawMessage) (any
 	minerCtx, cancel := context.WithCancel(context.Background())
 	s.minerActive = true
 	s.minerHashing = false
+	s.minerStateGen++
 	s.minerCancel = cancel
 	s.minerThreads = threads
 	s.minerBlocks = 0
@@ -5073,6 +5228,7 @@ func (s *Server) startMiner(parent context.Context, params json.RawMessage) (any
 	_ = config.AppendConfigLine(s.miningConfigPath(), "mining_stop_after_blocks", fmt.Sprint(stopAfter))
 	_ = config.AppendConfigLine(s.miningConfigPath(), "mining_peer_required", fmt.Sprint(peerRequired))
 
+	s.minerLoopWg.Add(1)
 	go s.minerLoop(minerCtx, pubHash, threads)
 	out := map[string]any{
 		"active_mining":               true,
@@ -5110,12 +5266,14 @@ func (s *Server) stopMiner(reason string) map[string]any {
 	}
 	s.minerActive = false
 	s.minerHashing = false
+	s.minerStateGen++
 	s.minerCancel = nil
 	s.minerLastError = stopReason
 	s.minerPausedReason = ""
 	s.minerLastStopReason = stopReason
 	s.minerLocalHashPS = 0
 	s.minerMu.Unlock()
+	s.minerLoopWg.Wait()
 	_ = config.AppendConfigLine(s.miningConfigPath(), "mining_enabled", "false")
 	uptime := int64(0)
 	if !startedAt.IsZero() {
@@ -5563,6 +5721,7 @@ func (s *Server) markAcceptedBlockTemplateRefreshLocked() {
 func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 	exitStopReason := MinerStopWorkerExitUnexpected
 	defer func() {
+		s.minerLoopWg.Done()
 		s.minerMu.Lock()
 		if requested := strings.TrimSpace(s.minerRequestedStopReason); requested != "" {
 			exitStopReason = requested
@@ -5602,6 +5761,7 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 			s.minerPausedReason = ""
 			s.minerLastStopReason = MinerStopSupervisorShutdown
 			s.minerHashing = false
+			s.minerStateGen++
 			s.minerLocalHashPS = 0
 			s.minerMu.Unlock()
 			exitStopReason = MinerStopSupervisorShutdown
@@ -5612,6 +5772,7 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 			s.minerLastError = "Mining blocked: node has no peers."
 			s.minerPausedReason = s.minerLastError
 			s.minerHashing = false
+			s.minerStateGen++
 			s.minerLocalHashPS = 0
 			s.minerMu.Unlock()
 			timer := time.NewTimer(3 * time.Second)
@@ -5630,6 +5791,7 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 			s.minerPausedReason = s.minerLastError
 			s.minerLastStopReason = MinerStopInternalError
 			s.minerHashing = false
+			s.minerStateGen++
 			s.minerLocalHashPS = 0
 			s.minerMu.Unlock()
 			exitStopReason = MinerStopInternalError
@@ -5653,6 +5815,7 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 				s.minerLastError = safety.Reason
 				s.minerPausedReason = safety.Reason
 				s.minerHashing = false
+			s.minerStateGen++
 				s.minerLocalHashPS = 0
 				s.minerMu.Unlock()
 				retryDelay := 3 * time.Second
@@ -5716,6 +5879,7 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 		}
 		s.minerPausedReason = ""
 		s.minerHashing = true
+		s.minerStateGen++
 		s.minerLastRestartSuccessTime = time.Now()
 		s.minerLastRestartFailure = ""
 		s.minerMu.Unlock()
@@ -5752,6 +5916,7 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 			if stopReason, shouldExit := classifyMinerContextCancellation(err, ctx); stopReason != "" {
 				s.minerMu.Lock()
 				s.minerHashing = false
+			s.minerStateGen++
 				s.minerLocalHashPS = 0
 				if !shouldExit {
 					s.minerLastError = MinerStopSupervisorCancelled + ": mining worker epoch cancelled; restarting workers."
@@ -5790,12 +5955,14 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 				if s.minerTemplateRecoveryStartedAt.IsZero() {
 					s.minerTemplateRecoveryStartedAt = s.minerLastTemplateRefreshAttempt
 				}
-				s.minerHashing = true
+		s.minerHashing = true
+		s.minerStateGen++
 				s.minerMu.Unlock()
 				continue
 			}
 			s.minerMu.Lock()
 			s.minerHashing = false
+			s.minerStateGen++
 			s.minerLocalHashPS = 0
 			s.minerMu.Unlock()
 			if errors.Is(err, mining.ErrStaleTemplate) {
@@ -5827,6 +5994,7 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 				s.minerLastTemplateRefreshReason = "template_refresh_failed"
 				s.minerLastTemplateRefreshAttempt = time.Now()
 				s.minerHashing = false
+			s.minerStateGen++
 				s.minerLocalHashPS = 0
 				s.minerMu.Unlock()
 				timer := time.NewTimer(3 * time.Second)
@@ -5859,6 +6027,7 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 			s.minerSupervisorRestartAttempts++
 			s.minerLastRestartFailure = err.Error()
 			s.minerHashing = false
+			s.minerStateGen++
 			s.minerLocalHashPS = 0
 			s.minerMu.Unlock()
 			timer := time.NewTimer(1500 * time.Millisecond)
@@ -5876,6 +6045,11 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 		s.minerLocalHashPS = 0
 		s.minerMu.Unlock()
 		if s.p2p != nil {
+			peers := len(s.p2p.PeerInfos())
+			s.minerMu.Lock()
+			s.minerLastLocalBlockAnnouncement = time.Now()
+			s.minerLocalBlockAnnouncementPeers = peers
+			s.minerMu.Unlock()
 			s.p2p.AnnounceBlock(result.Hash)
 		}
 		s.minerMu.Lock()
@@ -5894,6 +6068,13 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 			PayoutHash:   strings.ToLower(hex.EncodeToString(pubHash)),
 			CoinbaseTxID: coinbaseTxID(result.Block),
 		})
+		if len(s.minerAcceptedRecords) > 500 {
+			s.minerAcceptedRecords = s.minerAcceptedRecords[len(s.minerAcceptedRecords)-250:]
+		}
+		s.minerLocalBlockGraceActive = true
+		s.minerLocalBlockGraceStartedAt = time.Now()
+		s.minerLocalBlockGraceHeight = result.Height
+		s.minerLocalBlockGraceHash = result.Hash.String()
 		s.markAcceptedBlockTemplateRefreshLocked()
 		s.minerMu.Unlock()
 	}

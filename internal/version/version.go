@@ -2,9 +2,14 @@ package version
 
 const (
 	WalletName    = "Legacy Wallet"
-	WalletVersion = "1.0.5"
+	WalletVersion = "1.0.6-rc1"
 	CoreName      = "Legacy Core"
-	CoreVersion   = "1.0.5"
+	CoreVersion   = "1.0.6-rc1"
+)
+
+var (
+	CoreCommit  = "unknown"
+	BuildTime   = "unknown"
 )
 
 func WalletFull() string {
@@ -13,4 +18,12 @@ func WalletFull() string {
 
 func CoreFull() string {
 	return CoreName + " " + CoreVersion
+}
+
+func BuildInfo() map[string]string {
+	return map[string]string{
+		"version": CoreVersion,
+		"commit":  CoreCommit,
+		"built":   BuildTime,
+	}
 }

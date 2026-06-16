@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"legacycoin/legacy-go/internal/config"
@@ -23,6 +24,12 @@ import (
 	"legacycoin/legacy-go/internal/nodeservice"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
+)
+
+var (
+	snapshotActive atomic.Int64
+	snapshotTotal  atomic.Int64
+	snapshotMax    atomic.Int64
 )
 
 type App struct {
@@ -625,6 +632,12 @@ func (a *App) RunRPCCommand(commandLine string) (map[string]any, error) {
 }
 
 func (a *App) Snapshot() map[string]any {
+	cur := snapshotActive.Add(1)
+	snapshotTotal.Add(1)
+	if cur > snapshotMax.Load() {
+		snapshotMax.Store(cur)
+	}
+	defer snapshotActive.Add(-1)
 	nodeStatus := a.NodeStatus()
 	if nodeStatus.Running {
 		a.ensureDefaultMiningAddressFromWallet()
@@ -1200,4 +1213,14 @@ func (a *App) AIStop() map[string]any {
 		return map[string]any{"ok": false, "error": err.Error()}
 	}
 	return map[string]any{"ok": true}
+}
+
+// RuntimeDiagnostics returns concurrency and thread counters for profiling.
+func (a *App) RuntimeDiagnostics() map[string]any {
+	return map[string]any{
+		"goroutines":                 runtime.NumGoroutine(),
+		"snapshot_active":            snapshotActive.Load(),
+		"snapshot_total":             snapshotTotal.Load(),
+		"snapshot_max_concurrent":    snapshotMax.Load(),
+	}
 }

@@ -20,6 +20,33 @@ import (
 	"legacycoin/legacy-go/internal/wire"
 )
 
+var (
+	lifecycleWorkersStarted  atomic.Int64
+	lifecycleWorkersExited   atomic.Int64
+	lifecycleSessionsStarted atomic.Int64
+	lifecycleSessionsEnded   atomic.Int64
+	lifecycleTCancels        atomic.Int64
+	lifecycleHSCancels       atomic.Int64
+	lifecyclePeerPauses      atomic.Int64
+	lifecyclePeerResumes     atomic.Int64
+)
+
+// LifecycleCounters returns mining lifecycle diagnostic counters.
+func LifecycleCounters() map[string]int64 {
+	return map[string]int64{
+		"workers_started":    lifecycleWorkersStarted.Load(),
+		"workers_exited":     lifecycleWorkersExited.Load(),
+		"workers_active":     lifecycleWorkersStarted.Load() - lifecycleWorkersExited.Load(),
+		"sessions_started":   lifecycleSessionsStarted.Load(),
+		"sessions_ended":     lifecycleSessionsEnded.Load(),
+		"sessions_active":    lifecycleSessionsStarted.Load() - lifecycleSessionsEnded.Load(),
+		"template_cancels":   lifecycleTCancels.Load(),
+		"hard_stale_cancels": lifecycleHSCancels.Load(),
+		"peer_pauses":        lifecyclePeerPauses.Load(),
+		"peer_resumes":       lifecyclePeerResumes.Load(),
+	}
+}
+
 type Progress struct {
 	Attempts              uint64
 	Nonce                 uint32
@@ -268,6 +295,8 @@ func MineBlock(ctx context.Context, chain *blockchain.Chain, pool *mempool.Pool,
 	var lastNonce atomic.Uint32
 	var wg sync.WaitGroup
 	start := time.Now()
+	lifecycleSessionsStarted.Add(1)
+	defer lifecycleSessionsEnded.Add(1)
 	templatePrevHash := template.Header.PrevBlock.String()
 	handleResult := func(res mineResult) (Result, error) {
 		if res.err != nil {
@@ -289,6 +318,14 @@ func MineBlock(ctx context.Context, chain *blockchain.Chain, pool *mempool.Pool,
 		wg.Add(1)
 		go func(worker int) {
 			defer wg.Done()
+			defer lifecycleWorkersExited.Add(1)
+			var hCtx pow.HasherContext
+			if ch, ok := hasher.(pow.ContextHasher); ok {
+				hCtx = ch.NewContext()
+				pow.RecordWorkerContextInit()
+				defer func() { pow.RecordWorkerContextFree(); hCtx.Close() }()
+			}
+			lifecycleWorkersStarted.Add(1)
 			block := *template
 			block.Transactions = template.Transactions
 			step := uint32(workers)
@@ -300,7 +337,13 @@ func MineBlock(ctx context.Context, chain *blockchain.Chain, pool *mempool.Pool,
 				default:
 				}
 				block.Header.Nonce = nonce
-				hash, err := hasher.HashHeader(block.Header)
+				var hash chainhash.Hash
+				var err error
+				if hCtx != nil {
+					hash, err = pow.HashWithContext(hasher, hCtx, block.Header)
+				} else {
+					hash, err = hasher.HashHeader(block.Header)
+				}
 				if err != nil {
 					select {
 					case resultc <- mineResult{err: err}:
@@ -311,11 +354,11 @@ func MineBlock(ctx context.Context, chain *blockchain.Chain, pool *mempool.Pool,
 				}
 				attempts.Add(1)
 				lastNonce.Store(nonce)
-				yieldCounter++
-				if yieldCounter&0xff == 0 {
-					runtime.Gosched()
-				}
-				if consensus.CheckProofOfWork(hash, block.Header.Bits) == nil {
+			yieldCounter++
+			if yieldCounter&0x3f == 0 {
+				runtime.Gosched()
+			}
+			if consensus.CheckProofOfWork(hash, block.Header.Bits) == nil {
 					found := block
 					select {
 					case resultc <- mineResult{block: &found, hash: hash}:
@@ -372,15 +415,17 @@ func MineBlock(ctx context.Context, chain *blockchain.Chain, pool *mempool.Pool,
 			if !status.ActiveTemplateIsFresh {
 				select {
 				case resultc <- mineResult{err: fmt.Errorf("%w: %s", ErrStaleTemplate, status.ActiveTemplateStaleReason)}:
-					cancel()
 				default:
 				}
+				lifecycleHSCancels.Add(1)
+				cancel()
 			} else if status.ActiveTemplateRefreshDue {
 				select {
 				case resultc <- mineResult{err: fmt.Errorf("%w: %s", ErrTemplateRefreshRequired, status.ActiveTemplateRefreshReason)}:
-					cancel()
 				default:
 				}
+				lifecycleTCancels.Add(1)
+				cancel()
 			}
 		case <-done:
 			select {
@@ -435,6 +480,14 @@ func BenchmarkHashrate(ctx context.Context, chain *blockchain.Chain, pool *mempo
 		wg.Add(1)
 		go func(worker int) {
 			defer wg.Done()
+			defer lifecycleWorkersExited.Add(1)
+			var hCtx pow.HasherContext
+			if ch, ok := hasher.(pow.ContextHasher); ok {
+				hCtx = ch.NewContext()
+				pow.RecordWorkerContextInit()
+				defer func() { pow.RecordWorkerContextFree(); hCtx.Close() }()
+			}
+			lifecycleWorkersStarted.Add(1)
 			block := *template
 			block.Transactions = template.Transactions
 			step := uint32(workers)
@@ -446,9 +499,16 @@ func BenchmarkHashrate(ctx context.Context, chain *blockchain.Chain, pool *mempo
 				default:
 				}
 				block.Header.Nonce = nonce
-				_, err := hasher.HashHeader(block.Header)
-				if err != nil {
-					return
+				if hCtx != nil {
+					_, err := pow.HashWithContext(hasher, hCtx, block.Header)
+					if err != nil {
+						return
+					}
+				} else {
+					_, err := hasher.HashHeader(block.Header)
+					if err != nil {
+						return
+					}
 				}
 				attempts.Add(1)
 				lastNonce.Store(nonce)

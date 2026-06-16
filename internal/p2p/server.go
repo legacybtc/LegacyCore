@@ -177,6 +177,7 @@ type Server struct {
 	lastWatchdog        time.Time
 	lastWdAction        string
 	wdReconnects        int64
+	outboundDialSem      chan struct{}
 	lastBlockConn       time.Time
 	lastHeightChg       time.Time
 	lastSyncPeer        string
@@ -220,6 +221,7 @@ func New(params chaincfg.Params, chain *blockchain.Chain, pool *mempool.Pool, lo
 		globalRateLimit:     3000,
 		reconnectBackoff:    true,
 		reconnectEvery:      peerReconnectEvery,
+		outboundDialSem:     make(chan struct{}, 32),
 		misbehaviorDecay:    5 * time.Minute,
 		peerRateWindow:      10 * time.Second,
 		globalRateWindow:    10 * time.Second,
@@ -1357,10 +1359,17 @@ func (s *Server) AddNode(ctx context.Context, addr string) error {
 	if !s.markOutbound(addr) {
 		return nil
 	}
+	select {
+	case s.outboundDialSem <- struct{}{}:
+	default:
+		s.unmarkOutbound(addr)
+		return nil
+	}
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
 		defer s.unmarkOutbound(addr)
+		defer func() { <-s.outboundDialSem }()
 		dialer := net.Dialer{Timeout: 15 * time.Second}
 		conn, err := dialer.DialContext(ctx, "tcp", addr)
 		if err != nil {

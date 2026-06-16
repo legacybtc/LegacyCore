@@ -227,6 +227,9 @@ func TestStatusIncludesRPCPortProbe(t *testing.T) {
 }
 
 func TestStartStopReleasesRPCPort(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping full-node lifecycle test in short mode")
+	}
 	requireProductionYespower(t)
 	ln, err := net.Listen("tcp", "127.0.0.1:19556")
 	if err != nil {
@@ -247,6 +250,9 @@ func TestStartStopReleasesRPCPort(t *testing.T) {
 }
 
 func TestSecondServiceReportsCompatibleRPCConflict(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping full-node lifecycle test in short mode")
+	}
 	requireProductionYespower(t)
 	ln, err := net.Listen("tcp", "127.0.0.1:19556")
 	if err != nil {
@@ -272,6 +278,9 @@ func TestSecondServiceReportsCompatibleRPCConflict(t *testing.T) {
 }
 
 func TestStopWithReportClosesActivePeerReadLoops(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping full-node lifecycle test in short mode")
+	}
 	requireProductionYespower(t)
 	ln, err := net.Listen("tcp", "127.0.0.1:19556")
 	if err != nil {

@@ -635,6 +635,7 @@ func (s *Service) Start() error {
 
 	go func() {
 		err := n.Run(ctx, cancel)
+		n.Chain().Close()
 		s.mu.Lock()
 		if err != nil && !errors.Is(err, context.Canceled) {
 			s.err = err
@@ -1937,9 +1938,9 @@ func (s *Service) GetMinerStatus() (map[string]any, error) {
 		"mining_safety_state":           "unknown",
 		"mining_blocked_reason":         "Mining blocked: RPC is not responding.",
 		"mining_safety_reason":          "Mining blocked: RPC is not responding.",
-		"active_mining":                 false,
+		"active_mining":                 miningNow,
 		"last_known_active_mining":      miningNow,
-		"mining_enabled":                false,
+		"mining_enabled":                miningNow,
 		"last_known_mining_enabled":     miningNow,
 		"active_threads":                0,
 		"live_active_threads":           0,
@@ -1961,7 +1962,12 @@ func (s *Service) GetMinerStatus() (map[string]any, error) {
 		"session_hashes":                sessionHashes,
 		"last_nonce":                    lastNonce,
 		"last_error":                    "",
-		"last_stop_reason":              stopReason,
+		"last_stop_reason": func() string {
+			if miningNow {
+				return ""
+			}
+			return stopReason
+		}(),
 		"last_historical_event":         "RPC offline: miner status is local fallback",
 		"current_mining_state":          map[bool]string{true: "running (fallback)", false: "unavailable"}[miningNow],
 		"current_safety_state": func() string {
@@ -2534,6 +2540,7 @@ func (s *Service) StartMiner(threads int) (map[string]any, error) {
 	s.minerActive = true
 	s.minerThreads = threads
 	s.minerStarted = started
+	s.minerStopReason = ""
 	s.minerMu.Unlock()
 	if out, ok := result.(map[string]any); ok {
 		out["status_source"] = "rpc"
