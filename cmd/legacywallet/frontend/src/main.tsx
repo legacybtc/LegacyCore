@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   Archive,
   BadgeCheck,
+  Bot,
   Bug,
   Coins,
   Copy,
@@ -50,6 +51,7 @@ import {
   shouldClearMiningStartNotice,
   syncAlertTone,
 } from "./dashboardLogic";
+import { LegacyAIPage } from "./ai/LegacyAIPage";
 
 const legacyLogo = "/legacy-logo.jpg";
 
@@ -132,6 +134,13 @@ type Backend = {
   SearchExplorer(query: string): Promise<Dict>;
   RunRPCCommand(commandLine: string): Promise<Dict>;
   SaveSettings(settings: SettingsShape): Promise<SettingsShape>;
+  AIHealth(): Promise<Dict>;
+  AIChat(message: string, mode: string): Promise<Dict>;
+  AIStart(): Promise<Dict>;
+  AIStop(): Promise<Dict>;
+  AIDetectGPU(): Promise<Dict>;
+  AIToolExecute(cmdLine: string): Promise<Dict>;
+  AIListTools(): Promise<string[]>;
 };
 
 declare global {
@@ -160,6 +169,7 @@ const tabs = [
   ["rpc-console", Bug, "RPC Console"],
   ["settings", Settings, "Settings"],
   ["about", BadgeCheck, "About"],
+  ["ai", Bot, "AI"],
 ] as const;
 
 type AlertTone = "info" | "warn" | "danger" | "success";
@@ -430,6 +440,7 @@ function App() {
     if (tab === "rpc-console") return <RPCConsolePage snap={snap} />;
     if (tab === "settings") return <SettingsPage {...p} />;
     if (tab === "about") return <AboutPage snap={snap} />;
+    if (tab === "ai") return <LegacyAIPage snap={snap} />;
     return <Overview {...p} {...ui} />;
   }, [snap, tab, busy, lastUpdated, refreshInterval]);
 

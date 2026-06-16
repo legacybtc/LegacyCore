@@ -3,6 +3,20 @@
 import {nodeservice} from '../models';
 import {main} from '../models';
 
+export function AIChat(arg1:string,arg2:string):Promise<Record<string, any>>;
+
+export function AIDetectGPU():Promise<Record<string, any>>;
+
+export function AIHealth():Promise<Record<string, any>>;
+
+export function AIListTools():Promise<Array<string>>;
+
+export function AIStart():Promise<Record<string, any>>;
+
+export function AIStop():Promise<Record<string, any>>;
+
+export function AIToolExecute(arg1:string):Promise<Record<string, any>>;
+
 export function BackupWallet(arg1:string):Promise<Record<string, any>>;
 
 export function BenchmarkMiner(arg1:number,arg2:number):Promise<Record<string, any>>;
@@ -100,8 +114,6 @@ export function RestartInternalNode():Promise<Record<string, any>>;
 export function RestoreWalletBackup(arg1:string):Promise<Record<string, any>>;
 
 export function RunRPCCommand(arg1:string):Promise<Record<string, any>>;
-
-export function RuntimeDiagnostics():Promise<Record<string, any>>;
 
 export function SaveNetworkSettings(arg1:main.NetworkSettings):Promise<main.NetworkSettings>;
 
