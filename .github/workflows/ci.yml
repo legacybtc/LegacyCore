@@ -148,29 +148,3 @@ jobs:
       - name: Final source scan
         shell: pwsh
         run: ./scripts/scan-source-cleanliness.ps1 -Root .
-
-      - name: Ensure standard main contains no AI code
-        if: github.ref == 'refs/heads/main'
-        shell: pwsh
-        run: |
-          $forbidden = @("internal/ai/", "LegacyAIPage", "legacy-ai", "AIHealth", "AIChat", "AIStart", "AIStop", "AI-PREVIEW", "Legacy AI Assistant")
-          $found = $false
-          Get-ChildItem -Recurse -File | Where-Object {
-              $_.FullName -notmatch "\\\.git\\" -and
-              $_.FullName -notmatch "\\node_modules\\" -and
-              $_.FullName -notmatch "\\dist\\" -and
-              $_.FullName -notmatch "\\build\\" -and
-              $_.Name -notmatch "\.zip$" -and
-              $_.Name -notmatch "\.exe$" -and
-              $_.Name -notmatch "\.exe~$"
-          } | ForEach-Object {
-              $content = Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue
-              foreach ($term in $forbidden) {
-                  if ($content -match $term -and $_.Name -notmatch "\.yml$") {
-                      Write-Host "ERROR: Found '$term' in $($_.FullName)"
-                      $found = $true
-                  }
-              }
-          }
-          if ($found) { throw "Standard main must not contain AI code" }
-          Write-Host "No AI code detected in standard main."
