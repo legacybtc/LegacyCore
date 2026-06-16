@@ -6,6 +6,10 @@ export function AIChat(arg1, arg2) {
   return window['go']['main']['App']['AIChat'](arg1, arg2);
 }
 
+export function AIConfigure(arg1, arg2, arg3) {
+  return window['go']['main']['App']['AIConfigure'](arg1, arg2, arg3);
+}
+
 export function AIDetectGPU() {
   return window['go']['main']['App']['AIDetectGPU']();
 }

@@ -82,6 +82,9 @@ export namespace main {
 	    theme: string;
 	    network: NetworkSettings;
 	    launchpad: LaunchpadSettings;
+	    aiProvider: string;
+	    aiApiKey: string;
+	    aiModel: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new Settings(source);
@@ -97,6 +100,9 @@ export namespace main {
 	        this.theme = source["theme"];
 	        this.network = this.convertValues(source["network"], NetworkSettings);
 	        this.launchpad = this.convertValues(source["launchpad"], LaunchpadSettings);
+	        this.aiProvider = source["aiProvider"];
+	        this.aiApiKey = source["aiApiKey"];
+	        this.aiModel = source["aiModel"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

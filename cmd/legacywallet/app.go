@@ -53,6 +53,9 @@ type Settings struct {
 	Theme                string            `json:"theme"`
 	Network              NetworkSettings   `json:"network"`
 	Launchpad            LaunchpadSettings `json:"launchpad"`
+	AIProvider           string            `json:"aiProvider"`
+	AIAPIKey             string            `json:"aiApiKey"`
+	AIModel              string            `json:"aiModel"`
 }
 
 type NetworkSettings struct {
@@ -1190,10 +1193,17 @@ func (a *App) AIChat(message string, mode string) map[string]any {
 	return map[string]any{"content": resp}
 }
 func (a *App) AIStart() map[string]any {
-	if a.aiMgr == nil {
-		provider := a.autoSelectProvider()
-		a.aiMgr = ai.NewLifecycleManager(provider, nil)
-	}
+	a.mu.Lock()
+	providerType := a.settings.AIProvider
+	apiKey := a.settings.AIAPIKey
+	model := a.settings.AIModel
+	a.mu.Unlock()
+
+	if providerType == "" { providerType = "built-in" }
+
+	provider := a.createProvider(providerType, apiKey, model)
+	a.aiMgr = ai.NewLifecycleManager(provider, nil)
+
 	if err := a.aiMgr.Start(context.Background(), ai.DefaultConfig()); err != nil {
 		return map[string]any{"ok": false, "error": err.Error()}
 	}
@@ -1204,20 +1214,48 @@ func (a *App) AIStart() map[string]any {
 	}
 }
 
-func (a *App) autoSelectProvider() ai.AIProvider {
-	gpu := ai.DetectGPU()
-	llamaPath := findLlamaBinary()
-	if llamaPath != "" {
+func (a *App) AIConfigure(provider string, apiKey string, model string) map[string]any {
+	a.mu.Lock()
+	a.settings.AIProvider = provider
+	a.settings.AIAPIKey = apiKey
+	a.settings.AIModel = model
+	s := a.settings
+	a.mu.Unlock()
+
+	if _, err := a.SaveSettings(s); err != nil {
+		return map[string]any{"ok": false, "error": err.Error()}
+	}
+
+	if a.aiMgr != nil && a.aiMgr.IsRunning() {
+		a.aiMgr.Stop(context.Background())
+		a.aiMgr = nil
+		return a.AIStart()
+	}
+	return map[string]any{"ok": true, "message": "Provider configured. Start AI to apply."}
+}
+
+func (a *App) createProvider(providerType string, apiKey string, model string) ai.AIProvider {
+	switch providerType {
+	case "groq":
+		g := ai.NewGroqProvider(apiKey)
+		if model != "" { g.SetModel(model) }
+		return g
+	case "llama-server":
+		llamaPath := findLlamaBinary()
+		if llamaPath == "" {
+			return ai.NewMockProvider()
+		}
 		return ai.NewLlamaProvider(ai.LlamaConfig{
 			BinaryPath:       llamaPath,
 			Host:             "127.0.0.1",
 			Port:             19570,
-			GPUOffloadLayers: gpuOffloadLayers(gpu),
+			GPUOffloadLayers: gpuOffloadLayers(ai.DetectGPU()),
 			ContextSize:      2048,
 			Threads:          4,
 		})
+	default:
+		return ai.NewMockProvider()
 	}
-	return ai.NewMockProvider()
 }
 
 func findLlamaBinary() string {

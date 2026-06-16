@@ -6,6 +6,8 @@ import {main} from '../models';
 
 export function AIChat(arg1:string,arg2:string):Promise<Record<string, any>>;
 
+export function AIConfigure(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;
+
 export function AIDetectGPU():Promise<Record<string, any>>;
 
 export function AIHealth():Promise<Record<string, any>>;
