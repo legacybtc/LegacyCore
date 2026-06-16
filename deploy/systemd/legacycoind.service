@@ -1,0 +1,22 @@
+[Unit]
+Description=Legacy Core Full Node
+Documentation=https://github.com/legacybtc/LegacyCore
+After=network.target
+
+[Service]
+Type=simple
+User=legacycoin
+Group=legacycoin
+ExecStart=/usr/local/bin/legacycoind run
+ExecStop=/bin/kill -s SIGTERM $MAINPID
+Restart=on-failure
+RestartSec=15
+LimitNOFILE=65536
+TimeoutStopSec=30
+
+# Do not set to root
+# Data dir auto-detected or set via environment
+# Environment=LEGACYCOIN_DATADIR=/var/lib/legacycoin
+
+[Install]
+WantedBy=multi-user.target
