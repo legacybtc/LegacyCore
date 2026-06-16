@@ -1,4 +1,4 @@
-Legacy Wallet (LBTC mainnet) - v1.0.5
+Legacy Wallet (LBTC mainnet) - v1.0.6
 
 This package contains the Wails-built desktop wallet executable:
   LegacyWallet.exe
