@@ -52,6 +52,7 @@ import {
   syncAlertTone,
 } from "./dashboardLogic";
 import { LegacyAIPage } from "./ai/LegacyAIPage";
+import { LegacyAgent, AgentState } from "./ai/LegacyAgent";
 
 const legacyLogo = "/legacy-logo.jpg";
 
@@ -191,6 +192,11 @@ function App() {
   const [snap, setSnap] = useState<Dict | null>(null);
   const [tab, setTab] = useState("overview");
   const [messages, setMessages] = useState<UIMessage[]>([]);
+  const [agentState, setAgentState] = useState<AgentState>(() => {
+    const saved = localStorage.getItem("legacy-ai-agent-visible");
+    return saved === "false" ? "hidden" : "idle";
+  });
+  const [agentSpeech, setAgentSpeech] = useState("");
   const [busy, setBusy] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<number>(0);
   const [refreshInterval, setRefreshInterval] = useState<number>(() => {
@@ -440,7 +446,7 @@ function App() {
     if (tab === "rpc-console") return <RPCConsolePage snap={snap} />;
     if (tab === "settings") return <SettingsPage {...p} />;
     if (tab === "about") return <AboutPage snap={snap} />;
-    if (tab === "ai") return <LegacyAIPage snap={snap} />;
+    if (tab === "ai") return <LegacyAIPage snap={snap} agentState={agentState} setAgentState={setAgentState} agentSpeech={agentSpeech} setAgentSpeech={setAgentSpeech} />;
     return <Overview {...p} {...ui} />;
   }, [snap, tab, busy, lastUpdated, refreshInterval]);
 
@@ -449,6 +455,7 @@ function App() {
   const syncView = walletSyncState(snap);
 
   return (
+    <>
     <main className="appWindow compactMode">
       <TitleBarClassic snap={snap} />
       <div className="shell">
@@ -507,6 +514,13 @@ function App() {
       </div>
       <StatusBarClassic snap={snap} />
     </main>
+    <LegacyAgent
+      state={agentState}
+      speechText={agentSpeech}
+      onDoubleClick={() => setTab("ai")}
+      onHide={() => { setAgentState("hidden"); localStorage.setItem("legacy-ai-agent-visible", "false"); }}
+    />
+    </>
   );
 }
 

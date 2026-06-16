@@ -2,10 +2,19 @@ import React, { useState, useRef, useEffect } from "react";
 import { Bot, Cpu, HardDrive, Shield, Zap, AlertTriangle, CheckCircle, RefreshCw, Trash2, Terminal, Wrench } from "lucide-react";
 import { LegacyMascot } from "./LegacyMascot";
 import { AISetupWizard } from "./AISetupWizard";
+import type { AgentState } from "./LegacyAgent";
 
 function api() { return window.go?.main?.App; }
 
-export function LegacyAIPage({ snap }: { snap?: any }) {
+interface LegacyAIPageProps {
+  snap?: any;
+  agentState: AgentState;
+  setAgentState: (s: AgentState) => void;
+  agentSpeech: string;
+  setAgentSpeech: (s: string) => void;
+}
+
+export function LegacyAIPage({ snap, setAgentState, setAgentSpeech }: LegacyAIPageProps) {
   const [input, setInput] = useState("");
   const [chat, setChat] = useState<{ role: string; content: string }[]>([]);
   const [generating, setGenerating] = useState(false);
@@ -35,8 +44,11 @@ export function LegacyAIPage({ snap }: { snap?: any }) {
     const msg = input.trim(); if (!msg || generating) return;
     setInput(""); setGenerating(true); setError("");
     setChat(p => [...p, { role: "user", content: msg }]);
+    setAgentState("listen");
+    setAgentSpeech(`"${msg.slice(0, 60)}${msg.length > 60 ? "..." : ""}"`);
 
     if (mode === "developer" && msg.startsWith("/")) {
+      setAgentSpeech(`Running: ${msg.slice(1, 50)}`);
       await executeTool(msg.slice(1));
       setGenerating(false);
       return;
@@ -44,23 +56,43 @@ export function LegacyAIPage({ snap }: { snap?: any }) {
 
     try {
       const a = api(); if (!a?.AIChat) { setError("AI unavailable"); return; }
+      setAgentState("think");
+      setAgentSpeech("Analyzing your wallet data...");
       const r = await a.AIChat(msg, mode);
-      setChat(p => [...p, { role: "assistant", content: r?.content || r?.error || "No response" }]);
-    } catch (e: any) { setError(e?.message); }
-    finally { setGenerating(false); }
+      const content = r?.content || r?.error || "No response";
+      setChat(p => [...p, { role: "assistant", content }]);
+      setAgentState("speak");
+      setAgentSpeech(content.slice(0, 200) + (content.length > 200 ? "..." : ""));
+    } catch (e: any) {
+      setError(e?.message);
+      setAgentState("error");
+      setAgentSpeech(e?.message || "AI request failed");
+    }
+    finally {
+      setGenerating(false);
+      setTimeout(() => { setAgentState("idle"); setAgentSpeech(""); }, 3000);
+    }
   }
 
   async function executeTool(cmd: string) {
     const a = api();
     if (!a?.AIToolExecute) { setChat(p => [...p, { role: "system", content: "Tool execution not available" }]); return; }
     setChat(p => [...p, { role: "tool", content: `Running: ${cmd}` }]);
+    setAgentState("code");
     try {
       const r = await a.AIToolExecute(cmd);
       const output = r.stdout || r.stderr || "(no output)";
       const truncated = r.truncated ? "\n[output truncated]" : "";
       const info = `[${r.allowed ? "ALLOWED" : "BLOCKED"}] ${r.duration} exit=${r.exit_code}`;
       setChat(p => [...p, { role: "tool", content: `${info}\n${output}${truncated}` }]);
-    } catch (e: any) { setChat(p => [...p, { role: "system", content: `Tool error: ${e?.message}` }]); }
+      setAgentState(r.exit_code === 0 && r.allowed ? "success" : "error");
+      setAgentSpeech(r.allowed ? `Exit ${r.exit_code} in ${r.duration}` : "Blocked or failed");
+    } catch (e: any) {
+      setChat(p => [...p, { role: "system", content: `Tool error: ${e?.message}` }]);
+      setAgentState("error");
+      setAgentSpeech(e?.message || "Tool execution failed");
+    }
+    setTimeout(() => { setAgentState("idle"); setAgentSpeech(""); }, 3000);
   }
 
   function mascotExpression() {
