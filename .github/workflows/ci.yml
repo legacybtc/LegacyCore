@@ -108,6 +108,11 @@ jobs:
           chmod +x ./scripts/chaos-ci-smoke.sh
           bash ./scripts/chaos-ci-smoke.sh ./legacycoind ./legacycoin-cli ./.tmp-chaos-ci
 
+      - name: Go mod download (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: go mod download
+
       - name: Go test short (Windows)
         if: runner.os == 'Windows'
         shell: pwsh

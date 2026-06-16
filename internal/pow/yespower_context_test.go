@@ -146,12 +146,13 @@ func TestChainContextCounterIncremented(t *testing.T) {
 		t.Skipf("requires production yespower backend")
 	}
 	before := chainInit.Load()
+	prevFree := chainFree.Load()
 	RecordChainContextInit()
 	if got := chainInit.Load() - before; got != 1 {
 		t.Errorf("chain init delta=%d want 1", got)
 	}
 	RecordChainContextFree()
-	if got := chainFree.Load() - before; got != 1 {
+	if got := chainFree.Load() - prevFree; got != 1 {
 		t.Errorf("chain free delta=%d want 1", got)
 	}
 }
@@ -160,12 +161,17 @@ func TestCountersAfterAllClosed(t *testing.T) {
 	if BackendName() != "cgo-c-reference" {
 		t.Skipf("requires production yespower backend")
 	}
+	prevChainInit := chainInit.Load()
+	prevChainFree := chainFree.Load()
 	RecordChainContextInit()
 	RecordChainContextInit()
 	RecordChainContextFree()
 	RecordChainContextFree()
-	wInit := localInit.Load()
-	wFree := localFree.Load()
+	if chainInit.Load()-prevChainInit != 2 || chainFree.Load()-prevChainFree != 2 {
+		t.Error("chain init/free should both increment by 2")
+	}
+	prevWInit := localInit.Load()
+	prevWFree := localFree.Load()
 	for i := 0; i < 3; i++ {
 		hasher := YespowerHasher{Personalization: "LegacyCoinPoW"}
 		ctx := hasher.NewContext()
@@ -173,11 +179,12 @@ func TestCountersAfterAllClosed(t *testing.T) {
 		RecordWorkerContextFree()
 		ctx.Close()
 	}
-	if localInit.Load() != wInit+3 || localFree.Load() != wFree+3 {
-		t.Error("worker init/free should both increment by 3")
+	if localInit.Load()-prevWInit != 3 || localFree.Load()-prevWFree != 3 {
+		t.Errorf("worker init delta=%d free delta=%d want both 3",
+			localInit.Load()-prevWInit, localFree.Load()-prevWFree)
 	}
-	total := (localInit.Load() - localFree.Load()) + (chainInit.Load() - chainFree.Load())
+	total := (localInit.Load()-prevWInit) - (localFree.Load()-prevWFree) + (chainInit.Load()-prevChainInit) - (chainFree.Load()-prevChainFree)
 	if total != 0 {
-		t.Errorf("total active contexts=%d want 0", total)
+		t.Errorf("total active contexts delta=%d want 0", total)
 	}
 }
