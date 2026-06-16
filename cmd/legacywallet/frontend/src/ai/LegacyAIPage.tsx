@@ -92,14 +92,31 @@ export function LegacyAIPage({ snap, setAgentState, setAgentSpeech }: LegacyAIPa
   async function doResearch() {
     const q = input.trim(); if (!q || generating) return;
     setInput(""); setGenerating(true); setError("");
-    setChat(p => [...p, { role: "user", content: "Research: " + q }]);
-    setAgentState("search"); setAgentSpeech("Searching: " + q);
-    const a = api();
+    setChat(p => [...p, { role: "user", content: q }]);
+    setAgentState("search"); setAgentSpeech("Searching web: " + q);
+
     try {
-      let result = "";
-      if (a?.AIChat) { const r = await a.AIChat(q, mode); result = r?.content || ""; }
-      setChat(p => [...p, { role: "assistant", content: "**Research: " + q + "**\n\n" + (result || "Try a more specific query. Web search is powered by DuckDuckGo.") + "\n\n*DuckDuckGo • No tracking*" }]);
-      setAgentState("speak");
+      const a = api();
+      if (a?.AIResearch) {
+        const r = await a.AIResearch(q);
+        if (r?.ok && r?.results?.length > 0) {
+          const results = r.results as any[];
+          const formatted = results.map((item: any, i: number) =>
+            `**${i + 1}. ${item.title}**\n${item.snippet}\n${item.url}`
+          ).join("\n\n");
+          setChat(p => [...p, {
+            role: "assistant",
+            content: `**Web results for: "${q}"** (${results.length} found)\n\n${formatted}\n\n*Powered by DuckDuckGo • No tracking*`
+          }]);
+          setAgentState("success"); setAgentSpeech(`Found ${results.length} results`);
+        } else {
+          setChat(p => [...p, { role: "assistant", content: `No results found for "${q}". Try different keywords.` }]);
+          setAgentState("warning");
+        }
+      } else {
+        setError("Research not available");
+        setAgentState("error");
+      }
     } catch (e: any) { setError(e?.message); setAgentState("error"); }
     finally { setGenerating(false); setTimeout(() => setAgentState("idle"), 3000); }
   }

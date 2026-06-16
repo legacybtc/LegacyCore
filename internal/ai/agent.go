@@ -11,8 +11,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/net/html"
 )
 
 type WebSearcher struct {
@@ -41,12 +39,12 @@ func (ws *WebSearcher) Search(ctx context.Context, query string, maxResults int)
 	ctx, cancel := context.WithTimeout(ctx, ws.timeout)
 	defer cancel()
 
-	searchURL := fmt.Sprintf("https://html.duckduckgo.com/html/?q=%s", url.QueryEscape(query))
-	req, err := http.NewRequestWithContext(ctx, "GET", searchURL, nil)
+	apiURL := fmt.Sprintf("https://api.duckduckgo.com/?q=%s&format=json&no_html=1&skip_disambig=1", url.QueryEscape(query))
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "LegacyWallet/1.0.6 (AI Companion; +https://github.com/legacybtc/LegacyCore)")
+	req.Header.Set("User-Agent", "LegacyWallet/1.0.6 (AI Companion)")
 
 	resp, err := ws.client.Do(req)
 	if err != nil {
@@ -58,7 +56,68 @@ func (ws *WebSearcher) Search(ctx context.Context, query string, maxResults int)
 		return nil, fmt.Errorf("search returned %d", resp.StatusCode)
 	}
 
-	return parseDuckDuckGoResults(resp.Body, maxResults), nil
+	return parseDuckDuckGoJSON(resp.Body, maxResults), nil
+}
+
+type ddgResponse struct {
+	AbstractText string `json:"AbstractText"`
+	AbstractURL  string `json:"AbstractURL"`
+	AbstractSource string `json:"AbstractSource"`
+	Heading      string `json:"Heading"`
+	RelatedTopics []struct {
+		Text     string `json:"Text"`
+		FirstURL string `json:"FirstURL"`
+		Icon     struct{ URL string } `json:"Icon"`
+	} `json:"RelatedTopics"`
+}
+
+func parseDuckDuckGoJSON(body io.Reader, max int) []SearchResult {
+	var resp ddgResponse
+	if err := json.NewDecoder(body).Decode(&resp); err != nil {
+		return nil
+	}
+
+	results := make([]SearchResult, 0, max)
+
+	// Add abstract (main answer) first
+	if resp.AbstractText != "" {
+		snippet := resp.AbstractText
+		if len(snippet) > 300 {
+			snippet = snippet[:300] + "..."
+		}
+		results = append(results, SearchResult{
+			Title:   resp.Heading,
+			Snippet: snippet,
+			URL:     resp.AbstractURL,
+		})
+	}
+
+	// Add related topics
+	for _, topic := range resp.RelatedTopics {
+		if len(results) >= max {
+			break
+		}
+		text := strings.TrimSpace(topic.Text)
+		if text == "" {
+			continue
+		}
+		// Extract title from the first sentence
+		title := text
+		url := topic.FirstURL
+		if idx := strings.Index(text, " - "); idx > 0 {
+			title = text[:idx]
+		}
+		if len(text) > 300 {
+			text = text[:300] + "..."
+		}
+		results = append(results, SearchResult{
+			Title:   title,
+			Snippet: text,
+			URL:     url,
+		})
+	}
+
+	return results
 }
 
 func (ws *WebSearcher) FormatResults(results []SearchResult) string {
@@ -68,87 +127,6 @@ func (ws *WebSearcher) FormatResults(results []SearchResult) string {
 	var sb strings.Builder
 	for i, r := range results {
 		sb.WriteString(fmt.Sprintf("%d. **%s**\n   %s\n   %s\n\n", i+1, r.Title, r.Snippet, r.URL))
-	}
-	return sb.String()
-}
-
-func parseDuckDuckGoResults(body io.Reader, max int) []SearchResult {
-	results := make([]SearchResult, 0, max)
-	doc, err := html.Parse(body)
-	if err != nil {
-		return results
-	}
-
-	var current *SearchResult
-	var inSnippet bool
-
-	var walk func(*html.Node)
-	walk = func(n *html.Node) {
-		if n.Type == html.ElementNode {
-			switch {
-			case n.Data == "a" && hasClass(n, "result__a"):
-				current = &SearchResult{}
-				current.URL = getAttr(n, "href")
-				current.Title = getText(n)
-
-			case n.Data == "a" && hasClass(n, "result__snippet"):
-				if current != nil {
-					current.Snippet = strings.TrimSpace(getText(n))
-					results = append(results, *current)
-					current = nil
-					inSnippet = false
-					if len(results) >= max {
-						return
-					}
-				}
-
-			case n.Data == "span" && hasClass(n, "result__snippet"):
-				inSnippet = true
-			}
-		}
-		if n.FirstChild != nil {
-			walk(n.FirstChild)
-		}
-		if n.NextSibling != nil && len(results) < max {
-			walk(n.NextSibling)
-		}
-		_ = inSnippet
-	}
-	if doc != nil {
-		walk(doc)
-	}
-	return results
-}
-
-func hasClass(n *html.Node, class string) bool {
-	for _, attr := range n.Attr {
-		if attr.Key == "class" {
-			for _, c := range strings.Fields(attr.Val) {
-				if strings.HasPrefix(c, class) || c == class {
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
-func getAttr(n *html.Node, key string) string {
-	for _, attr := range n.Attr {
-		if attr.Key == key {
-			return attr.Val
-		}
-	}
-	return ""
-}
-
-func getText(n *html.Node) string {
-	if n.Type == html.TextNode {
-		return n.Data
-	}
-	var sb strings.Builder
-	for c := n.FirstChild; c != nil; c = c.NextSibling {
-		sb.WriteString(getText(c))
 	}
 	return sb.String()
 }

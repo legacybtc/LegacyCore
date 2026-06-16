@@ -1321,3 +1321,16 @@ func (a *App) AIImageGenerate(prompt string, width int, height int, model string
 		"model": result.Model, "size": result.Size,
 	}
 }
+
+func (a *App) AIResearch(query string) map[string]any {
+	searcher := ai.NewWebSearcher()
+	results, err := searcher.Search(context.Background(), query, 5)
+	if err != nil {
+		return map[string]any{"ok": false, "error": err.Error(), "query": query}
+	}
+	out := make([]map[string]any, len(results))
+	for i, r := range results {
+		out[i] = map[string]any{"title": r.Title, "snippet": r.Snippet, "url": r.URL}
+	}
+	return map[string]any{"ok": true, "query": query, "results": out, "count": len(results)}
+}

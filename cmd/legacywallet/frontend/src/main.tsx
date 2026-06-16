@@ -145,6 +145,7 @@ type Backend = {
   AIImageGenerate(prompt: string, width: number, height: number, model: string): Promise<Dict>;
   AIModels(): Promise<Dict[]>;
   AIConfigure(provider: string, apiKey: string, model: string): Promise<Dict>;
+  AIResearch(query: string): Promise<Dict>;
 };
 
 declare global {

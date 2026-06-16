@@ -30,6 +30,10 @@ export function AIModels() {
   return window['go']['main']['App']['AIModels']();
 }
 
+export function AIResearch(arg1) {
+  return window['go']['main']['App']['AIResearch'](arg1);
+}
+
 export function AIStart() {
   return window['go']['main']['App']['AIStart']();
 }

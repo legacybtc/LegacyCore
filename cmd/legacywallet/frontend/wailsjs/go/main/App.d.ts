@@ -18,6 +18,8 @@ export function AIListTools():Promise<Array<string>>;
 
 export function AIModels():Promise<Array<ai.ModelInfo>>;
 
+export function AIResearch(arg1:string):Promise<Record<string, any>>;
+
 export function AIStart():Promise<Record<string, any>>;
 
 export function AIStop():Promise<Record<string, any>>;
