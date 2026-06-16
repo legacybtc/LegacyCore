@@ -1310,3 +1310,124 @@ func TestCheckSafeToMineGraceDoesNotResetOnRepeatedEvaluation(t *testing.T) {
 		}
 	}
 }
+
+func TestMiningLivenessOneExactPlusOneLaggingBlock(t *testing.T) {
+	input := safeMiningInput()
+	input.AgreeingPeerCount = 1
+	input.CompatiblePeerCount = 3
+	input.Lagging1PeerCount = 2
+	input.MinAgreeingPeers = 2
+	input.ConflictingTipPeerCount = 0
+	input.StrongerChainworkPeerCount = 0
+	input.WrongChainPeerCount = 0
+	input.ProtocolErrorPeerCount = 0
+	input.BlocksBehind = 0
+	input.BlocksBehindAllowed = 1
+
+	status := CheckSafeToMine(input)
+	if !status.Safe {
+		t.Fatalf("1 exact + 2 lagging-1-block should allow mining: %+v", status)
+	}
+	if status.State != "degraded" {
+		t.Fatalf("expected degraded state, got %q: %+v", status.State, status)
+	}
+}
+
+func TestMiningLivenessTwoExactPeers(t *testing.T) {
+	input := safeMiningInput()
+	input.AgreeingPeerCount = 2
+	input.CompatiblePeerCount = 2
+	input.MinAgreeingPeers = 2
+
+	status := CheckSafeToMine(input)
+	if !status.Safe || status.State != "safe" {
+		t.Fatalf("2 exact peers should allow mining: %+v", status)
+	}
+}
+
+func TestMiningLivenessNoExactPeerBlocks(t *testing.T) {
+	input := safeMiningInput()
+	input.AgreeingPeerCount = 0
+	input.CompatiblePeerCount = 2
+	input.Lagging1PeerCount = 2
+	input.MinAgreeingPeers = 2
+	input.PeerGraceSeconds = 0
+
+	status := CheckSafeToMine(input)
+	if status.Safe && status.State != "degraded" {
+		t.Fatalf("0 exact peers should block mining: %+v", status)
+	}
+}
+
+func TestMiningLivenessBlockedByConflictingTipEvenWithLagging(t *testing.T) {
+	input := safeMiningInput()
+	input.AgreeingPeerCount = 1
+	input.CompatiblePeerCount = 3
+	input.Lagging1PeerCount = 1
+	input.ConflictingTipPeerCount = 1
+	input.MinAgreeingPeers = 2
+
+	status := CheckSafeToMine(input)
+	if status.Safe || status.State == "degraded" {
+		t.Fatalf("conflicting tip must block even with lagging peers: %+v", status)
+	}
+}
+
+func TestMiningLivenessBlockedByStrongerChainwork(t *testing.T) {
+	input := safeMiningInput()
+	input.AgreeingPeerCount = 1
+	input.Lagging1PeerCount = 1
+	input.StrongerChainworkPeerCount = 1
+	input.MinAgreeingPeers = 2
+
+	status := CheckSafeToMine(input)
+	if status.Safe || status.State == "degraded" {
+		t.Fatalf("stronger chainwork must block: %+v", status)
+	}
+}
+
+func TestMiningLivenessBlockedByWrongChain(t *testing.T) {
+	input := safeMiningInput()
+	input.AgreeingPeerCount = 1
+	input.Lagging1PeerCount = 1
+	input.WrongChainPeerCount = 1
+	input.MinAgreeingPeers = 2
+
+	status := CheckSafeToMine(input)
+	if status.Safe || status.State == "degraded" {
+		t.Fatalf("wrong chain must block: %+v", status)
+	}
+}
+
+func TestMiningLivenessBlockedByProtocolError(t *testing.T) {
+	input := safeMiningInput()
+	input.AgreeingPeerCount = 1
+	input.Lagging1PeerCount = 1
+	input.ProtocolErrorPeerCount = 1
+	input.MinAgreeingPeers = 2
+
+	status := CheckSafeToMine(input)
+	if status.Safe || status.State == "degraded" {
+		t.Fatalf("protocol error must block: %+v", status)
+	}
+}
+
+func TestMiningLivenessRecoveryFromLaggingToExact(t *testing.T) {
+	input := safeMiningInput()
+	input.AgreeingPeerCount = 1
+	input.CompatiblePeerCount = 3
+	input.Lagging1PeerCount = 2
+	input.MinAgreeingPeers = 2
+
+	status1 := CheckSafeToMine(input)
+	if status1.State != "degraded" {
+		t.Fatalf("should be degraded with 1 exact + 2 lagging: %+v", status1)
+	}
+
+	input.AgreeingPeerCount = 2
+	input.Lagging1PeerCount = 1
+	status2 := CheckSafeToMine(input)
+	if !status2.Safe {
+		t.Fatalf("should recover to safe when second peer catches up: %+v", status2)
+	}
+}

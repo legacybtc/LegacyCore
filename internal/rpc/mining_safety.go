@@ -409,6 +409,18 @@ func CheckSafeToMine(input MiningSafetyInput) MiningSafetyStatus {
 	status.LastLocalBlockAnnouncementTime = input.LastLocalBlockAnnouncementTime
 	status.LocalBlockAnnouncementTargetCount = input.LocalBlockAnnouncementTargetCount
 	if minAgreeingPeers > 0 && agreeingPeerCount < minAgreeingPeers {
+		if agreeingPeerCount >= 1 &&
+			input.CompatiblePeerCount >= int(minAgreeingPeers) &&
+			input.Lagging1PeerCount >= 1 &&
+			input.ConflictingTipPeerCount == 0 &&
+			input.StrongerChainworkPeerCount == 0 &&
+			input.WrongChainPeerCount == 0 &&
+			input.ProtocolErrorPeerCount == 0 &&
+			input.BlocksBehind <= int32(input.BlocksBehindAllowed) {
+			status.State = "degraded"
+			status.Reason = "Mining degraded: one or more healthy peers are 1 block behind (normal propagation). Mining continues."
+			return status
+		}
 		if input.LocalBlockPropagationGraceActive {
 			graceState := "degraded"
 			graceReason := "Locally mined block is propagating to peers; mining continues during a bounded safety grace."
