@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
@@ -1189,9 +1190,51 @@ func (a *App) AIChat(message string, mode string) map[string]any {
 	return map[string]any{"content": resp}
 }
 func (a *App) AIStart() map[string]any {
-	if a.aiMgr == nil { a.aiMgr = ai.NewLifecycleManager(ai.NewMockProvider(), nil) }
-	if err := a.aiMgr.Start(context.Background(), ai.DefaultConfig()); err != nil { return map[string]any{"ok": false, "error": err.Error()} }
-	return map[string]any{"ok": true}
+	if a.aiMgr == nil {
+		provider := a.autoSelectProvider()
+		a.aiMgr = ai.NewLifecycleManager(provider, nil)
+	}
+	if err := a.aiMgr.Start(context.Background(), ai.DefaultConfig()); err != nil {
+		return map[string]any{"ok": false, "error": err.Error()}
+	}
+	gpu := ai.DetectGPU()
+	return map[string]any{
+		"ok": true, "backend": a.aiMgr.Config().Provider,
+		"gpu": map[string]any{"vendor": gpu.Vendor, "name": gpu.Name, "vram_mb": gpu.VRAMMB},
+	}
+}
+
+func (a *App) autoSelectProvider() ai.AIProvider {
+	gpu := ai.DetectGPU()
+	llamaPath := findLlamaBinary()
+	if llamaPath != "" {
+		return ai.NewLlamaProvider(ai.LlamaConfig{
+			BinaryPath:       llamaPath,
+			Host:             "127.0.0.1",
+			Port:             19570,
+			GPUOffloadLayers: gpuOffloadLayers(gpu),
+			ContextSize:      2048,
+			Threads:          4,
+		})
+	}
+	return ai.NewMockProvider()
+}
+
+func findLlamaBinary() string {
+	if path, err := exec.LookPath("llama-server"); err == nil {
+		return path
+	}
+	return ""
+}
+
+func gpuOffloadLayers(gpu ai.GPUInfo) int {
+	if gpu.VRAMMB >= 6000 {
+		return 99
+	}
+	if gpu.VRAMMB >= 2000 {
+		return 32
+	}
+	return 0
 }
 func (a *App) AIStop() map[string]any {
 	if a.aiMgr == nil { return map[string]any{"ok": true} }
