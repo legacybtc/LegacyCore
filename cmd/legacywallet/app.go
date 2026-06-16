@@ -531,7 +531,13 @@ func (a *App) ReconnectPeers() (map[string]any, error) {
 	ns := a.settings.Network.withDefaults()
 	a.mu.Unlock()
 	if ns.Mode == "automatic" {
-		return map[string]any{"status": "automatic", "message": "Automatic DNS seed discovery is active."}, nil
+		result, err := a.service.ForcePeerSync("UI reconnect seeds")
+		if err != nil {
+			return map[string]any{"status": "error", "message": err.Error()}, nil
+		}
+		result["status"] = "automatic"
+		result["message"] = "Seeds reconnected"
+		return result, nil
 	}
 	results := []string{}
 	for _, node := range ns.Nodes {
