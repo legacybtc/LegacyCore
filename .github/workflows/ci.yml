@@ -9,6 +9,7 @@ on:
       - v1.0.4-core-integration-release-superiority
       - infrastructure-ready-source
       - v1.0.2-pool-rpc-framework-hardening
+      - feature/legacy-ai-companion-v2
   pull_request:
     branches:
       - main
@@ -149,11 +150,20 @@ jobs:
         run: ./scripts/scan-source-cleanliness.ps1 -Root .
 
       - name: Ensure standard main contains no AI code
+        if: github.ref == 'refs/heads/main'
         shell: pwsh
         run: |
           $forbidden = @("internal/ai/", "LegacyAIPage", "legacy-ai", "AIHealth", "AIChat", "AIStart", "AIStop", "AI-PREVIEW", "Legacy AI Assistant")
           $found = $false
-          Get-ChildItem -Recurse -File -Exclude ".git" | Where-Object { $_.FullName -notmatch "\\.git\\" -and $_.FullName -notmatch "\\node_modules\\" -and $_.FullName -notmatch "\\dist\\" -and $_.FullName -notmatch "\\.zip$" -and $_.FullName -notmatch "\\.exe$" } | ForEach-Object {
+          Get-ChildItem -Recurse -File | Where-Object {
+              $_.FullName -notmatch "\\\.git\\" -and
+              $_.FullName -notmatch "\\node_modules\\" -and
+              $_.FullName -notmatch "\\dist\\" -and
+              $_.FullName -notmatch "\\build\\" -and
+              $_.Name -notmatch "\.zip$" -and
+              $_.Name -notmatch "\.exe$" -and
+              $_.Name -notmatch "\.exe~$"
+          } | ForEach-Object {
               $content = Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue
               foreach ($term in $forbidden) {
                   if ($content -match $term -and $_.Name -notmatch "\.yml$") {

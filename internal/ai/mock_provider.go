@@ -55,6 +55,16 @@ func generateMockResponse(req ChatRequest) string {
 	}
 
 	switch {
+	case strings.Contains(msg, "hello") || strings.Contains(msg, "hi ") || msg == "hi" || strings.Contains(msg, "hey") || strings.Contains(msg, "greeting"):
+		return fmt.Sprintf("Hello! I'm Legacy AI Companion, your local privacy-first assistant. Your node is at height %d, %s with %d peers. How can I help?", s.Height, s.SyncState, s.PeerCount)
+	case strings.Contains(msg, "how are you") || msg == "howdy":
+		return "I'm operational! Ready to help with your node, mining, peers, rewards, or any storage questions. What would you like to know?"
+	case strings.Contains(msg, "what can you do") || strings.Contains(msg, "help me") || msg == "help":
+		return "I can help with: sync status, mining safety, peer connections, immature rewards, RPC health, storage checks, GPU info, and balance inquiries. I'm fully local — no data leaves your machine."
+	case strings.Contains(msg, "thank") || strings.Contains(msg, "thanks"):
+		return "You're welcome! Feel free to ask anything about your node or wallet."
+	case strings.Contains(msg, "who are you") || strings.Contains(msg, "what are you"):
+		return "I'm Legacy AI Companion — a locally-running, privacy-first AI assistant for your LegacyCoin wallet. I run entirely on your machine. No cloud, no tracking, no secrets shared."
 	case strings.Contains(msg, "miner") && (strings.Contains(msg, "pause") || strings.Contains(msg, "stop")):
 		if s.MiningSafe && s.MinerState == "running" {
 			return fmt.Sprintf("Your miner is running safely with %d active threads at %s KH/s.", s.ActiveThreads, s.LocalHashrate)
@@ -99,6 +109,10 @@ func generateMockResponse(req ChatRequest) string {
 
 func generateDeveloperResponse(msg string, s SanitizedSnapshot) string {
 	switch {
+	case strings.Contains(msg, "hello") || strings.Contains(msg, "hi ") || msg == "hi" || strings.Contains(msg, "hey"):
+		return fmt.Sprintf("Hello! Developer mode active. Node height %d, %d peers. Use /help for available tools.", s.Height, s.PeerCount)
+	case strings.Contains(msg, "how are you"):
+		return "Developer mode operational. Ready to execute allowlisted commands. Type /help to see tools."
 	case strings.Contains(msg, "blockchain"):
 		return "Developer mode: Use /legacycoin-cli getblockchaininfo to query chain state directly."
 	case strings.Contains(msg, "peer"):
