@@ -94,7 +94,7 @@ export function LegacyAIPage({ snap }: { snap?: any }) {
           <h3>Legacy AI <span style={{fontSize:12,opacity:0.6,marginLeft:8}}>{mode === "developer" ? "dev" : ""}</span></h3>
           <p>Fully local AI assistant. No cloud. No secrets shared.</p>
         </div>
-        <span className="pill good">Experimental Preview</span>
+        <span className="pill">v1.0.6</span>
       </div>
 
       <div className="row" style={{gap:8,marginBottom:12,flexWrap:"wrap"}}>
