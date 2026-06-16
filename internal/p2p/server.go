@@ -1100,9 +1100,9 @@ func (s *Server) ForceSync(reason string) map[string]any {
 	if s.PeerCount() == 0 {
 		s.clearOutboundThrottle()
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
 		s.noteWatchdogAction("force sync with no peers: reconnecting bootstrap peers")
 		s.connectSeeds(ctx)
-		cancel()
 	}
 	s.requestSyncFromAheadPeers(true)
 	return s.SyncStatus()
