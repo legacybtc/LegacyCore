@@ -72,15 +72,20 @@ jobs:
           update: true
           install: mingw-w64-ucrt-x86_64-gcc
 
-      - name: Test and vet (Linux)
+      - name: Go mod download (Linux)
+        if: runner.os == 'Linux'
+        run: go mod download
+
+      - name: Go test short (Linux)
         if: runner.os == 'Linux'
         env:
           CGO_ENABLED: "1"
           CC: gcc
-        run: |
-          go mod download
-          go test -short ./...
-          go vet ./...
+        run: go test -short -count=1 ./...
+
+      - name: Go vet (Linux)
+        if: runner.os == 'Linux'
+        run: go vet ./...
 
       - name: Build binaries (Linux)
         if: runner.os == 'Linux'
@@ -103,7 +108,7 @@ jobs:
           chmod +x ./scripts/chaos-ci-smoke.sh
           bash ./scripts/chaos-ci-smoke.sh ./legacycoind ./legacycoin-cli ./.tmp-chaos-ci
 
-      - name: Test and vet (Windows)
+      - name: Go test short (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         env:
@@ -111,9 +116,12 @@ jobs:
           CC: gcc
         run: |
           $env:Path = "C:\msys64\ucrt64\bin;$env:Path"
-          go mod download
-          go test -short ./...
-          go vet ./...
+          go test -short -count=1 ./...
+
+      - name: Go vet (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: go vet ./...
 
       - name: Build binaries (Windows)
         if: runner.os == 'Windows'
