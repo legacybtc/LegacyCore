@@ -26,3 +26,4 @@ testdata/
 
 # Local temporary Linux build folder
 .tmp-linux-build/
+TEST-BUILD-*

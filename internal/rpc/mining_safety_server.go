@@ -259,11 +259,28 @@ func (s *Server) applyMiningPeerAgreementWindow(input *MiningSafetyInput) {
 		input.ProtocolErrorPeerCount > 0 ||
 		input.BlocksBehind > int32(input.BlocksBehindAllowed)
 	if minAgreeing <= 0 || immediateRisk {
+		// Clear local block propagation grace on the server so stale state
+		// does not persist when the danger condition resolves.
+		s.minerMu.Lock()
+		if s.minerLocalBlockGraceActive {
+			s.minerLocalBlockGraceActive = false
+			s.minerLocalBlockGraceHash = ""
+			s.minerLocalBlockGraceHeight = 0
+			s.minerLocalBlockGraceStartedAt = time.Time{}
+		}
+		s.minerMu.Unlock()
 		return
 	}
 	now := time.Now()
 	s.minerMu.Lock()
 	defer s.minerMu.Unlock()
+	if s.applyLocalBlockPropagationGraceLocked(input, now, minAgreeing) {
+		// Local block propagation grace was denied due to a danger condition
+		// (expired, incompatible peers, reorg, conflicting tip, etc.).
+		// Mining must pause immediately — do not fall through to ordinary
+		// peer-agreement grace.
+		return
+	}
 	if input.AgreeingPeerCount < minAgreeing {
 		if s.minerPeerAgreementLostSince.IsZero() {
 			s.minerPeerAgreementLostSince = now
@@ -294,6 +311,66 @@ func (s *Server) applyMiningPeerAgreementWindow(input *MiningSafetyInput) {
 	}
 	s.minerPeerAgreementRecoveredSince = time.Time{}
 	s.minerPeerAgreementPaused = false
+}
+
+func (s *Server) applyLocalBlockPropagationGraceLocked(input *MiningSafetyInput, now time.Time, minAgreeing int) bool {
+	if !s.minerLocalBlockGraceActive {
+		return false
+	}
+	graceSeconds := defaultLocalBlockPropagationSeconds
+	clearGrace := func() {
+		s.minerLocalBlockGraceActive = false
+		s.minerLocalBlockGraceHash = ""
+		s.minerLocalBlockGraceHeight = 0
+		s.minerLocalBlockGraceStartedAt = time.Time{}
+	}
+	elapsed := now.Sub(s.minerLocalBlockGraceStartedAt)
+	remaining := int((time.Duration(graceSeconds)*time.Second - elapsed + time.Second - 1) / time.Second)
+	if remaining < 0 {
+		remaining = 0
+	}
+	if s.chain == nil {
+		clearGrace()
+		return true
+	}
+	if elapsed >= time.Duration(graceSeconds)*time.Second {
+		clearGrace()
+		input.LocalBlockPropagationGraceRemaining = 0
+		return true
+	}
+	tip := s.chain.Tip()
+	if tip == nil || tip.Hash == "" {
+		clearGrace()
+		return true
+	}
+	if tip.Hash != s.minerLocalBlockGraceHash || tip.Height != s.minerLocalBlockGraceHeight {
+		clearGrace()
+		return true
+	}
+	if input.AgreeingPeerCount >= minAgreeing {
+		clearGrace()
+		return false
+	}
+	if input.CompatiblePeerCount < 2 {
+		clearGrace()
+		return true
+	}
+	if input.ConflictingTipPeerCount > 0 || input.StrongerChainworkPeerCount > 0 ||
+		input.WrongChainPeerCount > 0 || input.ProtocolErrorPeerCount > 0 {
+		clearGrace()
+		return true
+	}
+	if input.BlocksBehind > int32(input.BlocksBehindAllowed) {
+		clearGrace()
+		return true
+	}
+	input.LocalBlockPropagationGraceActive = true
+	input.LocalBlockPropagationGraceRemaining = remaining
+	input.LocalBlockPropagationHeight = s.minerLocalBlockGraceHeight
+	input.LocalBlockPropagationHash = s.minerLocalBlockGraceHash
+	input.LastLocalBlockAnnouncementTime = s.minerLastLocalBlockAnnouncement.Unix()
+	input.LocalBlockAnnouncementTargetCount = s.minerLocalBlockAnnouncementPeers
+	return false
 }
 
 func miningTemplateSoftRefreshAge() time.Duration {

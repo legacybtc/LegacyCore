@@ -190,6 +190,20 @@ function App() {
   });
   const refreshInFlight = useRef(false);
   const messageSeq = useRef(1);
+  const [pollStats, setPollStats] = useState({
+    cyclesStarted: 0,
+    cyclesCompleted: 0,
+    cyclesSkipped: 0,
+    snapshotInFlight: 0,
+    maxConcurrentSnapshots: 0,
+    snapshotLatencyMs: 0,
+    maxSnapshotLatencyMs: 0,
+    activePollTimers: 0,
+    totalMounts: 1,
+    totalUnmounts: 0,
+    currentMounted: 1,
+    maxMounted: 1,
+  });
 
   function pushMessage(tone: AlertTone, title: string, text: string, critical = false) {
     const next: UIMessage = { id: messageSeq.current++, tone, title, text, critical, ts: Date.now() };
@@ -210,14 +224,32 @@ function App() {
   }
 
   async function refresh() {
-    if (refreshInFlight.current) return;
+    setPollStats(s => ({ ...s, cyclesStarted: s.cyclesStarted + 1 }));
+    if (refreshInFlight.current) {
+      setPollStats(s => ({ ...s, cyclesSkipped: s.cyclesSkipped + 1 }));
+      return;
+    }
     refreshInFlight.current = true;
+    const inFlight = Math.max(1, pollStats.snapshotInFlight + 1);
+    setPollStats(s => ({
+      ...s, snapshotInFlight: inFlight,
+      maxConcurrentSnapshots: Math.max(s.maxConcurrentSnapshots, inFlight),
+    }));
+    const started = performance.now();
     try {
       setSnap(await api().Snapshot());
       setLastUpdated(Date.now());
     } catch (e) {
       pushMessage("danger", "Refresh failed", cleanError(e), true);
     } finally {
+      const elapsed = performance.now() - started;
+      setPollStats(s => ({
+        ...s,
+        cyclesCompleted: s.cyclesCompleted + 1,
+        snapshotInFlight: Math.max(0, s.snapshotInFlight - 1),
+        snapshotLatencyMs: Math.round(elapsed),
+        maxSnapshotLatencyMs: Math.max(s.maxSnapshotLatencyMs, Math.round(elapsed)),
+      }));
       refreshInFlight.current = false;
     }
   }
@@ -335,13 +367,36 @@ function App() {
 
   useEffect(() => {
     refresh();
+    return () => {
+      setPollStats(s => ({ ...s, totalUnmounts: s.totalUnmounts + 1, currentMounted: Math.max(0, s.currentMounted - 1) }));
+    };
   }, []);
+
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pollChainGen = useRef(0);
 
   useEffect(() => {
     localStorage.setItem("legacy-refresh-seconds", String(refreshInterval));
-    if (refreshInterval <= 0) return;
-    const id = setInterval(() => { void refresh(); }, refreshInterval * 1000);
-    return () => clearInterval(id);
+    if (refreshTimerRef.current) { clearTimeout(refreshTimerRef.current); refreshTimerRef.current = null; }
+    pollChainGen.current++;
+    if (refreshInterval <= 0) { setPollStats(s => ({ ...s, activePollTimers: 0 })); return; }
+    setPollStats(s => ({ ...s, activePollTimers: 1 }));
+
+    const gen = pollChainGen.current;
+    function schedule() {
+      if (gen !== pollChainGen.current) return;
+      refreshTimerRef.current = setTimeout(async () => {
+        if (gen !== pollChainGen.current) return;
+        await refresh();
+        if (gen === pollChainGen.current) schedule();
+      }, refreshInterval * 1000);
+    }
+    schedule();
+
+    return () => {
+      if (refreshTimerRef.current) { clearTimeout(refreshTimerRef.current); refreshTimerRef.current = null; }
+      setPollStats(s => ({ ...s, activePollTimers: 0 }));
+    };
   }, [refreshInterval]);
 
   const page = useMemo(() => {
@@ -369,7 +424,7 @@ function App() {
     if (tab === "transactions") return <ActivityPage {...p} />;
     if (tab === "mining") return <MiningPage {...p} />;
     if (tab === "network") return <NetworkPage {...p} />;
-    if (tab === "blockchain") return <NodePage {...p} {...ui} />;
+    if (tab === "blockchain") return <NodePage {...p} {...ui} pollStats={pollStats} />;
     if (tab === "explorer") return <ExplorerPage {...p} />;
     if (tab === "address-book") return <AddressBookPage />;
     if (tab === "rpc-console") return <RPCConsolePage snap={snap} />;
@@ -2467,7 +2522,8 @@ function NodePage({
   copyDataPath,
   copyConfigPath,
   portConflict,
-}: PageProps & SurfaceControls) {
+  pollStats,
+}: PageProps & SurfaceControls & { pollStats?: any }) {
   const [storage, setStorage] = useState<Dict | null>(null);
   const [doctor, setDoctor] = useState<Dict | null>(null);
   const chain = snap.blockchain || {};
@@ -2559,6 +2615,25 @@ function NodePage({
         {storage && <pre>{JSON.stringify(storage, null, 2)}</pre>}
         {doctor && <pre>{JSON.stringify(doctor, null, 2)}</pre>}
       </section>
+      {pollStats && (
+        <section className="panel">
+          <h3>Polling diagnostics</h3>
+          <div className="kv">
+            <div><span>Refresh cycles started</span><strong>{pollStats.cyclesStarted}</strong></div>
+            <div><span>Refresh cycles completed</span><strong>{pollStats.cyclesCompleted}</strong></div>
+            <div><span>Refresh cycles skipped (in-flight)</span><strong>{pollStats.cyclesSkipped}</strong></div>
+            <div><span>Snapshot calls in flight</span><strong>{pollStats.snapshotInFlight}</strong></div>
+            <div><span>Max concurrent Snapshots</span><strong>{pollStats.maxConcurrentSnapshots}</strong></div>
+            <div><span>Snapshot latency</span><strong>{pollStats.snapshotLatencyMs}ms</strong></div>
+            <div><span>Max Snapshot latency</span><strong>{pollStats.maxSnapshotLatencyMs}ms</strong></div>
+            <div><span>Active poll timers</span><strong>{pollStats.activePollTimers}</strong></div>
+            <div><span>Total mounts</span><strong>{pollStats.totalMounts}</strong></div>
+            <div><span>Total unmounts</span><strong>{pollStats.totalUnmounts}</strong></div>
+            <div><span>Current mounted instances</span><strong>{pollStats.currentMounted}</strong></div>
+            <div><span>Max mounted instances</span><strong>{pollStats.maxMounted}</strong></div>
+          </div>
+        </section>
+      )}
     </div>
   );
 }
