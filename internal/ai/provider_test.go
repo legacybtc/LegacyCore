@@ -31,7 +31,7 @@ func TestMockProviderChat(t *testing.T) {
 		if evt.Type == "error" { t.Fatal(evt.Error) }
 		resp.WriteString(evt.Content)
 	}
-	if !strings.Contains(resp.String(), "miner") { t.Fatalf("no miner in response: %s", resp.String()) }
+	if !strings.Contains(resp.String(), "mining") && !strings.Contains(resp.String(), "Mining") { t.Fatalf("no mining in response: %s", resp.String()) }
 }
 
 func TestLlamaProviderExternalHealth(t *testing.T) {
