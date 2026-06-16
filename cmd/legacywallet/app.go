@@ -1265,3 +1265,21 @@ func (a *App) AIListTools() []string {
 	if a.aiMgr == nil { return []string{} }
 	return a.aiMgr.ListTools()
 }
+
+func (a *App) AIModels() []ai.ModelInfo {
+	return ai.AvailableModels()
+}
+
+func (a *App) AIImageGenerate(prompt string, width int, height int, model string) map[string]any {
+	igp := ai.NewImageGenProvider()
+	result, err := igp.Generate(context.Background(), ai.ImageGenRequest{
+		Prompt: prompt, Width: width, Height: height, Model: model,
+	})
+	if err != nil {
+		return map[string]any{"ok": false, "error": err.Error()}
+	}
+	return map[string]any{
+		"ok": true, "image_url": result.ImageURL, "prompt": result.Prompt,
+		"model": result.Model, "size": result.Size,
+	}
+}

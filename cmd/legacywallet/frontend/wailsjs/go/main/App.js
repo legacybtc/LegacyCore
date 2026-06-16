@@ -14,8 +14,16 @@ export function AIHealth() {
   return window['go']['main']['App']['AIHealth']();
 }
 
+export function AIImageGenerate(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['AIImageGenerate'](arg1, arg2, arg3, arg4);
+}
+
 export function AIListTools() {
   return window['go']['main']['App']['AIListTools']();
+}
+
+export function AIModels() {
+  return window['go']['main']['App']['AIModels']();
 }
 
 export function AIStart() {

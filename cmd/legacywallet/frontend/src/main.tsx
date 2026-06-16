@@ -142,6 +142,8 @@ type Backend = {
   AIDetectGPU(): Promise<Dict>;
   AIToolExecute(cmdLine: string): Promise<Dict>;
   AIListTools(): Promise<string[]>;
+  AIImageGenerate(prompt: string, width: number, height: number, model: string): Promise<Dict>;
+  AIModels(): Promise<Dict[]>;
 };
 
 declare global {
@@ -446,7 +448,7 @@ function App() {
     if (tab === "rpc-console") return <RPCConsolePage snap={snap} />;
     if (tab === "settings") return <SettingsPage {...p} />;
     if (tab === "about") return <AboutPage snap={snap} />;
-    if (tab === "ai") return <LegacyAIPage snap={snap} agentState={agentState} setAgentState={setAgentState} agentSpeech={agentSpeech} setAgentSpeech={setAgentSpeech} />;
+    if (tab === "ai") return <LegacyAIPage snap={snap} setAgentState={setAgentState} setAgentSpeech={setAgentSpeech} />;
     return <Overview {...p} {...ui} />;
   }, [snap, tab, busy, lastUpdated, refreshInterval]);
 

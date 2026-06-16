@@ -1,3 +1,34 @@
+export namespace ai {
+	
+	export class ModelInfo {
+	    name: string;
+	    provider: string;
+	    type: string;
+	    description: string;
+	    free: boolean;
+	    requires_key: boolean;
+	    models?: string[];
+	    docs_url?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ModelInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.provider = source["provider"];
+	        this.type = source["type"];
+	        this.description = source["description"];
+	        this.free = source["free"];
+	        this.requires_key = source["requires_key"];
+	        this.models = source["models"];
+	        this.docs_url = source["docs_url"];
+	    }
+	}
+
+}
+
 export namespace main {
 	
 	export class LaunchpadSettings {
