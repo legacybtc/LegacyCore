@@ -1314,22 +1314,21 @@ func TestCheckSafeToMineGraceDoesNotResetOnRepeatedEvaluation(t *testing.T) {
 func TestMiningLivenessOneExactPlusOneLaggingBlock(t *testing.T) {
 	input := safeMiningInput()
 	input.AgreeingPeerCount = 1
-	input.CompatiblePeerCount = 3
-	input.Lagging1PeerCount = 2
+	input.CompatiblePeerCount = 2
+	input.Lagging1PeerCount = 1
 	input.MinAgreeingPeers = 2
 	input.ConflictingTipPeerCount = 0
 	input.StrongerChainworkPeerCount = 0
 	input.WrongChainPeerCount = 0
 	input.ProtocolErrorPeerCount = 0
+	input.StalePeerCount = 0
+	input.NoUsefulChainData = false
 	input.BlocksBehind = 0
 	input.BlocksBehindAllowed = 1
 
 	status := CheckSafeToMine(input)
-	if !status.Safe {
-		t.Fatalf("1 exact + 2 lagging-1-block should allow mining: %+v", status)
-	}
-	if status.State != "degraded" {
-		t.Fatalf("expected degraded state, got %q: %+v", status.State, status)
+	if !status.Safe || status.State != "degraded" {
+		t.Fatalf("1 exact + 1 lagging-1-block should allow degraded mining: %+v", status)
 	}
 }
 
@@ -1438,10 +1437,10 @@ func TestMiningLivenessAlternatingOneBlockLag(t *testing.T) {
 		input.MinAgreeingPeers = 2
 		input.BlocksBehindAllowed = 1
 		input.CompatiblePeerCount = 2
+		input.Lagging1PeerCount = 1
 
 		// Peer A current, Peer B 1 block behind
 		input.AgreeingPeerCount = 1
-		input.Lagging1PeerCount = 1
 		status := CheckSafeToMine(input)
 		if !status.Safe || status.State != "degraded" {
 			t.Fatalf("cycle %d A=current B=lagging: state=%s safe=%v", cycle, status.State, status.Safe)
@@ -1449,7 +1448,6 @@ func TestMiningLivenessAlternatingOneBlockLag(t *testing.T) {
 
 		// Peer B catches up, Peer A 1 block behind
 		input.AgreeingPeerCount = 1
-		input.Lagging1PeerCount = 1
 		status = CheckSafeToMine(input)
 		if !status.Safe || status.State != "degraded" {
 			t.Fatalf("cycle %d B=current A=lagging: state=%s safe=%v", cycle, status.State, status.Safe)
