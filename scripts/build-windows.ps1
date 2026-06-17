@@ -200,3 +200,4 @@ Get-ChildItem legacycoind.exe, legacycoin-cli.exe -ErrorAction SilentlyContinue 
 $wallet = "cmd\legacywallet\build\bin\LegacyWallet.exe"
 if (Test-Path $wallet) { Write-Host "  $wallet" }
 Write-Host ""
+
