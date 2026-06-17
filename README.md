@@ -1,150 +1,142 @@
 # Legacy Core
 
-Legacy Core is the official full-node, CLI, miner, and desktop wallet stack for Legacy Coin (LBTC).
+Legacy Core is the official full-node, CLI, miner, and desktop wallet for **Legacy Coin (LBTC)** — a CPU-friendly Yespower Proof-of-Work cryptocurrency.
 
-## What Is Legacy Core
+---
 
-This repository provides:
+## Quick Start (Pre-built)
 
-- `legacycoind` (full node daemon)
-- `legacycoin-cli` (RPC command-line client)
-- Legacy Wallet source (`cmd/legacywallet`)
-- Core chain, wallet, mining, P2P, storage, and RPC implementation
+Download the latest release from [GitHub Releases](https://github.com/legacybtc/LegacyCore/releases).
 
-This repository does **not** include hosted pool, exchange, or explorer infrastructure services.
+**Windows:** Extract the ZIP, double-click `LegacyWallet.exe`.
+
+**Linux:** Extract the tarball, then:
+```bash
+chmod +x legacycoind legacycoin-cli
+./legacycoind
+```
+
+---
+
+## Build From Source (One Command)
+
+### Windows
+
+Requirements: **MSYS2 UCRT64** with GCC (one-time, 5 minutes).
+
+1. Download and install MSYS2 from https://www.msys2.org/
+2. Open **MSYS2 UCRT64** from the Start Menu, run:
+   ```
+   pacman -S --needed mingw-w64-ucrt-x86_64-gcc
+   ```
+3. Download the source ZIP from GitHub, extract it
+4. Open Command Prompt in the extracted folder, run:
+   ```
+   build-windows
+   ```
+
+Produces: `legacycoind.exe`, `legacycoin-cli.exe`, `LegacyWallet.exe`
+
+### Linux
+
+Requirements: **gcc, golang-go, git**
+
+```bash
+apt update && apt install -y gcc golang-go git
+```
+
+Download the source ZIP, extract, then:
+```bash
+bash build-linux.sh
+```
+
+Produces: `legacycoind`, `legacycoin-cli`
+
+---
 
 ## Mainnet Identity
 
 | Field | Value |
-| --- | --- |
+|---|---|
 | Coin | Legacy Coin / LBTC |
-| Message start | `a4 ac c6 4d` |
 | Genesis hash | `5b4c78e4556afcd51acf7b9eb2e387fbea2d1414e6042d80d38e6256987154f5` |
-| Genesis time | `1779235200` |
-| Genesis nonce | `3` |
 | P2P port | `19555` |
 | RPC port | `19556` |
-| yespower personalization | `LegacyCoinPoW` |
-| Data dir (Linux default) | `~/.legacycoin` |
 | DNS seeds | `legacycoinseed.space`, `legacycoinseed2.space` |
+| yespower | `LegacyCoinPoW` (cgo-c-reference) |
+| Data dir | `%APPDATA%\LegacyCoin` (Windows) / `~/.legacycoin` (Linux) |
 
 Verify any build:
-
-```powershell
-.\legacycoind.exe params
+```
+legacycoind params
 ```
 
-```bash
-./legacycoind params
-```
-
-## Download / Release Note
-
-Release assets are published on GitHub Releases:  
-[LegacyCore Releases](https://github.com/legacybtc/LegacyCore/releases)
-
-Current release naming includes:
-
-- `LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.5.zip`
-- `LegacyCore-LBTC-mainnet-linux-amd64-v1.0.5.tar.gz`
-
-Always verify SHA256 checksums before use.
-
-## Quick Start
-
-Windows:
-
-1. Extract the wallet ZIP.
-2. Run `LegacyWallet.exe` (or `START_HERE.bat`).
-3. Check status with wallet diagnostics or CLI.
-
-Linux:
-
-```bash
-chmod +x legacycoind legacycoin-cli
-./legacycoind run -seed-peers
-```
-
-Second terminal:
-
-```bash
-./legacycoin-cli getblockchaininfo
-./legacycoin-cli getpeerinfo
-```
-
-## Build From Source
-
-Windows:
-
-```powershell
-.\scripts\check-windows-build-env.ps1
-.\scripts\build-windows.ps1
-```
-
-Linux:
-
-```bash
-bash scripts/build-linux.sh amd64
-```
-
-Frontend build (wallet source):
-
-```powershell
-cd cmd\legacywallet\frontend
-npm install
-npm run build
-cd ..\..\..
-```
-
-## Run Node
-
-```bash
-./legacycoind run -seed-peers
-```
-
-## Run CLI
-
-```bash
-./legacycoin-cli getblockchaininfo
-./legacycoin-cli getsyncstatus
-```
-
-## Run Wallet
-
-Build/run from source in `cmd/legacywallet` using Wails, or use the Windows wallet release package.
-
-```powershell
-cd cmd\legacywallet
-wails build
-```
+---
 
 ## Mining
 
-Solo CPU mining quick start:
+Solo CPU mining from CLI:
+```bash
+legacycoin-cli setminerthreads 4
+legacycoin-cli startminer
+legacycoin-cli getminerstatus
+```
+
+Or use the **Mining tab** in the desktop wallet.
+
+---
+
+## Legacy AI Companion (Built-in)
+
+The desktop wallet includes a **Legacy AI Workstation** — accessible from the **AI** tab in the sidebar:
+
+- **Chat** — Ask about your node, sync, mining, peers, balance, or storage
+- **Image Gen** — Free AI image generation (Pollinations.ai, no API key)
+- **Code Agent** — Execute allowlisted CLI tools with `/` commands
+- **Research** — DuckDuckGo web search with AI analysis
+- **Provider switching** — Built-in AI (offline) / Groq (free cloud) / llama.cpp (local GPU)
+
+No Python, no LangChain, no cloud API required. Everything runs in the wallet. Privacy-first — wallet secrets are never exposed to AI.
+
+---
+
+## Server Deployment (Linux)
 
 ```bash
-./legacycoin-cli setupwallet "strong passphrase"
-./legacycoin-cli getminingaddress
-./legacycoin-cli setminerthreads 4
-./legacycoin-cli startminer
-./legacycoin-cli getminerstatus
+sudo bash scripts/server/update-node.sh
 ```
+
+Backs up the current node, builds from source, verifies identity, stops old daemon, installs new binary, restarts, and verifies RPC is alive.
+
+---
+
+## Security
+
+- Keep RPC port (`19556`) private — never expose to the internet
+- P2P port (`19555`) may be public
+- Never share wallet backups, private keys, seed phrases, or RPC credentials
+- Verify SHA256 checksums before running binaries
+- Legacy AI is **read-only advisory** — it cannot spend coins, sign transactions, or control the node
+
+---
+
+## Repository Structure
+
+| Directory | Purpose |
+|---|---|
+| `cmd/legacycoind/` | Full node daemon |
+| `cmd/legacycoin-cli/` | RPC command-line client |
+| `cmd/legacywallet/` | Wails desktop wallet (Go + React) |
+| `internal/ai/` | Legacy AI Companion (providers, tools, web search) |
+| `internal/p2p/` | Peer-to-peer networking |
+| `internal/rpc/` | JSON-RPC server |
+| `internal/mining/` | Solo CPU miner |
+| `internal/wallet/` | Wallet operations |
+| `internal/blockchain/` | Chain state and validation |
+| `scripts/` | Build, deploy, smoke test, and verification scripts |
+
+---
 
 ## Docs Index
 
 See [docs/README.md](docs/README.md) for organized documentation by audience.
-
-## Security Warnings
-
-- Keep RPC (`19556`) private.
-- P2P (`19555`) may be public.
-- Never share wallet backups, private keys, or RPC credentials.
-- Verify checksums before running binaries.
-- Back up wallet data before upgrades or reindex operations.
-
-## Known Limitations
-
-- `txindex` and `addressindex` are opt-in foundations (`txindex=1`, `addressindex=1`) and require rebuild/reindex when enabled on existing data.
-- Address index RPCs are available only when `addressindex=1`.
-- External third-party pool certification is still required.
-- macOS and Linux ARM64 packaging remains environment-dependent.
