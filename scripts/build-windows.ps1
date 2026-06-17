@@ -171,20 +171,15 @@ if ($SkipWails) {
     Write-Host "  Install Wails: go install github.com/wailsapp/wails/v2/cmd/wails@latest"
     Write-Host "  Then run: build-windows.bat"
 } else {
-    # Embed Legacy Coin icon — generate .syso before Wails, lock it readonly
+    # Embed Legacy Coin icon via rsrc — wails.json has no icon so Wails won't overwrite
     $icoFile = Join-Path $repoRoot "cmd\legacywallet\assets\icon.ico"
     $sysoFile = Join-Path $repoRoot "cmd\legacywallet\rsrc_windows_amd64.syso"
     if (Test-Path $icoFile) {
         $rsrc = Get-Command rsrc -ErrorAction SilentlyContinue
-        if (-not $rsrc) {
-            go install github.com/akavel/rsrc@latest
-        }
+        if (-not $rsrc) { go install github.com/akavel/rsrc@latest }
         Remove-Item $sysoFile -Force -ErrorAction SilentlyContinue
         rsrc -ico $icoFile -o $sysoFile 2>&1 | Out-Null
-        if (Test-Path $sysoFile) {
-            Set-ItemProperty $sysoFile -Name IsReadOnly -Value $true
-            Write-Host "  Icon: embedded via rsrc (locked)"
-        }
+        Write-Host "  Icon: embedded via rsrc"
     }
 
     # Always clean frontend dist before Wails build
