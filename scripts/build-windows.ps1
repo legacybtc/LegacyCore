@@ -67,7 +67,7 @@ function Test-Compiler([string]$gccPath) {
         $tmp = Join-Path $env:TEMP "lc-probe"
         New-Item -ItemType Directory -Force -Path $tmp | Out-Null
         $out = Join-Path $tmp "probe.exe"
-        go build -trimpath -o "$out" .\cmd\legacycoind 2>&1 | Out-Null
+        $null = cmd /c "go build -trimpath -o $out .\cmd\legacycoind 2>nul"
         $ok = ($LASTEXITCODE -eq 0) -and (Test-Path $out)
         Remove-Item $out, $tmp -Recurse -Force -ErrorAction SilentlyContinue
         return $ok
