@@ -164,6 +164,21 @@ if ($params -notmatch "yespower backend:\s+cgo-c-reference") {
 # ============================================================
 Write-Host "[6/6] Building desktop wallet..."
 
+# Apply Legacy Coin branding
+$assetsDir = Join-Path $repoRoot "cmd\legacywallet\assets"
+$appIcon   = Join-Path $assetsDir "appicon.png"
+$icoIcon   = Join-Path $assetsDir "icon.ico"
+if ((Test-Path $appIcon) -and (Test-Path $icoIcon)) {
+    $wBuild = Join-Path $repoRoot "cmd\legacywallet\build"
+    $wWin   = Join-Path $wBuild "windows"
+    New-Item -ItemType Directory -Force -Path $wBuild, $wWin | Out-Null
+    Copy-Item $appIcon (Join-Path $wBuild "appicon.png") -Force
+    Copy-Item $icoIcon (Join-Path $wWin "icon.ico") -Force
+    Write-Host "  Branding: Legacy Coin icon applied"
+} else {
+    Write-Host "  Branding: assets not found, using Wails default icon"
+}
+
 if ($SkipWails) {
     Write-Host "  Skipping Wails build (--SkipWails flag set)"
 } elseif (-not (Get-Command wails -ErrorAction SilentlyContinue)) {
