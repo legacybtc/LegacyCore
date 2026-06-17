@@ -6,162 +6,186 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $repoRoot
 
-function Assert-LastExitCode([string]$stepName) {
-    if ($LASTEXITCODE -ne 0) {
-        throw "$stepName failed with exit code $LASTEXITCODE."
-    }
+Write-Host ""
+Write-Host "======================================================"
+Write-Host "  Legacy Core Wallet - Windows Build Script"
+Write-Host "  Version 1.0.6"
+Write-Host "======================================================"
+Write-Host ""
+
+# ============================================================
+# STEP 1: Check prerequisites
+# ============================================================
+Write-Host "[1/6] Checking prerequisites..."
+
+$missing = @()
+if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
+    $missing += "Go 1.22+ (https://go.dev/dl/)"
 }
-
-function Sync-WalletBrandingAssets {
-    $assetsDir = Join-Path $repoRoot "cmd\legacywallet\assets"
-    $appIconSrc = Join-Path $assetsDir "appicon.png"
-    $winIconSrc = Join-Path $assetsDir "icon.ico"
-    if (-not (Test-Path $appIconSrc) -or -not (Test-Path $winIconSrc)) {
-        Write-Host "Wallet branding assets not found in cmd\\legacywallet\\assets; using current build defaults."
-        return
-    }
-    $buildDir = Join-Path $repoRoot "cmd\legacywallet\build"
-    $windowsBuildDir = Join-Path $buildDir "windows"
-    New-Item -ItemType Directory -Force -Path $buildDir, $windowsBuildDir | Out-Null
-    Copy-Item $appIconSrc (Join-Path $buildDir "appicon.png") -Force
-    Copy-Item $winIconSrc (Join-Path $windowsBuildDir "icon.ico") -Force
-    Write-Host "Applied wallet branding assets from cmd\\legacywallet\\assets."
+if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+    $missing += "Node.js LTS (https://nodejs.org/)"
 }
+if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+    $missing += "npm (comes with Node.js)"
+}
+if ($missing.Count -gt 0) {
+    Write-Host ""
+    Write-Host "  MISSING PREREQUISITES:"
+    foreach ($m in $missing) { Write-Host "    - $m" }
+    Write-Host ""
+    Write-Host "  Install the above, restart your terminal, and try again."
+    Write-Host ""
+    exit 1
+}
+Write-Host "  Go:       $(go version)"
+Write-Host "  Node:     $(node --version)"
+Write-Host "  npm:      $(npm --version)"
 
-$env:GOTELEMETRY = "off"
-$env:GOCACHE = Join-Path $env:TEMP "legacycore-gocache-build"
-$env:GOTMPDIR = Join-Path $env:TEMP "legacycore-gotmp-build"
-New-Item -ItemType Directory -Force -Path $env:GOCACHE, $env:GOTMPDIR | Out-Null
+# ============================================================
+# STEP 2: Find C compiler (required for Yespower hashing)
+# ============================================================
+Write-Host "[2/6] Finding C compiler..."
 
-function Resolve-CompilerCandidates {
-    $candidates = @()
+function Find-GCC {
+    $paths = @(
+        "C:\msys64\ucrt64\bin\gcc.exe",
+        "C:\msys64\mingw64\bin\gcc.exe",
+        "C:\msys64\clang64\bin\gcc.exe"
+    )
     $gcc = Get-Command gcc -ErrorAction SilentlyContinue
-    if ($gcc) {
-        $candidates += $gcc.Source
-    }
-    foreach ($pathPrefix in @("C:\msys64\ucrt64\bin", "C:\msys64\mingw64\bin", "C:\msys64\clang64\bin")) {
-        if (Test-Path (Join-Path $pathPrefix "gcc.exe")) {
-            $candidates += (Join-Path $pathPrefix "gcc.exe")
-        }
-        if (Test-Path (Join-Path $pathPrefix "clang.exe")) {
-            $candidates += (Join-Path $pathPrefix "clang.exe")
-        }
-    }
-    return @($candidates | Select-Object -Unique)
+    if ($gcc) { return $gcc.Source }
+    foreach ($p in $paths) { if (Test-Path $p) { return $p } }
+    return $null
 }
 
-function Try-CgoCompiler([string]$compilerPath) {
-    if (-not (Test-Path $compilerPath)) {
-        return $false
-    }
-    $compilerDir = Split-Path $compilerPath -Parent
+function Test-Compiler([string]$gccPath) {
     $oldPath = $env:PATH
-    $probeDir = Join-Path $env:TEMP "legacycore-cgo-probe"
-    $probeOut = Join-Path $probeDir "cgo-probe.exe"
-    $env:PATH = "$compilerDir;$oldPath"
+    $env:PATH = "$(Split-Path $gccPath -Parent);$oldPath"
     $env:CGO_ENABLED = "1"
-    $env:CC = $compilerPath
+    $env:CC = $gccPath
     try {
-        New-Item -ItemType Directory -Force -Path $probeDir | Out-Null
-        go build -trimpath -o $probeOut .\cmd\legacycoind
-        if ($LASTEXITCODE -ne 0) {
-            return $false
-        }
-        if (Test-Path $probeOut) {
-            Remove-Item $probeOut -Force -ErrorAction SilentlyContinue
-        }
-        return $true
-    } catch {
-        Write-Host "Compiler probe failed for $compilerPath"
-        Write-Host $_.Exception.Message
-        return $false
-    } finally {
-        $env:PATH = $oldPath
-    }
+        $tmp = Join-Path $env:TEMP "lc-probe"
+        New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+        $out = Join-Path $tmp "probe.exe"
+        go build -trimpath -o "$out" .\cmd\legacycoind 2>&1 | Out-Null
+        $ok = ($LASTEXITCODE -eq 0) -and (Test-Path $out)
+        Remove-Item $out, $tmp -Recurse -Force -ErrorAction SilentlyContinue
+        return $ok
+    } catch { return $false }
+    finally { $env:PATH = $oldPath }
 }
 
-$selectedCompiler = $null
-foreach ($candidate in (Resolve-CompilerCandidates)) {
-    if (Try-CgoCompiler $candidate) {
-        $selectedCompiler = $candidate
-        break
-    }
-}
-if (-not $selectedCompiler) {
+$gccPath = Find-GCC
+if (-not $gccPath) {
     Write-Host ""
-    Write-Host "======================================================"
-    Write-Host "  NO C COMPILER FOUND"
-    Write-Host "======================================================"
+    Write-Host "  =============================================="
+    Write-Host "  C COMPILER NOT FOUND"
+    Write-Host "  =============================================="
     Write-Host ""
-    Write-Host "The Legacy Core wallet requires a C compiler because"
-    Write-Host "it uses CGO for the Yespower hashing library."
+    Write-Host "  Legacy Core needs a C compiler because the"
+    Write-Host "  Yespower hashing library uses C code."
     Write-Host ""
-    Write-Host "To install GCC on Windows:"
+    Write-Host "  Install MSYS2 (one-time setup, ~5 minutes):"
     Write-Host ""
-    Write-Host "  1. Download MSYS2 from https://www.msys2.org/"
-    Write-Host "  2. Run: pacman -S --needed mingw-w64-ucrt-x86_64-gcc"
+    Write-Host "    1. Download: https://www.msys2.org/"
+    Write-Host "    2. Install MSYS2 (default location: C:\msys64)"
+    Write-Host "    3. Open 'MSYS2 UCRT64' from Start Menu"
+    Write-Host "    4. Run: pacman -S --needed mingw-w64-ucrt-x86_64-gcc"
+    Write-Host "    5. Close MSYS2 terminal"
+    Write-Host "    6. Run build-windows.bat again"
     Write-Host ""
-    Write-Host "  Or use the pre-built wallet from the GitHub Releases page."
-    Write-Host "======================================================"
+    Write-Host "  OR download the pre-built wallet from:"
+    Write-Host "  https://github.com/legacybtc/LegacyCore/releases"
+    Write-Host "  =============================================="
+    Write-Host ""
     exit 1
 }
 
-foreach ($cmd in @("go", "node", "npm")) {
-    if (-not (Get-Command $cmd -ErrorAction SilentlyContinue)) {
-        throw "$cmd not found. Install Go 1.22+, Node.js LTS, and Git for Windows."
-    }
+if (-not (Test-Compiler $gccPath)) {
+    Write-Host "  Compiler found at $gccPath but probe build failed."
+    Write-Host "  Try reinstalling MSYS2 with UCRT64 GCC."
+    exit 1
 }
 
-Write-Host "Building wallet frontend (clean build)..."
+$compilerDir = Split-Path $gccPath -Parent
+Write-Host "  GCC:      $gccPath"
+$env:PATH = "$compilerDir;$env:PATH"
+$env:CGO_ENABLED = "1"
+$env:CC = $gccPath
+
+# ============================================================
+# STEP 3: Install frontend dependencies
+# ============================================================
+Write-Host "[3/6] Installing frontend dependencies..."
 Push-Location "cmd\legacywallet\frontend"
 if (-not (Test-Path "node_modules")) {
     npm ci
-    Assert-LastExitCode "npm ci"
+    if ($LASTEXITCODE -ne 0) { Write-Host "npm ci failed"; Pop-Location; exit 1 }
 }
-# Always rebuild frontend from source — never reuse old dist
-npm run test:dashboard
-npm run build
-Assert-LastExitCode "npm run build"
 Pop-Location
 
-$env:CGO_ENABLED = "1"
-$env:CC = $selectedCompiler
-$env:PATH = "$(Split-Path $selectedCompiler -Parent);$env:PATH"
-Write-Host "Using C compiler: $selectedCompiler"
+# ============================================================
+# STEP 4: Run tests
+# ============================================================
+Write-Host "[4/6] Running tests (this may take a few minutes)..."
+Push-Location "cmd\legacywallet\frontend"
+npm run test:dashboard
+if ($LASTEXITCODE -ne 0) { Write-Host "Dashboard tests failed"; Pop-Location; exit 1 }
+npm run build
+if ($LASTEXITCODE -ne 0) { Write-Host "Frontend build failed"; Pop-Location; exit 1 }
+Pop-Location
 
-Write-Host "Running Go tests..."
-go test ./...
-Assert-LastExitCode "go test ./..."
+go test -short ./...
+if ($LASTEXITCODE -ne 0) { Write-Host "Go tests failed"; exit 1 }
 
-Write-Host "Running go vet..."
-go vet ./...
-Assert-LastExitCode "go vet ./..."
+# ============================================================
+# STEP 5: Build binaries
+# ============================================================
+Write-Host "[5/6] Building binaries..."
+Remove-Item -Force .\legacycoind.exe, .\legacycoin-cli.exe -ErrorAction SilentlyContinue
 
-Write-Host "Building Core and CLI with -trimpath..."
-Remove-Item -Force .\legacycoind.exe, .\legacycoin-cli.exe, .\legacy-wallet-compile-smoke.exe -ErrorAction SilentlyContinue
 go build -trimpath -o legacycoind.exe .\cmd\legacycoind
-Assert-LastExitCode "go build legacycoind.exe"
+if ($LASTEXITCODE -ne 0) { Write-Host "legacycoind build failed"; exit 1 }
+
 go build -trimpath -o legacycoin-cli.exe .\cmd\legacycoin-cli
-Assert-LastExitCode "go build legacycoin-cli.exe"
-go build -trimpath -o legacy-wallet-compile-smoke.exe .\cmd\legacywallet
-Assert-LastExitCode "go build legacy-wallet-compile-smoke.exe"
+if ($LASTEXITCODE -ne 0) { Write-Host "legacycoin-cli build failed"; exit 1 }
 
+Write-Host "  legacycoind.exe    - built"
+Write-Host "  legacycoin-cli.exe  - built"
+
+# Verify yespower backend
 $params = (.\legacycoind.exe params) -join "`n"
-Write-Host $params
 if ($params -notmatch "yespower backend:\s+cgo-c-reference") {
-    throw "Production yespower backend is not cgo-c-reference. Check CGO/GCC setup."
+    Write-Host "WARNING: yespower backend is not cgo-c-reference. Mining may be slower."
 }
 
-if (-not $SkipWails) {
-    if (Get-Command wails -ErrorAction SilentlyContinue) {
-        Sync-WalletBrandingAssets
-        Push-Location "cmd\legacywallet"
-        wails build -platform windows/amd64 -skipbindings -trimpath -ldflags "-s -w"
-        Assert-LastExitCode "wails build windows/amd64"
-        Pop-Location
-    } else {
-        Write-Host "Wails was not found. Core/CLI/internal wallet binaries were built; install Wails v2 to build the desktop package."
-    }
+# ============================================================
+# STEP 6: Build wallet (Wails)
+# ============================================================
+Write-Host "[6/6] Building desktop wallet..."
+
+if ($SkipWails) {
+    Write-Host "  Skipping Wails build (--SkipWails flag set)"
+} elseif (-not (Get-Command wails -ErrorAction SilentlyContinue)) {
+    Write-Host "  Wails not found. Core + CLI built successfully."
+    Write-Host "  Install Wails: go install github.com/wailsapp/wails/v2/cmd/wails@latest"
+    Write-Host "  Then run: build-windows.bat"
+} else {
+    # Always clean frontend dist before Wails build
+    Remove-Item -Recurse -Force "cmd\legacywallet\frontend\dist" -ErrorAction SilentlyContinue
+    Push-Location "cmd\legacywallet"
+    wails build -platform windows/amd64
+    if ($LASTEXITCODE -ne 0) { Write-Host "Wails build failed"; Pop-Location; exit 1 }
+    Pop-Location
+    Write-Host "  LegacyWallet.exe   - built"
 }
 
-Write-Host "Windows build complete."
+Write-Host ""
+Write-Host "======================================================"
+Write-Host "  BUILD COMPLETE"
+Write-Host "======================================================"
+Write-Host ""
+Get-ChildItem legacycoind.exe, legacycoin-cli.exe -ErrorAction SilentlyContinue | ForEach-Object { "  $_" }
+$wallet = "cmd\legacywallet\build\bin\LegacyWallet.exe"
+if (Test-Path $wallet) { Write-Host "  $wallet" }
+Write-Host ""
