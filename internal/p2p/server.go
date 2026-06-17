@@ -29,7 +29,7 @@ const (
 	nodeNetwork           uint64 = 1
 	userAgent                    = "/Legacy-GO:0.1.0/"
 	maxPeers                     = 125
-	maxOutboundPeers             = 8
+	maxOutboundPeers             = 16
 	maxGetDataItems              = 2048
 	maxServeInvItems             = 2048
 	maxAddrRelayItems            = 10
@@ -43,8 +43,8 @@ var (
 	peerIdleTimeout      = 2 * time.Minute
 	peerPingInterval     = 30 * time.Second
 	peerPongTimeout      = 90 * time.Second
-	peerReconnectEvery   = 15 * time.Second
-	syncWatchdogEvery    = 45 * time.Second
+	peerReconnectEvery   = 8 * time.Second
+	syncWatchdogEvery    = 20 * time.Second
 	syncStaleThreshold   = 10 * time.Minute
 	peerStaleThreshold   = 15 * time.Minute
 )
@@ -1524,7 +1524,7 @@ func (s *Server) seedLoop(ctx context.Context) {
 func (s *Server) syncLoop(ctx context.Context) {
 	s.setSyncRunning(true)
 	defer s.setSyncRunning(false)
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
@@ -1660,7 +1660,7 @@ func (s *Server) requestSyncFromPeerIfBehind(p *peer, force bool) error {
 	if peerHeight <= localHeight && !force && !peerMetadataStale {
 		return nil
 	}
-	if !force && !lastReq.IsZero() && time.Since(lastReq) < 25*time.Second {
+	if !force && !lastReq.IsZero() && time.Since(lastReq) < 8*time.Second {
 		return nil
 	}
 	switch {
@@ -1753,8 +1753,8 @@ func (s *Server) syncCandidates() []*peer {
 		}
 		return aReq.Before(bReq)
 	})
-	if len(candidates) > 3 {
-		return candidates[:3]
+	if len(candidates) > 8 {
+		return candidates[:8]
 	}
 	return candidates
 }
