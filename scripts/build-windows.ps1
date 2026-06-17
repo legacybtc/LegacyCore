@@ -67,8 +67,8 @@ function Test-Compiler([string]$gccPath) {
         $tmp = Join-Path $env:TEMP "lc-probe"
         New-Item -ItemType Directory -Force -Path $tmp | Out-Null
         $out = Join-Path $tmp "probe.exe"
-        $null = cmd /c "go build -trimpath -o $out .\cmd\legacycoind 2>nul"
-        $ok = ($LASTEXITCODE -eq 0) -and (Test-Path $out)
+        $proc = Start-Process -FilePath "go.exe" -ArgumentList "build","-trimpath","-o","`"$out`"",".\cmd\legacycoind" -NoNewWindow -Wait -PassThru
+        $ok = ($proc.ExitCode -eq 0) -and (Test-Path $out)
         Remove-Item $out, $tmp -Recurse -Force -ErrorAction SilentlyContinue
         return $ok
     } catch { return $false }
@@ -101,6 +101,8 @@ if (-not $gccPath) {
     exit 1
 }
 
+$env:GOTELEMETRY = "off"
+go mod download 2>$null
 if (-not (Test-Compiler $gccPath)) {
     Write-Host "  Compiler found at $gccPath but probe build failed."
     Write-Host "  Try reinstalling MSYS2 with UCRT64 GCC."
