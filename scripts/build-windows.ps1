@@ -88,9 +88,21 @@ foreach ($candidate in (Resolve-CompilerCandidates)) {
     }
 }
 if (-not $selectedCompiler) {
-    Write-Host "No working C compiler (gcc/clang) was found for CGO production builds."
-    Write-Host "Install MSYS2 UCRT64 GCC:"
-    Write-Host "  C:\msys64\usr\bin\pacman.exe -S --needed mingw-w64-ucrt-x86_64-gcc"
+    Write-Host ""
+    Write-Host "======================================================"
+    Write-Host "  NO C COMPILER FOUND"
+    Write-Host "======================================================"
+    Write-Host ""
+    Write-Host "The Legacy Core wallet requires a C compiler because"
+    Write-Host "it uses CGO for the Yespower hashing library."
+    Write-Host ""
+    Write-Host "To install GCC on Windows:"
+    Write-Host ""
+    Write-Host "  1. Download MSYS2 from https://www.msys2.org/"
+    Write-Host "  2. Run: pacman -S --needed mingw-w64-ucrt-x86_64-gcc"
+    Write-Host ""
+    Write-Host "  Or use the pre-built wallet from the GitHub Releases page."
+    Write-Host "======================================================"
     exit 1
 }
 
