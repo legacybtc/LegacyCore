@@ -178,7 +178,7 @@ if ($SkipWails) {
         $rsrc = Get-Command rsrc -ErrorAction SilentlyContinue
         if (-not $rsrc) { go install github.com/akavel/rsrc@latest }
         Remove-Item $sysoFile -Force -ErrorAction SilentlyContinue
-        rsrc -ico $icoFile -o $sysoFile 2>&1 | Out-Null
+        $null = cmd /c "rsrc -ico $icoFile -o $sysoFile 2>nul"
         Write-Host "  Icon: embedded via rsrc"
     }
 
