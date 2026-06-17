@@ -6,6 +6,7 @@ dist/
 *.exe~
 *.dll
 *.so
+*.syso
 *.dylib
 
 # Frontend generated output

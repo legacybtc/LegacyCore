@@ -171,6 +171,19 @@ if ($SkipWails) {
     Write-Host "  Install Wails: go install github.com/wailsapp/wails/v2/cmd/wails@latest"
     Write-Host "  Then run: build-windows.bat"
 } else {
+    # Embed Legacy Coin icon directly into Go binary (bypasses Wails icon handling)
+    $icoFile = Join-Path $repoRoot "cmd\legacywallet\assets\icon.ico"
+    $sysoFile = Join-Path $repoRoot "cmd\legacywallet\rsrc_windows_amd64.syso"
+    if (Test-Path $icoFile) {
+        $rsrc = Get-Command rsrc -ErrorAction SilentlyContinue
+        if (-not $rsrc) {
+            Write-Host "  Installing rsrc..."
+            go install github.com/akavel/rsrc@latest
+        }
+        rsrc -ico $icoFile -o $sysoFile
+        Write-Host "  Icon: embedded via rsrc"
+    }
+
     # Always clean frontend dist before Wails build
     Remove-Item -Recurse -Force "cmd\legacywallet\frontend\dist" -ErrorAction SilentlyContinue
     Push-Location "cmd\legacywallet"
