@@ -174,7 +174,7 @@ if ($SkipWails) {
     # Always clean frontend dist before Wails build
     Remove-Item -Recurse -Force "cmd\legacywallet\frontend\dist" -ErrorAction SilentlyContinue
     Push-Location "cmd\legacywallet"
-    wails build -platform windows/amd64 -skipbindings -trimpath -ldflags "-s -w"
+    wails build -platform windows/amd64 -trimpath -ldflags "-s -w"
     if ($LASTEXITCODE -ne 0) { Write-Host "Wails build failed"; Pop-Location; exit 1 }
     Pop-Location
     Write-Host "  LegacyWallet.exe   - built"
