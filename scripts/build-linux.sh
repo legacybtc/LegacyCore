@@ -43,8 +43,15 @@ echo "  gcc:     $(gcc --version | head -1)"
 echo "  go:      $(go version)"
 echo "  git:     $(git --version)"
 
-# ---- STEP 2: Run tests ----
-echo "[2/4] Running tests..."
+# ---- STEP 2: Download dependencies + run tests ----
+echo "[2/4] Downloading Go modules..."
+
+if ! go mod download; then
+    echo "Module download failed"
+    exit 1
+fi
+
+echo "       Running tests..."
 
 export CGO_ENABLED=1
 
