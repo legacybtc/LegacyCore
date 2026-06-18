@@ -49,6 +49,8 @@ echo "  git:     $(git --version 2>&1 | head -1)"
 echo "[2/4] Building..."
 export CGO_ENABLED=1
 
+echo "       go mod tidy..."
+go mod tidy
 echo "       go mod download..."
 go mod download
 

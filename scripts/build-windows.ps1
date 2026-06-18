@@ -102,6 +102,7 @@ if (-not $gccPath) {
 }
 
 $env:GOTELEMETRY = "off"
+go mod tidy 2>$null
 go mod download 2>$null
 if (-not (Test-Compiler $gccPath)) {
     Write-Host "  Compiler found at $gccPath but probe build failed."
