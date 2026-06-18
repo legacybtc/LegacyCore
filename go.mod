@@ -1,6 +1,6 @@
 module legacycoin/legacy-go
 
-go 1.22.0
+go 1.25.0
 
 require (
 	github.com/btcsuite/btcd/btcec/v2 v2.3.6
