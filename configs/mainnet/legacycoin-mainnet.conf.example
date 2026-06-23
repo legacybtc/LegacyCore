@@ -15,10 +15,10 @@ rpctls=1
 rpctlscert=CHANGE-ME-PATH/rpc.cert
 rpctlskey=CHANGE-ME-PATH/rpc.key
 
-# Bootstrap peers. Use domain names you control or static IP:port values.
-addnode=seed1.example.org:19555
-addnode=seed2.example.org:19555
-addnode=seed3.example.org:19555
+# Bootstrap peers. DNS seeds are built in; these add stable explicit peers.
+addnode=legacycoinseed.space:19555
+addnode=legacycoinseed2.space:19555
+addnode=91.219.63.20:19555
 
 # Optional launch safety: fail startup if these anchors do not match.
 interop_check=1

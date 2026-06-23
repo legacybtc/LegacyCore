@@ -36,6 +36,7 @@ const (
 	maxAddrDialItems             = 8
 	maxKnownPeerAddresses        = 2048
 	addrMaxAge                   = 7 * 24 * time.Hour
+	dnsSeedLookupTimeout         = 5 * time.Second
 )
 
 var (
@@ -177,7 +178,7 @@ type Server struct {
 	lastWatchdog        time.Time
 	lastWdAction        string
 	wdReconnects        int64
-	outboundDialSem      chan struct{}
+	outboundDialSem     chan struct{}
 	lastBlockConn       time.Time
 	lastHeightChg       time.Time
 	lastSyncPeer        string
@@ -257,10 +258,11 @@ func (s *Server) SetPeerPolicy(chainID string, enforce bool, peerSafety bool, ba
 	if len(connectOnly) > 0 {
 		s.connectOnly = make(map[string]struct{}, len(connectOnly))
 		for _, addr := range connectOnly {
-			addr = strings.TrimSpace(addr)
-			if addr != "" {
-				s.connectOnly[addr] = struct{}{}
+			normalized, err := normalizePeerAddress(addr, s.params.DefaultPort)
+			if err != nil {
+				continue
 			}
+			s.connectOnly[normalized] = struct{}{}
 		}
 	}
 }
@@ -1341,15 +1343,11 @@ func (s *Server) ListenHost() string {
 }
 
 func (s *Server) AddNode(ctx context.Context, addr string) error {
-	host, port, err := net.SplitHostPort(addr)
+	normalized, err := normalizePeerAddress(addr, s.params.DefaultPort)
 	if err != nil {
-		host = addr
-		port = strconv.Itoa(int(s.params.DefaultPort))
+		return err
 	}
-	if host == "" {
-		return fmt.Errorf("empty peer host")
-	}
-	addr = net.JoinHostPort(host, port)
+	addr = normalized
 	if len(s.connectOnly) > 0 {
 		if _, ok := s.connectOnly[addr]; !ok {
 			return fmt.Errorf("peer %s is not allowed by connect-only policy", addr)
@@ -1837,10 +1835,30 @@ func (s *Server) connectSeeds(ctx context.Context) {
 	if !s.seedPeers || len(s.connectOnly) > 0 {
 		return
 	}
+	for _, peer := range s.params.FixedSeeds {
+		if s.outbound.Load() >= maxOutboundPeers || s.peers.Load() >= maxPeers {
+			return
+		}
+		addr, err := normalizePeerAddress(peer, s.params.DefaultPort)
+		if err != nil {
+			s.log.Printf("p2p fixed seed %s ignored: %v", peer, err)
+			continue
+		}
+		s.rememberPeerAddress(addr, "fixed-seed")
+		if err := s.AddNode(ctx, addr); err != nil {
+			s.log.Printf("p2p add fixed seed peer %s: %v", addr, err)
+		}
+	}
 	for _, seed := range s.params.DNSSeeds {
-		hosts, err := net.DefaultResolver.LookupHost(ctx, seed)
+		lookupCtx, cancel := context.WithTimeout(ctx, dnsSeedLookupTimeout)
+		hosts, err := net.DefaultResolver.LookupHost(lookupCtx, seed)
+		cancel()
 		if err != nil {
 			s.logSeedError(seed, err)
+			continue
+		}
+		if len(hosts) == 0 {
+			s.logSeedError(seed, fmt.Errorf("no A/AAAA records"))
 			continue
 		}
 		for _, host := range hosts {

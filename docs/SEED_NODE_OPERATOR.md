@@ -12,6 +12,7 @@ Safety warning: keep RPC private; seed nodes should not expose wallet RPC public
 - message start: `a4 ac c6 4d`
 - chain ID: `legacy-mainnet-1.0.0-rc2-5b4c78e4`
 - DNS seeds configured: `legacycoinseed.space`, `legacycoinseed2.space`
+- Fixed seed fallbacks configured: `77.127.37.157:19555`, `199.19.72.89:19555`, `91.219.63.20:19555`
 
 ## Quick Start
 
@@ -72,6 +73,7 @@ Seed mode behavior:
 ## Troubleshooting
 
 - low/no peers: verify public reachability and outbound DNS/connectivity
+- if a previous `-connect` or `-noseednode` run disabled DNS discovery, run once with `-seed-peers` or set `noseednode=false`
 - stale peers: inspect ping/pong and sync state fields
 
 ## Known Limitations

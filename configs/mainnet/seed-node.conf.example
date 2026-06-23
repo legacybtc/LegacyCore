@@ -13,6 +13,6 @@ peer_max_inbound=512
 peer_max_per_ip=32
 peer_max_per_subnet=128
 
-addnode=seed1.example.org:19555
-addnode=seed2.example.org:19555
-addnode=seed3.example.org:19555
+addnode=legacycoinseed.space:19555
+addnode=legacycoinseed2.space:19555
+addnode=91.219.63.20:19555

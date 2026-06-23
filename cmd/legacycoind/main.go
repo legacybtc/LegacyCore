@@ -172,6 +172,7 @@ func printParams() {
 	fmt.Printf("data dir: %s\n", config.DefaultDataDir())
 	fmt.Printf("config: %s\n", config.DefaultConfigPath())
 	fmt.Printf("dns seeds: %s\n", strings.Join(p.DNSSeeds, ", "))
+	fmt.Printf("fixed seeds: %s\n", strings.Join(p.FixedSeeds, ", "))
 }
 
 func runGenesis() {
@@ -341,6 +342,9 @@ func applyRuntimeNodeFlags(args []string) error {
 				return err
 			}
 		case "-seed-peers", "--seed-peers":
+			if err := config.AppendConfigLine(config.DefaultConfigPath(), "noseednode", "false"); err != nil {
+				return err
+			}
 			if err := config.AppendConfigLine(config.DefaultConfigPath(), "seed_peers", "true"); err != nil {
 				return err
 			}
@@ -352,6 +356,9 @@ func applyRuntimeNodeFlags(args []string) error {
 				return err
 			}
 			if err := config.AppendConfigLine(config.DefaultConfigPath(), "seed_peers", "true"); err != nil {
+				return err
+			}
+			if err := config.AppendConfigLine(config.DefaultConfigPath(), "noseednode", "false"); err != nil {
 				return err
 			}
 			if err := config.AppendConfigLine(config.DefaultConfigPath(), "rpcbind", "127.0.0.1"); err != nil {

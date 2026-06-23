@@ -856,6 +856,7 @@ func (s *Service) CoinInfo() map[string]any {
 		"p2p_port": chaincfg.MainNet.DefaultPort, "rpc_port": chaincfg.MainNet.RPCPort,
 		"yespower_personalization": chaincfg.MainNet.YespowerPers,
 		"dns_seeds":                chaincfg.MainNet.DNSSeeds,
+		"fixed_seeds":              chaincfg.MainNet.FixedSeeds,
 	}
 }
 
@@ -872,6 +873,12 @@ func (s *Service) GetBlockchainInfo() (map[string]any, error) {
 					}
 					if _, ok := out["dns_seed_count"]; !ok {
 						out["dns_seed_count"] = len(chaincfg.MainNet.DNSSeeds)
+					}
+					if _, ok := out["fixed_seeds"]; !ok {
+						out["fixed_seeds"] = chaincfg.MainNet.FixedSeeds
+					}
+					if _, ok := out["fixed_seed_count"]; !ok {
+						out["fixed_seed_count"] = len(chaincfg.MainNet.FixedSeeds)
 					}
 					if _, ok := out["manual_addnodes"]; !ok {
 						out["manual_addnodes"] = []string{}
@@ -915,6 +922,8 @@ func (s *Service) GetBlockchainInfo() (map[string]any, error) {
 		"inbound_peer_count":     n.P2P().PeerCount() - n.P2P().OutboundCount(),
 		"dns_seeds":              n.Chain().Params().DNSSeeds,
 		"dns_seed_count":         len(n.Chain().Params().DNSSeeds),
+		"fixed_seeds":            n.Chain().Params().FixedSeeds,
+		"fixed_seed_count":       len(n.Chain().Params().FixedSeeds),
 		"manual_addnodes":        n.P2P().BootstrapPeers(),
 		"known_peers_available":  true,
 		"known_peer_count":       n.P2P().KnownAddressCount(),
@@ -1968,8 +1977,8 @@ func (s *Service) GetMinerStatus() (map[string]any, error) {
 			}
 			return stopReason
 		}(),
-		"last_historical_event":         "RPC offline: miner status is local fallback",
-		"current_mining_state":          map[bool]string{true: "running (fallback)", false: "unavailable"}[miningNow],
+		"last_historical_event": "RPC offline: miner status is local fallback",
+		"current_mining_state":  map[bool]string{true: "running (fallback)", false: "unavailable"}[miningNow],
 		"current_safety_state": func() string {
 			if errText := strings.TrimSpace(fmt.Sprint(destination["error"])); errText != "" {
 				return errText

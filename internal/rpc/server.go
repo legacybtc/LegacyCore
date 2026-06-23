@@ -588,6 +588,7 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 			"default_port":      p.DefaultPort,
 			"rpc_port":          p.RPCPort,
 			"dns_seeds":         p.DNSSeeds,
+			"fixed_seeds":       p.FixedSeeds,
 			"yespower_pers":     p.YespowerPers,
 			"genesis_time":      p.GenesisTime,
 			"genesis_bits":      fmt.Sprintf("%08x", p.GenesisBits),
@@ -602,6 +603,8 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		return map[string]any{
 			"dns_seeds":         p.DNSSeeds,
 			"dns_seed_count":    len(p.DNSSeeds),
+			"fixed_seeds":       p.FixedSeeds,
+			"fixed_seed_count":  len(p.FixedSeeds),
 			"bootstrap_addnode": manual,
 			"bootstrap_count":   len(manual),
 			"known_peers":       firstStrings(s.p2p.KnownAddresses(), 50),
@@ -620,7 +623,7 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		if p2pIsLocalhost(s.p2p.ListenHost()) {
 			warnings = append(warnings, "p2p_bind_localhost_only")
 		}
-		if len(s.p2p.BootstrapPeers()) == 0 && len(p.DNSSeeds) == 0 {
+		if len(s.p2p.BootstrapPeers()) == 0 && len(p.DNSSeeds) == 0 && len(p.FixedSeeds) == 0 {
 			warnings = append(warnings, "no_bootstrap_peers_configured")
 		}
 		return map[string]any{
@@ -640,6 +643,7 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 			"network": map[string]any{
 				"message_start":      fmt.Sprintf("%x", p.MessageStart),
 				"dns_seeds":          p.DNSSeeds,
+				"fixed_seeds":        p.FixedSeeds,
 				"addnodes":           s.p2p.BootstrapPeers(),
 				"known_peer_count":   s.p2p.KnownAddressCount(),
 				"known_peer_samples": firstStrings(s.p2p.KnownAddresses(), 20),
@@ -1120,7 +1124,7 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 			{"id": "rpc_tls_guard", "ok": rpcTLSSafe, "message": "RPC transport security policy passes", "remediation": "use rpcbind=127.0.0.1 or set rpctls=1 with rpctlscert and rpctlskey"},
 			{"id": "p2p_bind_reachable", "ok": p2pReachable, "message": "P2P bind is launch reachable", "remediation": "set bind=0.0.0.0 or a non-localhost interface"},
 			{"id": "script_coverage_complete", "ok": len(scriptCoverage.Pending) == 0 || s.policy.AllowScriptCoveragePending, "message": "script coverage pending list is empty or explicitly overridden", "remediation": "complete pending script features before public launch"},
-			{"id": "bootstrap_available", "ok": len(s.chain.Params().DNSSeeds) > 0 || len(s.p2p.BootstrapPeers()) > 0, "message": "DNS seed or addnode bootstrap is configured", "remediation": "configure addnode entries or DNS seed records"},
+			{"id": "bootstrap_available", "ok": len(s.chain.Params().DNSSeeds) > 0 || len(s.chain.Params().FixedSeeds) > 0 || len(s.p2p.BootstrapPeers()) > 0, "message": "DNS seed, fixed seed, or addnode bootstrap is configured", "remediation": "configure addnode entries, fixed seeds, or DNS seed records"},
 		}
 		passed := 0
 		for _, c := range checks {
@@ -1148,6 +1152,7 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 			"p2pbind":          s.p2p.ListenHost(),
 			"bootstrap_count":  len(s.p2p.BootstrapPeers()),
 			"dns_seed_count":   len(s.chain.Params().DNSSeeds),
+			"fixed_seed_count": len(s.chain.Params().FixedSeeds),
 			"policy": map[string]any{
 				"allow_script_coverage_pending": s.policy.AllowScriptCoveragePending,
 			},
@@ -2633,6 +2638,7 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 			"port":                  s.chain.Params().DefaultPort,
 			"localaddr":             s.p2p.ListenAddr(),
 			"dns_seeds":             len(s.chain.Params().DNSSeeds),
+			"fixed_seeds":           len(s.chain.Params().FixedSeeds),
 			"addnodes":              len(s.p2p.BootstrapPeers()),
 			"known_peer_samples":    firstStrings(s.p2p.KnownAddresses(), 20),
 			"rpcbind":               rpcBind,
@@ -4924,9 +4930,9 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 			}
 			return ""
 		}(),
-		"mining_pubkey_hash":          dest.PubKeyHashHex,
-		"active_reward_hash":          displayRewardHash,
-		"reject_zero_hash":            cfg.RejectZeroHash,
+		"mining_pubkey_hash": dest.PubKeyHashHex,
+		"active_reward_hash": displayRewardHash,
+		"reject_zero_hash":   cfg.RejectZeroHash,
 		"peers": func() int32 {
 			if s.p2p == nil {
 				return 0
@@ -4939,7 +4945,7 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 		"storage":                     storage,
 		"wallet":                      s.wallet.SecurityInfo(),
 		"config":                      s.miningConfigPath(),
-		"control_rpcs": []string{"startminer", "stopminer", "restartminer", "getminerstatus", "benchmarkminer", "autotuneminer", "setminerthreads", "setminingaddress", "configureminer"},
+		"control_rpcs":                []string{"startminer", "stopminer", "restartminer", "getminerstatus", "benchmarkminer", "autotuneminer", "setminerthreads", "setminingaddress", "configureminer"},
 	}
 	out["rpc_active_requests"] = func() int64 {
 		s.rpcDiagMu.Lock()
@@ -5815,7 +5821,7 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 				s.minerLastError = safety.Reason
 				s.minerPausedReason = safety.Reason
 				s.minerHashing = false
-			s.minerStateGen++
+				s.minerStateGen++
 				s.minerLocalHashPS = 0
 				s.minerMu.Unlock()
 				retryDelay := 3 * time.Second
@@ -5916,7 +5922,7 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 			if stopReason, shouldExit := classifyMinerContextCancellation(err, ctx); stopReason != "" {
 				s.minerMu.Lock()
 				s.minerHashing = false
-			s.minerStateGen++
+				s.minerStateGen++
 				s.minerLocalHashPS = 0
 				if !shouldExit {
 					s.minerLastError = MinerStopSupervisorCancelled + ": mining worker epoch cancelled; restarting workers."
@@ -5955,8 +5961,8 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 				if s.minerTemplateRecoveryStartedAt.IsZero() {
 					s.minerTemplateRecoveryStartedAt = s.minerLastTemplateRefreshAttempt
 				}
-		s.minerHashing = true
-		s.minerStateGen++
+				s.minerHashing = true
+				s.minerStateGen++
 				s.minerMu.Unlock()
 				continue
 			}
@@ -5994,7 +6000,7 @@ func (s *Server) minerLoop(ctx context.Context, pubHash []byte, threads int) {
 				s.minerLastTemplateRefreshReason = "template_refresh_failed"
 				s.minerLastTemplateRefreshAttempt = time.Now()
 				s.minerHashing = false
-			s.minerStateGen++
+				s.minerStateGen++
 				s.minerLocalHashPS = 0
 				s.minerMu.Unlock()
 				timer := time.NewTimer(3 * time.Second)

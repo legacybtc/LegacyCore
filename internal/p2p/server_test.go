@@ -52,6 +52,58 @@ func TestBootstrapPeersSetGet(t *testing.T) {
 	}
 }
 
+func TestSetPeerPolicyNormalizesConnectOnlyPeers(t *testing.T) {
+	s := New(chaincfg.MainNet, nil, nil, log.New(io.Discard, "", 0))
+	s.SetPeerPolicy(chaincfg.MainNet.ChainID, false, true, 100, true, []string{"legacycoinseed.space", "192.0.2.10:19555"})
+	if _, ok := s.connectOnly["legacycoinseed.space:19555"]; !ok {
+		t.Fatalf("connect-only host without port was not normalized: %#v", s.connectOnly)
+	}
+	if _, ok := s.connectOnly["192.0.2.10:19555"]; !ok {
+		t.Fatalf("connect-only host with port missing: %#v", s.connectOnly)
+	}
+	if err := s.AddNode(context.Background(), "legacycoinseed2.space"); err == nil || !strings.Contains(err.Error(), "connect-only") {
+		t.Fatalf("unexpected AddNode error for disallowed peer: %v", err)
+	}
+}
+
+func TestConnectSeedsDialsFixedSeeds(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	accepted := make(chan struct{})
+	go func() {
+		conn, err := ln.Accept()
+		if err == nil {
+			_ = conn.Close()
+			close(accepted)
+		}
+	}()
+
+	params := chaincfg.MainNet
+	params.DNSSeeds = nil
+	params.FixedSeeds = []string{ln.Addr().String()}
+	chain, err := blockchain.New(params, p2pTestHasher{}, storage.NewFileStore(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New(params, chain, nil, log.New(io.Discard, "", 0))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	s.connectSeeds(ctx)
+	select {
+	case <-accepted:
+	case <-ctx.Done():
+		t.Fatal("fixed seed was not dialed")
+	}
+	cancel()
+	s.closeActivePeerConnections()
+	s.wg.Wait()
+}
+
 func TestHandleAddrPayloadCachesDiscoveredPeer(t *testing.T) {
 	s := New(chaincfg.MainNet, nil, nil, log.New(io.Discard, "", 0))
 	s.SetPeerPolicy(chaincfg.MainNet.ChainID, false, true, 100, true, []string{"127.0.0.1:65535"})

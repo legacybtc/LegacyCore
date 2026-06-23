@@ -26,6 +26,7 @@ var MainNet = Params{
 	DefaultPort:      19555,
 	RPCPort:          19556,
 	DNSSeeds:         []string{"legacycoinseed.space", "legacycoinseed2.space"},
+	FixedSeeds:       []string{"77.127.37.157:19555", "199.19.72.89:19555", "91.219.63.20:19555"},
 	YespowerPers:     "LegacyCoinPoW",
 	GenesisTimestamp: "onecpuonevote Legacy Coin Public Mainnet 20/May/2026",
 	GenesisTime:      1779235200,
@@ -44,6 +45,7 @@ var TestNet = Params{
 	DefaultPort:      19655,
 	RPCPort:          19656,
 	DNSSeeds:         []string{"testnet-seed.legacycoinseed.space"},
+	FixedSeeds:       nil,
 	YespowerPers:     "LegacyCoinPoWTestnet",
 	GenesisTimestamp: "onecpuonevote Legacy Coin Testnet 02/May/2026",
 	GenesisTime:      uint32(time.Date(2026, 5, 2, 0, 0, 0, 0, time.UTC).Unix()),
@@ -62,6 +64,7 @@ type Params struct {
 	DefaultPort      uint16
 	RPCPort          uint16
 	DNSSeeds         []string
+	FixedSeeds       []string
 	YespowerPers     string
 	GenesisTimestamp string
 	GenesisTime      uint32
