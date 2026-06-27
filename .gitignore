@@ -14,8 +14,8 @@ cmd/legacywallet/frontend/node_modules/
 cmd/legacywallet/frontend/.dashboard-test/
 cmd/legacywallet/frontend/dist/
 
-# Wails build output
-cmd/legacywallet/build/
+# Wails build output (binaries), but track template files (appicon.png, windows/*)
+cmd/legacywallet/build/bin/
 
 # Release packages
 LegacyWallet-*-WINDOWS/
