@@ -20,7 +20,8 @@ if ($LASTEXITCODE -ne 0) {
     throw "git archive failed"
 }
 
-powershell.exe -ExecutionPolicy Bypass -File "$repoRoot\scripts\scan-source-cleanliness.ps1" -Root $repoRoot
+$scanScript = Join-Path $repoRoot "scripts/scan-source-cleanliness.ps1"
+& $scanScript -Root $repoRoot
 if ($LASTEXITCODE -ne 0) {
     throw "source cleanliness scan failed"
 }
