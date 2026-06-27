@@ -1,6 +1,7 @@
 package blockchain
 
 import (
+	"bytes"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -1161,6 +1162,21 @@ func (c *Chain) NextRequiredBits() (uint32, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.nextRequiredBitsLocked()
+}
+
+// LegacyHeaderHash returns the Bitcoin-style double-SHA256 hash of a block
+// header. Some Legacy Coin peers (notably older 1.0.2 / mixed-build seed nodes)
+// index stored blocks by this hash rather than by the canonical Yespower PoW
+// hash. Requesting getdata with BOTH hashes maximises the chance that a peer
+// can locate and serve the block body, which is critical for synchronisation
+// when the peer population is heterogeneous. This hash is purely for wire
+// interoperability and is never used for consensus, storage indexing, or PoW.
+func (c *Chain) LegacyHeaderHash(header wire.BlockHeader) (chainhash.Hash, error) {
+	var buf bytes.Buffer
+	if err := header.Serialize(&buf); err != nil {
+		return chainhash.Hash{}, err
+	}
+	return chainhash.DoubleHashB(buf.Bytes()), nil
 }
 
 // ValidateHeaderSequence validates an announced header batch against the active

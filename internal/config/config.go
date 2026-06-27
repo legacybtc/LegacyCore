@@ -112,8 +112,15 @@ func loadConfigKV(path string) (map[string][]string, error) {
 
 	kv := make(map[string][]string)
 	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+	firstLine := true
 	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+		line := scanner.Text()
+		if firstLine {
+			line = strings.TrimPrefix(line, "\ufeff")
+			firstLine = false
+		}
+		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -590,17 +597,93 @@ func LoadMiningConfig(path string) (MiningConfig, error) {
 	return cfg, nil
 }
 
+// configMultiValueKeys are keys that legitimately may appear on many lines
+// (peer lists). They are deduplicated by value rather than replaced.
+var configMultiValueKeys = map[string]bool{
+	"addnode": true,
+	"connect": true,
+}
+
+// AppendConfigLine upserts a single key=value line into the config file.
+//
+// For scalar keys (everything except addnode/connect) every existing line with
+// the same key is replaced by exactly one new line holding the new value, so
+// repeated calls (e.g. mining RPC toggles) no longer make the file grow
+// without bound.
+//
+// For multi-valued keys (addnode/connect) the new value is appended only if no
+// existing line already has that exact value, so the same peer cannot be
+// added many times.
 func AppendConfigLine(path, key, value string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	key = strings.TrimSpace(key)
+	value = strings.TrimSpace(value)
+	if key == "" {
+		return fmt.Errorf("AppendConfigLine: empty key")
+	}
+	// Reject empty or relative paths that could escape the data directory.
+	cleanPath := filepath.Clean(path)
+	if cleanPath == "" || cleanPath == "." || cleanPath == ".." {
+		return fmt.Errorf("AppendConfigLine: invalid config path")
+	}
+	if err := os.MkdirAll(filepath.Dir(cleanPath), 0700); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
-	if err != nil {
+	lowerKey := strings.ToLower(key)
+	multi := configMultiValueKeys[lowerKey]
+
+	existing, err := os.ReadFile(cleanPath)
+	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	defer f.Close()
-	_, err = fmt.Fprintf(f, "\n%s=%s\n", key, value)
-	return err
+	var out []string
+	alreadyPresent := false
+	for _, raw := range strings.Split(string(existing), "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			out = append(out, raw)
+			continue
+		}
+		kv := line
+		if i := strings.IndexByte(kv, '#'); i >= 0 {
+			kv = strings.TrimSpace(kv[:i])
+		}
+		eq := strings.IndexByte(kv, '=')
+		if eq <= 0 {
+			out = append(out, raw)
+			continue
+		}
+		k := strings.ToLower(strings.TrimSpace(kv[:eq]))
+		v := strings.TrimSpace(kv[eq+1:])
+		if k != lowerKey {
+			out = append(out, raw)
+			continue
+		}
+		if multi {
+			if v == value {
+				alreadyPresent = true
+				out = append(out, raw) // keep existing duplicate, do not add again
+			} else {
+				out = append(out, raw) // keep other peer values
+			}
+			continue
+		}
+		// scalar key: drop the old line; a single fresh line is appended below
+	}
+	newLine := key + "=" + value
+	if multi && alreadyPresent {
+		// nothing to add; still normalise the file ending below
+	} else {
+		out = append(out, newLine)
+	}
+	joined := strings.Join(out, "\n")
+	if !strings.HasSuffix(joined, "\n") {
+		joined += "\n"
+	}
+	tmp := cleanPath + ".tmp"
+	if err := os.WriteFile(tmp, []byte(joined), 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, cleanPath)
 }
 
 type PeerPolicy struct {

@@ -14,7 +14,7 @@ BUILD_TIME=$(date -Iseconds)
 BACKUP_DIR="${HOME}/legacycoin-backup-$(date +%Y%m%d-%H%M%S)"
 EVIDENCE_DIR="/tmp/legacycoin-update-$(date +%Y%m%d-%H%M%S)"
 TMP_BUILD="/tmp/legacycoin-build-$$"
-VERSION="1.0.6-rc1"
+VERSION="1.0.7"
 
 mkdir -p "$BACKUP_DIR" "$EVIDENCE_DIR" "$TMP_BUILD"
 

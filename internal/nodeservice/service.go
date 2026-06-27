@@ -140,6 +140,7 @@ type walletTxRecord struct {
 	PeerCountAtSubmit int32  `json:"peer_count_at_submit"`
 	LastError         string `json:"last_error,omitempty"`
 	RawTxHex          string `json:"raw_tx_hex,omitempty"`
+	Memo              string `json:"memo,omitempty"`
 }
 
 func New(dataDir string) *Service {
@@ -1153,7 +1154,7 @@ func (s *Service) ListReceiveAddresses() ([]string, error) {
 	return n.Wallet().ListAddresses(), nil
 }
 
-func (s *Service) SendToAddress(to, amt, fee string) (map[string]any, error) {
+func (s *Service) SendToAddress(to, amt, fee, memo string) (map[string]any, error) {
 	n, err := s.current()
 	if err != nil {
 		return nil, err
@@ -1216,6 +1217,7 @@ func (s *Service) SendToAddress(to, amt, fee string) (map[string]any, error) {
 		Broadcast:         broadcast,
 		BroadcastCount:    broadcastCount,
 		PeerCountAtSubmit: peerCount,
+		Memo:              memo,
 	}
 	if s.walletOwnsAddress(n, to) {
 		rec.Direction = "self_transfer"
@@ -3395,6 +3397,7 @@ func walletTxToMap(rec walletTxRecord) map[string]any {
 		"broadcast_count":      rec.BroadcastCount,
 		"peer_count_at_submit": rec.PeerCountAtSubmit,
 		"last_error":           rec.LastError,
+		"memo":                 rec.Memo,
 	}
 }
 

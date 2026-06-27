@@ -34,10 +34,67 @@ addnode=
 	}
 }
 
+func TestAppendConfigLineDedupesAddNodeAndUpsertsScalar(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "legacycoin.conf")
+	seed := "addnode=legacycoinseed.space\naddnode=199.19.72.89\nmining_threads=2\nrpcbind=127.0.0.1\n"
+	if err := os.WriteFile(path, []byte(seed), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// Re-adding an existing addnode must NOT create a duplicate.
+	if err := AppendConfigLine(path, "addnode", "199.19.72.89"); err != nil {
+		t.Fatalf("AppendConfigLine addnode: %v", err)
+	}
+	// Adding a brand-new addnode must append.
+	if err := AppendConfigLine(path, "addnode", "77.127.37.157"); err != nil {
+		t.Fatalf("AppendConfigLine addnode new: %v", err)
+	}
+	// A scalar key must be replaced, not appended, even when written twice.
+	if err := AppendConfigLine(path, "mining_threads", "4"); err != nil {
+		t.Fatalf("AppendConfigLine mining_threads: %v", err)
+	}
+	if err := AppendConfigLine(path, "mining_threads", "8"); err != nil {
+		t.Fatalf("AppendConfigLine mining_threads 2: %v", err)
+	}
+
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	plain := string(body)
+	if c := strings.Count(plain, "199.19.72.89"); c != 1 {
+		t.Fatalf("duplicate addnode value present count=%d\n%s", c, plain)
+	}
+	if c := strings.Count(plain, "mining_threads="); c != 1 {
+		t.Fatalf("mining_threads not upserted count=%d\n%s", c, plain)
+	}
+	if !strings.Contains(plain, "mining_threads=8") {
+		t.Fatalf("mining_threads value not updated\n%s", plain)
+	}
+	if !strings.Contains(plain, "addnode=77.127.37.157") {
+		t.Fatalf("new addnode missing\n%s", plain)
+	}
+	if !strings.Contains(plain, "rpcbind=127.0.0.1") {
+		t.Fatalf("unrelated line dropped\n%s", plain)
+	}
+
+	nodes, err := LoadAddNodes(path)
+	if err != nil {
+		t.Fatalf("LoadAddNodes: %v", err)
+	}
+	wantNodes := []string{"legacycoinseed.space", "199.19.72.89", "77.127.37.157"}
+	if !reflect.DeepEqual(nodes, wantNodes) {
+		t.Fatalf("nodes=%v want=%v", nodes, wantNodes)
+	}
+}
+
 func TestLoadRPCAuth(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "legacycoin.conf")
-	content := `
+	// Write config WITH a UTF-8 BOM to verify the parser handles it
+	// (Notepad and PowerShell Set-Content add BOMs).
+	content := "\ufeff" + `
 rpcuser=alice
 rpcpassword=secret123
 `

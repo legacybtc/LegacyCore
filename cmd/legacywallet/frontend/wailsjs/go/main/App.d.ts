@@ -130,7 +130,7 @@ export function SaveSettings(arg1:main.Settings):Promise<main.Settings>;
 
 export function SearchExplorer(arg1:string):Promise<Record<string, any>>;
 
-export function SendToAddress(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;
+export function SendToAddress(arg1:string,arg2:string,arg3:string,arg4:string):Promise<Record<string, any>>;
 
 export function SendTokenBurn(arg1:Record<string, any>,arg2:string):Promise<Record<string, any>>;
 

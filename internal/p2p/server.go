@@ -51,6 +51,19 @@ var (
 )
 
 const (
+	// missingParentTTL stops us hammering one peer for the same missing
+	// parent block over and over. missingParentEvictTTL bounds memory.
+	missingParentTTL      = 2 * time.Minute
+	missingParentEvictTTL = 10 * time.Minute
+	missingParentSeenCap  = 2048
+	// maxMissingParentPeers is how many ahead peers (besides the one that
+	// relayed the orphan) we ask for the missing parent, so a single
+	// unhelpful peer cannot stall synchronisation indefinitely.
+	maxMissingParentPeers = 4
+	missingParentWriteTO  = 5 * time.Second
+)
+
+const (
 	MaxPeers         = maxPeers
 	MaxOutboundPeers = maxOutboundPeers
 )
@@ -190,7 +203,18 @@ type Server struct {
 	blocksServed        int64
 	blocksRequested     int64
 	blockReqTimeouts    int64
-	wg                  sync.WaitGroup
+	blockMessagesRecv   int64
+	headersBatchesRecv  int64
+	headersRejected     int64
+	// Missing-parent resolution: when a block arrives whose parent is
+	// unknown we record it here so we can request that exact parent by
+	// hash from the relaying peer (and a few other ahead peers) instead of
+	// stalling sync forever waiting for headers that are keyed off the
+	// active tip.
+	missingParentMu   sync.Mutex
+	missingParentSeen map[string]time.Time
+	missingParentReqs int64
+	wg                sync.WaitGroup
 }
 
 func New(params chaincfg.Params, chain *blockchain.Chain, pool *mempool.Pool, logger *log.Logger) *Server {
@@ -211,6 +235,7 @@ func New(params chaincfg.Params, chain *blockchain.Chain, pool *mempool.Pool, lo
 		rejectCounts:        make(map[string]int),
 		rejectLastLog:       make(map[string]time.Time),
 		outboundLastAttempt: make(map[string]time.Time),
+		missingParentSeen:   make(map[string]time.Time),
 		chainID:             params.ChainID,
 		peerSafety:          true,
 		banThreshold:        100,
@@ -1089,7 +1114,51 @@ func (s *Server) SyncStatus() map[string]any {
 		"blocks_served_to_peers":          health["blocks_served_to_peers"],
 		"blocks_requested_from_peers":     health["blocks_requested_from_peers"],
 		"block_request_timeouts":          health["block_request_timeouts"],
+		"block_messages_received":         health["block_messages_received"],
+		"header_batches_received":        health["header_batches_received"],
+		"header_batches_rejected":        health["header_batches_rejected"],
+		"missing_parent_requests":        health["missing_parent_requests"],
+		"missing_parent_tracked":         health["missing_parent_tracked"],
+		"diagnostic":                      s.syncDiagnostic(localHeight, bestPeerHeight, behind, health, lastError, lastReject, lastBlockHash),
 		"health":                          health,
+	}
+}
+
+// syncDiagnostic interprets the live sync counters into a single human-readable
+// verdict so the operator can see, from getsyncstatus alone, exactly where the
+// sync chain is breaking: no peers / no headers / headers rejected / no block
+// bodies returned / orphan loop. This is the key diagnostic for the
+// 1.0.6<->1.0.2 seed-node sync investigation.
+func (s *Server) syncDiagnostic(localHeight, bestPeerHeight int32, behind bool, health map[string]any, lastError, lastReject, lastBlockHash string) string {
+	if localHeight < 0 {
+		return "chain tip not initialized (genesis not loaded)"
+	}
+	if bestPeerHeight <= localHeight {
+		return "current; not behind any connected peer"
+	}
+	hdrBatches, _ := health["header_batches_received"].(int64)
+	hdrRejected, _ := health["header_batches_rejected"].(int64)
+	blockMsgs, _ := health["block_messages_received"].(int64)
+	blocksReqd, _ := health["blocks_requested_from_peers"].(int64)
+	blockInvs, _ := health["block_invs_received"].(int64)
+	missingReqs, _ := health["missing_parent_requests"].(int64)
+	lastBlockAge, _ := health["last_block_received_ago_seconds"].(float64)
+	lastHeaderAge, _ := health["last_header_received_ago_seconds"].(float64)
+	switch {
+	case hdrBatches == 0 && lastHeaderAge < 0:
+		return "no header batches received yet; peer is not responding to getheaders (check chain_id / protocol compatibility)"
+	case hdrBatches > 0 && hdrRejected == hdrBatches && blocksReqd == 0:
+		return fmt.Sprintf("all %d header batch(es) REJECTED by ValidateHeaderSequence; no getdata sent. Likely a consensus/protocol mismatch with the peer (difficulty, bits, pow, or parent linkage). Check daemon log for 'header batch ... REJECTED'.", hdrBatches)
+	case blocksReqd > 0 && blockMsgs == 0:
+		return fmt.Sprintf("requested %d block bodies via getdata but received 0 block messages; the peer is silently NOT serving blocks (header_batches_recv=%d, rejected=%d). If even the %d blocks the peer itself announced in inv are being requested with the peer's own hashes and still not served, the peer node itself is broken - it must be upgraded to 1.0.7 (which has the orphan fix and proper block serving). 1.0.2 seed nodes must be retired. Run: legacycoin-cli getpeerinfo and check subver/chain_id to confirm the peer version.", blocksReqd, hdrBatches, hdrRejected, blockInvs)
+	case blockMsgs > 0 && lastBlockHash == "":
+		return fmt.Sprintf("received %d block message(s) but none were processed as connected; all orphaned or rejected. Check 'Block processed | status=orphan' lines and last_block_reason.", blockMsgs)
+	case missingReqs > 0:
+		return fmt.Sprintf("orphan-parent resolution active: %d missing-parent request(s) issued. Sync may recover once a peer serves the parent. If it does not, the peer cannot serve the parent block (hash mismatch likely).", missingReqs)
+	case lastBlockAge > 0 && behind:
+		return fmt.Sprintf("behind by %d; last block message %.0fs ago. Watchdog should rotate peers.", bestPeerHeight-localHeight, lastBlockAge)
+	default:
+		return fmt.Sprintf("behind by %d; sync in progress", bestPeerHeight-localHeight)
 	}
 }
 
@@ -1149,6 +1218,39 @@ func (s *Server) noteSyncBeat() {
 	s.healthMu.Unlock()
 }
 
+// logSyncHeartbeat emits one consolidated sync-progress line per sync tick so
+// the exact stall point (no headers / headers rejected / no block bodies) is
+// visible in the daemon log without an RPC call. This is the single most
+// useful diagnostic for the 1.0.6/1.0.7 seed-node sync investigation.
+func (s *Server) logSyncHeartbeat() {
+	tipHeight := int32(-1)
+	tipHash := ""
+	if tip := s.chain.Tip(); tip != nil {
+		tipHeight = tip.Height
+		tipHash = tip.Hash
+	}
+	bestPeer := s.BestPeerHeight()
+	s.healthMu.Lock()
+	lastBlock := s.lastBlockMsg
+	blockMsgs := s.blockMessagesRecv
+	getdataRecv := s.getDataBlocksRecv
+	hdrBatches := s.headersBatchesRecv
+	hdrRejected := s.headersRejected
+	blocksReqd := s.blocksRequested
+	s.healthMu.Unlock()
+	missingReqs := atomic.LoadInt64(&s.missingParentReqs)
+	var blockAgo string
+	if lastBlock.IsZero() {
+		blockAgo = "never"
+	} else {
+		blockAgo = fmt.Sprintf("%.0fs ago", time.Since(lastBlock).Seconds())
+	}
+	s.log.Printf("p2p sync heartbeat: tip=%d:%s best_peer=%d behind=%d | block_msgs_recv=%d (last %s) | getdata_block_reqs_recv=%d blocks_requested=%d | hdr_batches_recv=%d hdr_rejected=%d | missing_parent_reqs=%d",
+		tipHeight, tipHash, bestPeer, max32(0, bestPeer-tipHeight),
+		blockMsgs, blockAgo, getdataRecv, blocksReqd,
+		hdrBatches, hdrRejected, missingReqs)
+}
+
 func (s *Server) noteSyncRequest() {
 	s.healthMu.Lock()
 	s.lastSyncReq = time.Now()
@@ -1170,6 +1272,7 @@ func (s *Server) noteHeaderMessage() {
 func (s *Server) noteBlockMessage() {
 	s.healthMu.Lock()
 	s.lastBlockMsg = time.Now()
+	s.blockMessagesRecv++
 	s.healthMu.Unlock()
 }
 
@@ -1241,6 +1344,13 @@ func (s *Server) healthSnapshot() map[string]any {
 	blocksServed := s.blocksServed
 	blocksRequested := s.blocksRequested
 	blockReqTimeouts := s.blockReqTimeouts
+	blockMessagesRecv := s.blockMessagesRecv
+	headersBatchesRecv := s.headersBatchesRecv
+	headersRejected := s.headersRejected
+	missingParentReqs := atomic.LoadInt64(&s.missingParentReqs)
+	s.missingParentMu.Lock()
+	missingParentPending := len(s.missingParentSeen)
+	s.missingParentMu.Unlock()
 	s.healthMu.Unlock()
 	return map[string]any{
 		"node_uptime_seconds":                       secondsSince(startedAt),
@@ -1278,6 +1388,11 @@ func (s *Server) healthSnapshot() map[string]any {
 		"blocks_served_to_peers":                    blocksServed,
 		"blocks_requested_from_peers":               blocksRequested,
 		"block_request_timeouts":                    blockReqTimeouts,
+		"block_messages_received":                   blockMessagesRecv,
+		"header_batches_received":                   headersBatchesRecv,
+		"header_batches_rejected":                   headersRejected,
+		"missing_parent_requests":                   missingParentReqs,
+		"missing_parent_tracked":                    missingParentPending,
 	}
 }
 
@@ -1530,6 +1645,7 @@ func (s *Server) syncLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			s.noteSyncBeat()
+			s.logSyncHeartbeat()
 			s.requestSyncFromAheadPeers(false)
 		}
 	}
@@ -2278,6 +2394,14 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 				s.log.Printf("p2p processed block from %s status=%s hash=%s height=%d best_changed=%v reason=%s", conn.RemoteAddr(), result.Status, result.Hash, result.CalculatedHeight, result.BestChanged, result.Reason)
 			}
 			if !result.Connected || !result.BestChanged {
+				// The block's parent is unknown: store it as an orphan and
+				// proactively request the missing parent by hash. Without
+				// this the node only ever asks for blocks "after its tip"
+				// (via getheaders/getblocks), so an orphan whose parent is
+				// not on the active chain leaves sync stuck forever.
+				if result.Status == blockchain.BlockStatusOrphan && !result.ParentKnown && result.PrevHash != "" {
+					s.requestMissingParent(p, result.PrevHash)
+				}
 				continue
 			}
 			s.noteBlockConnected()
@@ -2387,6 +2511,9 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 		case wire.CommandHeaders:
 			s.noteHeaderMessage()
 			p.markHeaderReceived()
+			s.healthMu.Lock()
+			s.headersBatchesRecv++
+			s.healthMu.Unlock()
 			headers, err := wire.ReadHeadersPayload(bytes.NewReader(msg.Payload))
 			if err != nil {
 				s.log.Printf("p2p parse headers from %s: %v", conn.RemoteAddr(), err)
@@ -2397,6 +2524,9 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 				// batch when we also asked it for headers. Do not disconnect for
 				// non-connecting header batches; keep the peer available so its
 				// own sync request can fetch our blocks.
+				s.healthMu.Lock()
+				s.headersRejected++
+				s.healthMu.Unlock()
 				s.log.Printf("p2p ignore non-syncable headers from %s: %v", conn.RemoteAddr(), err)
 			}
 		}
@@ -2954,6 +3084,110 @@ func (s *Server) requestUnknownBlocks(p *peer, inv []wire.InvVect) error {
 	return s.writePeerMessage(p, wire.CommandGetData, payload)
 }
 
+// requestMissingParent asks peer p (and, via a bounded goroutine, a few other
+// ahead peers) for the block whose hash is parentHash. It is called when a
+// block is processed as an orphan whose parent is unknown: relaying the
+// parent by hash is the only way the chain can connect in that case, because
+// the ordinary sync path only ever requests blocks after the active tip.
+func (s *Server) requestMissingParent(p *peer, parentHash string) {
+	if parentHash == "" {
+		return
+	}
+	now := time.Now()
+	s.missingParentMu.Lock()
+	if s.missingParentSeen == nil {
+		s.missingParentSeen = make(map[string]time.Time)
+	}
+	if last, ok := s.missingParentSeen[parentHash]; ok && now.Sub(last) < missingParentTTL {
+		s.missingParentMu.Unlock()
+		return
+	}
+	if len(s.missingParentSeen) >= missingParentSeenCap {
+		for h, t := range s.missingParentSeen {
+			if now.Sub(t) > missingParentEvictTTL {
+				delete(s.missingParentSeen, h)
+			}
+		}
+	}
+	s.missingParentSeen[parentHash] = now
+	s.missingParentMu.Unlock()
+
+	h, err := chainhash.FromString(parentHash)
+	if err != nil {
+		s.log.Printf("p2p orphan parent %s not a valid hash: %v", parentHash, err)
+		return
+	}
+	inv := []wire.InvVect{{Type: wire.InvTypeBlock, Hash: h}}
+	payload, err := wire.InvPayload(inv)
+	if err != nil {
+		s.log.Printf("p2p orphan parent %s inv payload: %v", parentHash, err)
+		return
+	}
+
+	if p != nil {
+		if err := s.writePeerMessage(p, wire.CommandGetData, payload); err != nil {
+			s.log.Printf("p2p request missing parent %s from %s: %v", parentHash, p.remote, err)
+		} else {
+			atomic.AddInt64(&s.missingParentReqs, 1)
+			p.markBlocksRequested(1)
+			s.addBlocksRequested(1)
+			if s.pretty {
+				s.log.Printf("📦 Orphan parent %s unknown; requested getdata from %s", parentHash, s.peerLabel(p))
+			} else {
+				s.log.Printf("p2p orphan block parent %s unknown; requested getdata from %s", parentHash, p.remote)
+			}
+		}
+	}
+
+	// Ask a few other ahead peers asynchronously so one unhelpful peer
+	// cannot block sync. Runs in its own goroutine with a short per-write
+	// deadline; it never touches consensus state.
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.requestMissingParentFromOthers(parentHash, payload, p)
+	}()
+}
+
+// requestMissingParentFromOthers asks up to maxMissingParentPeers ahead peers
+// (other than skip) for the missing parent block identified by payload's inv.
+func (s *Server) requestMissingParentFromOthers(parentHash string, payload []byte, skip *peer) {
+	localHeight := int32(-1)
+	if tip := s.chain.Tip(); tip != nil {
+		localHeight = tip.Height
+	}
+	asked := 0
+	for _, other := range s.syncCandidates() {
+		if asked >= maxMissingParentPeers {
+			break
+		}
+		if other == nil || other == skip {
+			continue
+		}
+		other.lastMu.Lock()
+		peerHeight := other.height
+		otherErr := other.lastSyncError
+		other.lastMu.Unlock()
+		if peerHeight <= localHeight {
+			continue
+		}
+		if otherErr != "" {
+			continue
+		}
+		_ = other.conn.SetWriteDeadline(time.Now().Add(missingParentWriteTO))
+		err := s.writePeerMessage(other, wire.CommandGetData, payload)
+		_ = other.conn.SetWriteDeadline(time.Time{})
+		if err != nil {
+			continue
+		}
+		asked++
+		atomic.AddInt64(&s.missingParentReqs, 1)
+		other.markBlocksRequested(1)
+		s.addBlocksRequested(1)
+		s.log.Printf("p2p orphan block parent %s unknown; also requested getdata from %s", parentHash, other.remote)
+	}
+}
+
 func (s *Server) serveInventory(p *peer, inv []wire.InvVect) error {
 	inv = limitInv(inv, maxServeInvItems)
 	servedBlocks := 0
@@ -3090,27 +3324,60 @@ func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error 
 		return nil
 	}
 	tipHeight := int32(-1)
+	tipHash := ""
 	if tip := s.chain.Tip(); tip != nil {
 		tipHeight = tip.Height
+		tipHash = tip.Hash
 	}
+	firstPrev := headers[0].PrevBlock.String()
+	s.log.Printf("p2p received %d headers from %s (first_prev=%s, our_tip=%d:%s)", len(headers), p.remote, firstPrev, tipHeight, tipHash)
 	hashes, err := s.chain.ValidateHeaderSequence(headers)
 	if err != nil {
+		s.log.Printf("p2p header batch from %s REJECTED by ValidateHeaderSequence: %v (first_prev=%s, our_tip=%d:%s, batch_len=%d)",
+			p.remote, err, firstPrev, tipHeight, tipHash, len(headers))
+		// Fix #9: if the batch does not connect to our tip, the peer is
+		// likely multiple batches ahead and the announced PrevBlock is a
+		// block we do not yet have. Request that exact parent by hash
+		// (same mechanism as the block-orphan path) instead of stalling.
+		if firstPrev != "" && firstPrev != tipHash {
+			s.requestMissingParent(p, firstPrev)
+		}
 		return err
 	}
 	if tipHeight >= 0 {
-		p.setAdvertisedHeight(tipHeight + int32(len(hashes)))
+		// Cap at int32 max to satisfy gosec G115 (len is bounded by
+		// MaxHeadersPerMessage=2000 so this never overflows in practice).
+		advertised := tipHeight + int32(len(hashes))
+		if advertised < 0 {
+			advertised = 0
+		}
+		p.setAdvertisedHeight(advertised)
 	}
-	want := make([]wire.InvVect, 0, len(hashes))
-	for _, hash := range hashes {
+	want := make([]wire.InvVect, 0, len(hashes)*2)
+	skipped := 0
+	dualHash := 0
+	for i, hash := range hashes {
 		if s.chain.HasBlock(hash.String()) {
+			skipped++
 			continue
 		}
+		// Fix #11: request the block by BOTH the canonical Yespower hash
+		// AND the legacy double-SHA256 header hash. Older 1.0.2 / mixed
+		// seed nodes index blocks by double-SHA256; without that hash they
+		// silently skip our getdata and serve nothing. Requesting both is
+		// cheap and safe (a peer that knows only one will skip the other).
 		want = append(want, wire.InvVect{Type: wire.InvTypeBlock, Hash: hash})
+		if legacy, lerr := s.chain.LegacyHeaderHash(headers[i]); lerr == nil && legacy != hash {
+			want = append(want, wire.InvVect{Type: wire.InvTypeBlock, Hash: legacy})
+			dualHash++
+		}
 		if len(want) >= maxGetDataItems {
 			break
 		}
 	}
 	if len(want) == 0 {
+		s.log.Printf("p2p validated %d headers from %s but all %d block bodies already present (want=0, skipped=%d)",
+			len(hashes), p.remote, skipped, skipped)
 		return nil
 	}
 	payload, err := wire.InvPayload(want)
@@ -3119,6 +3386,7 @@ func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error 
 	}
 	p.markBlocksRequested(len(want))
 	s.addBlocksRequested(len(want))
-	s.log.Printf("p2p request %d inventory items from %s", len(want), p.remote)
+	s.log.Printf("p2p validated %d headers from %s; requesting %d block bodies via getdata (tip=%d, skipped=%d, dual_hash=%d)",
+		len(hashes), p.remote, len(want), tipHeight, skipped, dualHash)
 	return s.writePeerMessage(p, wire.CommandGetData, payload)
 }

@@ -280,6 +280,56 @@ func TestRequestUnknownBlockInvSendsGetData(t *testing.T) {
 	}
 }
 
+func TestRequestMissingParentSendsGetDataForOrphanPrev(t *testing.T) {
+	chain, err := blockchain.New(chaincfg.MainNet, p2pTestHasher{}, storage.NewFileStore(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New(chaincfg.MainNet, chain, nil, log.New(io.Discard, "", 0))
+
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	p := &peer{conn: serverConn, remote: "pipe-orphan", lastSeen: time.Now(), lastPong: time.Now()}
+
+	parent := chainhash.DoubleHashB([]byte("missing parent of an orphan block"))
+	done := make(chan error, 1)
+	go func() {
+		s.requestMissingParent(p, parent.String())
+		done <- nil
+	}()
+
+	_ = clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	msg, err := wire.ReadMessage(clientConn, chaincfg.MainNet.MessageStart)
+	if err != nil {
+		t.Fatalf("read getdata: %v", err)
+	}
+	if msg.Command != wire.CommandGetData {
+		t.Fatalf("command=%s want %s", msg.Command, wire.CommandGetData)
+	}
+	inv, err := wire.ReadInvPayload(bytes.NewReader(msg.Payload))
+	if err != nil {
+		t.Fatalf("parse getdata payload: %v", err)
+	}
+	if len(inv) != 1 || inv[0].Type != wire.InvTypeBlock || inv[0].Hash != parent {
+		t.Fatalf("getdata inv=%+v want block %s", inv, parent.String())
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("requestMissingParent did not return")
+	}
+
+	// Dedupe: a second call for the same parent within the TTL must NOT
+	// queue another write on the pipe (the reader would otherwise block).
+	s.requestMissingParent(p, parent.String())
+	_ = clientConn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	if _, err := wire.ReadMessage(clientConn, chaincfg.MainNet.MessageStart); err == nil {
+		t.Fatal("duplicate missing-parent request was re-sent within TTL")
+	}
+}
+
 func TestRequestSyncFromPeerIfBehindSendsHeadersAndBlocks(t *testing.T) {
 	params := chaincfg.MainNet
 	genesisBlock, err := genesis.NewBlock(params)

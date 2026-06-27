@@ -73,7 +73,7 @@ type NodeTestResult struct {
 	Message string `json:"message"`
 }
 
-const lifecycleBuildMarker = "v1.0.6"
+const lifecycleBuildMarker = "v1.0.7"
 
 func NewApp() *App {
 	s := defaultSettings()
@@ -316,8 +316,8 @@ func (a *App) ensureExplorerIndexesDefault() {
 	a.lifecycleLogf("local explorer index default setup failed: %v", out["message"])
 }
 
-func (a *App) SendToAddress(to, amount, fee string) (map[string]any, error) {
-	return a.service.SendToAddress(to, amount, fee)
+func (a *App) SendToAddress(to, amount, fee, memo string) (map[string]any, error) {
+	return a.service.SendToAddress(to, amount, fee, memo)
 }
 
 func (a *App) SendTokenDeploy(op map[string]any, fee string) (map[string]any, error) {

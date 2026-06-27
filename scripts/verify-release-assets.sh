@@ -8,7 +8,7 @@ fi
 
 SENSITIVE_RE="$(
   printf '%s' \
-  'C:\\Users|C:/Users|MA''X/|Co''dex|/home/ma''xgor|server''2|root''@|wallet\.dat|\.cookie|config\.local\.json'
+  'C:''\\Users|C:''/Users|MA''X/|Co''dex|/home/ma''xgor|server''2|root''@|wallet\.dat|\.cookie|config\.local\.json'
 )"
 
 check_windows_zip() {

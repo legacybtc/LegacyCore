@@ -254,8 +254,8 @@ export function SearchExplorer(arg1) {
   return window['go']['main']['App']['SearchExplorer'](arg1);
 }
 
-export function SendToAddress(arg1, arg2, arg3) {
-  return window['go']['main']['App']['SendToAddress'](arg1, arg2, arg3);
+export function SendToAddress(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['SendToAddress'](arg1, arg2, arg3, arg4);
 }
 
 export function SendTokenBurn(arg1, arg2) {

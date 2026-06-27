@@ -8,7 +8,7 @@ cd "$ROOT_DIR"
 echo ""
 echo "======================================================"
 echo "  Legacy Core Server - Linux Build Script"
-echo "  Version 1.0.6"
+echo "  Version 1.0.7"
 echo "======================================================"
 echo ""
 

@@ -44,7 +44,7 @@ func (ws *WebSearcher) Search(ctx context.Context, query string, maxResults int)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "LegacyWallet/1.0.6 (AI Companion)")
+	req.Header.Set("User-Agent", "LegacyWallet/1.0.7 (AI Companion)")
 
 	resp, err := ws.client.Do(req)
 	if err != nil {

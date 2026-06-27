@@ -89,7 +89,7 @@ type Backend = {
   ListReceiveAddresses(): Promise<string[]>;
   GetDefaultAddress(): Promise<string>;
   SetDefaultMiningAddress(address: string): Promise<Dict>;
-  SendToAddress(to: string, amount: string, fee: string): Promise<Dict>;
+  SendToAddress(to: string, amount: string, fee: string, memo: string): Promise<Dict>;
   SendTokenDeploy(op: Dict, fee: string): Promise<Dict>;
   SendTokenTransfer(op: Dict, fee: string): Promise<Dict>;
   SendTokenBurn(op: Dict, fee: string): Promise<Dict>;
@@ -1017,6 +1017,7 @@ function SendPage({ snap, run, refresh }: PageProps) {
   const [to, setTo] = useState("");
   const [amount, setAmount] = useState("");
   const [fee, setFee] = useState("0.00001000");
+  const [memo, setMemo] = useState("");
   const [confirming, setConfirming] = useState(false);
   const [typed, setTyped] = useState("");
   const [result, setResult] = useState<Dict | null>(null);
@@ -1028,7 +1029,7 @@ function SendPage({ snap, run, refresh }: PageProps) {
 
   async function broadcast() {
     setLocalError("");
-    const sent = await run("Broadcast transaction", () => api().SendToAddress(to, amount, fee));
+    const sent = await run("Broadcast transaction", () => api().SendToAddress(to, amount, fee, memo.trim()));
     setResult(sent);
     setConfirming(false);
     setTyped("");
@@ -1065,6 +1066,9 @@ function SendPage({ snap, run, refresh }: PageProps) {
         <Field label="Fee">
           <input value={fee} onChange={(e) => setFee(e.target.value)} />
         </Field>
+        <Field label="Memo / примечание">
+          <input value={memo} onChange={(e) => setMemo(e.target.value)} placeholder="Optional note for your records" maxLength={140} />
+        </Field>
         <div className="totalLine"><span>Total</span><strong>{formatHumanLBTC(total)}</strong></div>
         <button className="danger wide" disabled={!canConfirm} onClick={review}>Review transaction</button>
       </section>
@@ -1086,6 +1090,7 @@ function SendPage({ snap, run, refresh }: PageProps) {
               ["Fee", result.fee_lbtc || formatHumanLBTC(result.fee / 1e8)],
               ["Total", result.total_lbtc || formatHumanLBTC(result.total / 1e8)],
               ["Destination", result.address || to],
+              ["Memo", result.memo || "—"],
               ["Broadcast", result.broadcast ? `Broadcast to ${result.broadcast_count || 0} peer(s)` : "Not broadcast yet"],
               ["Confirmations", result.confirmations || 0],
               ["Mempool", yesNo(result.mempool)],
@@ -1105,7 +1110,7 @@ function SendPage({ snap, run, refresh }: PageProps) {
         <div className="modalShade">
           <section className="modal">
             <h3>Confirm send</h3>
-            <InfoPanel title="Transaction" rows={[["Destination", to], ["Amount", formatHumanLBTC(amount)], ["Fee", formatHumanLBTC(fee)], ["Total", formatHumanLBTC(total)]]} flush />
+            <InfoPanel title="Transaction" rows={[["Destination", to], ["Amount", formatHumanLBTC(amount)], ["Fee", formatHumanLBTC(fee)], ["Memo", memo.trim() || "—"], ["Total", formatHumanLBTC(total)]]} flush />
             {peers === 0 && <Notice tone="warn" text="Your wallet has no network peers. This transaction may stay local until peers connect." />}
             <Notice tone="warn" text="After broadcast, transactions cannot be cancelled. Please verify the address and amount. Type CONFIRM to enable Broadcast now." />
             <Field label="Confirmation">
@@ -1804,7 +1809,7 @@ function BackupPage({ snap, run, refresh }: PageProps) {
         <h3>Backup Wallet</h3>
         <Notice tone="danger" text="Never share wallet backups, private keys, or seed material. Backups may contain spend authority." />
         <Field label="Backup file path">
-          <input value={dest} onChange={(e) => setDest(e.target.value)} placeholder="C:\\Users\\You\\Documents\\legacy-wallet-backup.json" />
+          <input value={dest} onChange={(e) => setDest(e.target.value)} placeholder="legacy-wallet-backup.json" />
         </Field>
         <div className="row">
           <button onClick={() => setDest(suggested)}>Use suggested path</button>
@@ -2510,8 +2515,8 @@ function SettingsPage({ snap, run }: PageProps) {
         </div>
       </section>
       <InfoPanel title="About" rows={[
-["Product", "Legacy Wallet 1.0.6"],
-["Core Engine", "Legacy Core 1.0.6"],
+["Product", "Legacy Wallet 1.0.7"],
+      ["Core Engine", "Legacy Core 1.0.7"],
         ["Network", "Legacy Coin Mainnet"],
         ["Coin", "Legacy Coin / LBTC"],
         ["P2P port", snap.coin?.p2p_port],
@@ -2907,8 +2912,8 @@ function RPCConsolePage({ snap }: { snap: Dict }) {
 }
 
 function resolveBuildInfo(snap: Dict | null) {
-const markerRaw = String(snap?.lifecycle?.marker || "v1.0.6").trim();
-const marker = markerRaw.toLowerCase().includes("debug") ? "v1.0.6" : (markerRaw || "v1.0.6");
+const markerRaw = String(snap?.lifecycle?.marker || "v1.0.7").trim();
+const marker = markerRaw.toLowerCase().includes("debug") ? "v1.0.7" : (markerRaw || "v1.0.7");
   const commitRaw = String(snap?.lifecycle?.commit_short || snap?.lifecycle?.commit || "").trim();
   const commit = !commitRaw || commitRaw.toLowerCase() === "unknown" ? "local build" : commitRaw;
   const buildTimeRaw = String(snap?.lifecycle?.build_time || "").trim();
@@ -2922,7 +2927,7 @@ function AboutPage({ snap }: { snap: Dict }) {
     <div className="page aboutPage">
       <InfoPanel title="About Legacy Wallet" rows={[
         ["Product", "Legacy Wallet"],
-        ["Core", "Legacy Core v1.0.6"],
+        ["Core", "Legacy Core v1.0.7"],
         ["Build", build.marker],
         ["Commit", build.commit],
         ["Build time", build.buildTimeLabel],
@@ -3107,6 +3112,7 @@ function ActivityGroup({ title, rows, empty, onRetry, onRemove }: { title: strin
             <strong>{directionLabel(o.direction)} <span className={`statusPill ${o.status}`}>{o.status_label || titleCase(String(o.status || ""))}</span></strong>
             <p className="mono">{o.txid ? <CopyableValue value={o.txid} /> : "pending txid"}</p>
             {o.address && <p className="muted mono"><CopyableValue value={o.address} /></p>}
+            {o.memo && <p className="muted">Примечание: {String(o.memo)}</p>}
           </div>
           <div className="right">
             <strong>{o.amount_lbtc ? lbtc(o.amount_lbtc) : fmtAmount(o.amount)}</strong>
