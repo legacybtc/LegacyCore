@@ -6,7 +6,7 @@
   "frontend:build": "npm run build",
   "frontend:dev:watcher": "npm run dev",
   "frontend:dev:serverUrl": "http://localhost:5173",
-  "icon": "assets/icon.ico",
+  "icon": "assets/appicon.png",
   "info": {
     "companyName": "Legacy Coin",
     "productName": "Legacy Wallet",

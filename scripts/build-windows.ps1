@@ -174,16 +174,10 @@ if ($SkipWails) {
     Write-Host "  Install Wails: go install github.com/wailsapp/wails/v2/cmd/wails@latest"
     Write-Host "  Then run: build-windows.bat"
 } else {
-    # Embed Legacy Coin icon via rsrc — wails.json has no icon so Wails won't overwrite
-    $icoFile = Join-Path $repoRoot "cmd\legacywallet\assets\icon.ico"
-    $sysoFile = Join-Path $repoRoot "cmd\legacywallet\rsrc_windows_amd64.syso"
-    if (Test-Path $icoFile) {
-        $rsrc = Get-Command rsrc -ErrorAction SilentlyContinue
-        if (-not $rsrc) { go install github.com/akavel/rsrc@latest }
-        Remove-Item $sysoFile -Force -ErrorAction SilentlyContinue
-        $null = cmd /c "rsrc -ico $icoFile -o $sysoFile 2>nul"
-        Write-Host "  Icon: embedded via rsrc"
-    }
+    # Icon is set in wails.json (icon: assets/appicon.png) — Wails handles
+    # platform-specific conversion natively (ICO on Windows, ICNS on macOS).
+    # Clean up any stale rsrc .syso from the old icon-embedding approach.
+    Remove-Item (Join-Path $repoRoot "cmd\legacywallet\rsrc_windows_amd64.syso") -Force -ErrorAction SilentlyContinue
 
     # Always clean frontend dist before Wails build
     Remove-Item -Recurse -Force "cmd\legacywallet\frontend\dist" -ErrorAction SilentlyContinue
