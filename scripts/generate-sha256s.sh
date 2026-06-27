@@ -26,7 +26,7 @@ while IFS= read -r file; do
   [[ -z "$file" ]] && continue
   # shellcheck disable=SC2086
   $HASH_CMD "$file" >>"$tmp_file"
-done < <(find . -maxdepth 1 -type f -printf '%P\n' | grep -v "^${out_base}$" | LC_ALL=C sort)
+done < <(find . -maxdepth 1 -type f | sed 's|^\./||' | grep -v "^${out_base}$" | LC_ALL=C sort)
 
 mv "$tmp_file" "$OUT_FILE"
 chmod 644 "$OUT_FILE"

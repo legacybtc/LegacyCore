@@ -16,7 +16,7 @@ check_windows_zip() {
   local listing
   listing="$(unzip -Z -1 "$archive")"
 
-  for required in legacy-wallet.exe legacycoind.exe legacycoin-cli.exe README_FIRST.txt LICENSE NOTICE SHA256SUMS.txt START_HERE.bat; do
+  for required in LegacyWallet.exe legacycoind.exe legacycoin-cli.exe README_FIRST.txt README_WALLET.txt LICENSE NOTICE SHA256SUMS.txt START_HERE.bat; do
     if ! grep -Fxq "$required" <<<"$listing"; then
       echo "[verify-release-assets] missing $required in $archive" >&2
       return 1

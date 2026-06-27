@@ -10,9 +10,12 @@ PKG_NAME="LegacyCore-LBTC-mainnet-linux-${ARCH}-${VERSION}.tar.gz"
 PKG_PATH="$DIST_ROOT/$PKG_NAME"
 PKG_TAR_TMP="$DIST_ROOT/LegacyCore-LBTC-mainnet-linux-${ARCH}-${VERSION}.tar"
 
-bash "$ROOT_DIR/scripts/build-linux.sh" "$ARCH"
-
 mkdir -p "$PKG_DIR"
+
+# Build directly into the staging dir; pass ARCH for cross-compile and let
+# build-linux.sh honor the CC / LINUX_CC env exported by release.yml.
+bash "$ROOT_DIR/scripts/build-linux.sh" "$ARCH" "$PKG_DIR"
+
 cp "$ROOT_DIR/LICENSE" "$PKG_DIR/LICENSE"
 cp "$ROOT_DIR/NOTICE" "$PKG_DIR/NOTICE"
 cp "$ROOT_DIR/configs/legacycoin-pretty.conf.example" "$PKG_DIR/legacycoin.conf.example"

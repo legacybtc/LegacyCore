@@ -68,6 +68,10 @@ jobs:
           update: true
           install: mingw-w64-ucrt-x86_64-gcc
 
+      - name: Install Wails CLI
+        shell: pwsh
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
       - name: Build package
         shell: pwsh
         run: ./scripts/package-windows.ps1 -Version $env:RELEASE_VERSION
@@ -133,7 +137,7 @@ jobs:
 
       - name: Build package
         env:
-          LINUX_CC: aarch64-linux-gnu-gcc
+          CC: aarch64-linux-gnu-gcc
         run: bash scripts/package-linux.sh "$RELEASE_VERSION" arm64
 
       - name: Verify archive
