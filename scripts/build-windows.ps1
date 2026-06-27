@@ -174,10 +174,34 @@ if ($SkipWails) {
     Write-Host "  Install Wails: go install github.com/wailsapp/wails/v2/cmd/wails@latest"
     Write-Host "  Then run: build-windows.bat"
 } else {
-    # Icon is set in wails.json (icon: assets/appicon.png) — Wails handles
-    # platform-specific conversion natively (ICO on Windows, ICNS on macOS).
-    # Clean up any stale rsrc .syso from the old icon-embedding approach.
-    Remove-Item (Join-Path $repoRoot "cmd\legacywallet\rsrc_windows_amd64.syso") -Force -ErrorAction SilentlyContinue
+    # Embed the LegacyCoin .ico as a Windows resource via rsrc.
+    # Wails does not reliably set the .exe's file/taskbar icon on Windows
+    # from the PNG in wails.json; rsrc generates a .syso that the Go linker
+    # picks up automatically.  Must use & (PowerShell call) — cmd /c would
+    # not inherit the PATH that includes the Go bin directory.
+    $icoFile = Join-Path $repoRoot "cmd\legacywallet\assets\icon.ico"
+    $sysoFile = Join-Path $repoRoot "cmd\legacywallet\rsrc_windows_amd64.syso"
+    if (Test-Path $icoFile) {
+        # Locate rsrc — check PATH first, then Go bin dir
+        $rsrcExe = (Get-Command rsrc -ErrorAction SilentlyContinue).Source
+        if (-not $rsrcExe) {
+            Write-Host "  Installing rsrc..."
+            go install github.com/akavel/rsrc@latest
+            $rsrcExe = Join-Path "$(go env GOPATH)" "bin\rsrc.exe"
+            if (-not (Test-Path $rsrcExe)) {
+                $rsrcExe = Join-Path "$(go env GOBIN)" "rsrc.exe"
+            }
+        }
+        if (-not (Test-Path $rsrcExe)) { throw "rsrc executable not found after install" }
+        Remove-Item $sysoFile -Force -ErrorAction SilentlyContinue
+        Write-Host "  rsrc: $rsrcExe -> $sysoFile"
+        & $rsrcExe -ico $icoFile -o $sysoFile
+        if ($LASTEXITCODE -ne 0) { throw "rsrc failed with exit code $LASTEXITCODE" }
+        if (-not (Test-Path $sysoFile)) { throw "rsrc did not create $sysoFile" }
+        Write-Host "  Icon: rsrc embedded (LegacyCoin logo)"
+    } else {
+        Write-Host "  WARNING: icon.ico not found at $icoFile — using Wails default icon"
+    }
 
     # Always clean frontend dist before Wails build
     Remove-Item -Recurse -Force "cmd\legacywallet\frontend\dist" -ErrorAction SilentlyContinue
