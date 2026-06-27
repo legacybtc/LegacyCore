@@ -8,49 +8,120 @@ Legacy Core is the official full-node, CLI, miner, and desktop wallet for **Lega
 
 Download the latest release from [GitHub Releases](https://github.com/legacybtc/LegacyCore/releases).
 
-**Windows:** Extract the ZIP, double-click `LegacyWallet.exe`.
+**Windows:**
+```
+Extract the ZIP → double-click START_HERE.bat → wallet opens
+```
+Or run the node manually:
+```
+legacycoind.exe
+legacycoin-cli getblockchaininfo
+```
 
-**Linux:** Extract the tarball, then:
+**Linux:**
 ```bash
+tar -xzf LegacyCore-LBTC-mainnet-linux-amd64-*.tar.gz
 chmod +x legacycoind legacycoin-cli
 ./legacycoind
+./legacycoin-cli getblockchaininfo
+```
+
+**macOS:**
+```bash
+tar -xzf LegacyCore-LBTC-mainnet-macos-amd64-*.tar.gz
+chmod +x legacycoind legacycoin-cli
+./legacycoind
+./legacycoin-cli getblockchaininfo
+```
+
+> **Verify integrity:** Compare SHA256 checksums against `SHA256SUMS.txt` before running.
+
+---
+
+## Build From Source
+
+```bash
+git clone https://github.com/legacybtc/LegacyCore.git
+cd LegacyCore
+```
+
+### Windows
+
+**Prerequisites:** Go 1.22+, Node.js LTS, MSYS2 UCRT64 with GCC.
+
+1. Install [MSYS2](https://www.msys2.org/), open **MSYS2 UCRT64**, run:
+   ```
+   pacman -S --needed mingw-w64-ucrt-x86_64-gcc
+   ```
+2. Open **Command Prompt** in the repo folder, run:
+   ```
+   build-windows.bat
+   ```
+
+Produces: `legacycoind.exe`, `legacycoin-cli.exe`, `cmd\legacywallet\build\bin\LegacyWallet.exe`
+
+To skip the desktop wallet:
+```
+build-windows.bat -SkipWails
+```
+
+### Linux
+
+**Prerequisites:** `gcc`, `golang-go`, `git`
+
+```bash
+sudo bash scripts/build-linux.sh
+```
+
+Also supports cross-compilation:
+```bash
+# Build for ARM64
+sudo bash scripts/build-linux.sh arm64
+
+# Build with custom output dir
+sudo bash scripts/build-linux.sh amd64 ./my-binaries
+```
+
+Produces: `legacycoind`, `legacycoin-cli`
+
+### macOS
+
+**Prerequisites:** Xcode Command Line Tools (`clang`), Go 1.22+
+
+```bash
+bash scripts/package-macos.sh v1.0.7 amd64
+```
+
+For Apple Silicon (ARM64):
+```bash
+bash scripts/package-macos.sh v1.0.7 arm64
+```
+
+Produces: `dist/LegacyCore-LBTC-mainnet-macos-*.tar.gz`
+
+---
+
+## Makefile (all platforms)
+
+```bash
+make build          # daemon + CLI + internal wallet
+make test           # run Go tests
+make vet            # run Go vet
+make clean          # remove build artifacts
+make linux-arm64    # cross-compile daemon + CLI for ARM64
 ```
 
 ---
 
-## Build From Source (One Command)
+## Server Deployment (Linux)
 
-### Windows
-
-Requirements: **MSYS2 UCRT64** with GCC (one-time, 5 minutes).
-
-1. Download and install MSYS2 from https://www.msys2.org/
-2. Open **MSYS2 UCRT64** from the Start Menu, run:
-   ```
-   pacman -S --needed mingw-w64-ucrt-x86_64-gcc
-   ```
-3. Download the source ZIP from GitHub, extract it
-4. Open Command Prompt in the extracted folder, run:
-   ```
-   build-windows
-   ```
-
-Produces: `legacycoind.exe`, `legacycoin-cli.exe`, `LegacyWallet.exe`
-
-### Linux
-
-Requirements: **gcc, golang-go, git**
+One-command update for production nodes:
 
 ```bash
-apt update && apt install -y gcc golang-go git
+sudo bash scripts/server/update-node.sh
 ```
 
-Download the source ZIP, extract, then:
-```bash
-bash build-linux.sh
-```
-
-Produces: `legacycoind`, `legacycoin-cli`
+Backs up current binaries, builds from source, verifies mainnet identity, stops old daemon, installs new binary, restarts, and verifies RPC is alive. Generates a rollback script and build evidence.
 
 ---
 
@@ -64,7 +135,7 @@ Produces: `legacycoind`, `legacycoin-cli`
 | RPC port | `19556` |
 | DNS seeds | `legacycoinseed.space`, `legacycoinseed2.space` |
 | yespower | `LegacyCoinPoW` (cgo-c-reference) |
-| Data dir | `%APPDATA%\LegacyCoin` (Windows) / `~/.legacycoin` (Linux) |
+| Data dir | `%APPDATA%\LegacyCoin` (Windows) / `~/.legacycoin` (Linux/macOS) |
 
 Verify any build:
 ```
@@ -96,17 +167,7 @@ The desktop wallet includes a **Legacy AI Workstation** — accessible from the 
 - **Research** — DuckDuckGo web search with AI analysis
 - **Provider switching** — Built-in AI (offline) / Groq (free cloud) / llama.cpp (local GPU)
 
-No Python, no LangChain, no cloud API required. Everything runs in the wallet. Privacy-first — wallet secrets are never exposed to AI.
-
----
-
-## Server Deployment (Linux)
-
-```bash
-sudo bash scripts/server/update-node.sh
-```
-
-Backs up the current node, builds from source, verifies identity, stops old daemon, installs new binary, restarts, and verifies RPC is alive.
+No Python, no LangChain, no cloud API required. Privacy-first — wallet secrets are never exposed to AI.
 
 ---
 
