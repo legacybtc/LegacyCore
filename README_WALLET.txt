@@ -1,29 +1,18 @@
-Legacy Wallet Quick Guide
+Legacy Wallet - Quick Guide
 
-Legacy Wallet runs the Legacy Coin full node, wallet, miner controls, and
-desktop interface in one Windows application.
+Legacy Wallet runs the full node, wallet, miner controls, and desktop UI in one app.
 
 Getting started:
-
-1. Start the wallet with START_HERE.bat or LegacyWallet.exe.
-2. Let the node sync before relying on balances or confirmations.
-3. Use the wallet backup option before receiving meaningful funds.
+1. Launch with START_HERE.bat or LegacyWallet.exe
+2. Wait for sync before relying on balances
+3. Back up your wallet before receiving funds
 
 Mining:
-
-- Use the Mining tab to start or stop solo CPU mining.
-- Keep the wallet open while mining.
-- Immature mining rewards must mature before they can be spent.
-
-Node identity:
-
-- Coin: Legacy Coin / LBTC
-- P2P port: 19555
-- RPC port: 19556
-- Yespower personalization: LegacyCoinPoW
+- Use the Mining tab to start/stop solo CPU mining
+- Keep the wallet open while mining
+- Rewards mature after 100 confirmations
 
 Safety:
-
-- Keep RPC private.
-- Do not expose wallet files or backups.
-- Verify release checksums before use.
+- P2P port 19555 may be public
+- RPC port 19556 must stay private
+- Never share wallet files, backups, or passphrases

@@ -198,6 +198,8 @@ No Python, no LangChain, no cloud API required. Privacy-first — wallet secrets
 
 ---
 
-## Docs Index
+## Docs
 
-See [docs/README.md](docs/README.md) for organized documentation by audience.
+- [Mining](docs/MINING.md)
+- [Wallet Backup & Restore](docs/WALLET_BACKUP_AND_RESTORE.md)
+- [Troubleshooting](docs/TROUBLESHOOTING.md)
