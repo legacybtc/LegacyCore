@@ -13,9 +13,12 @@ function Assert-Path([string]$path, [string]$name) {
 }
 
 Write-Host "[package-windows] building binaries"
-powershell.exe -ExecutionPolicy Bypass -File "$repoRoot\scripts\build-windows.ps1"
+# Run build-windows.ps1 in-process so all env (CGO_ENABLED, CC, MSYS2 PATH) is
+# inherited directly from this pwsh shell. Avoids spawning a legacy
+# powershell.exe (Windows PowerShell 5.1) that may not see MSYS2 env changes.
+& "$repoRoot\scripts\build-windows.ps1"
 if ($LASTEXITCODE -ne 0) {
-    throw "build-windows.ps1 failed with exit code $LASTEXITCODE"
+    throw "build-windows.ps1 failed with exit code $LASTLASTEXITCODE"
 }
 
 $distRoot = Join-Path $repoRoot "dist"

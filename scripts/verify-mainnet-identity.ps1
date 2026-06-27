@@ -22,10 +22,23 @@ $checks = [ordered]@{
     "rpc port" = "rpc port:\s+19556"
 }
 
+$failures = @()
 foreach ($name in $checks.Keys) {
     if ($params -notmatch $checks[$name]) {
-        throw "mainnet identity check failed: $name"
+        $failures += "$name (expected pattern: $($checks[$name]))"
+        Write-Host "[verify-mainnet-identity] FAIL: $name" -ForegroundColor Yellow
+        Write-Host "  expected pattern: $($checks[$name])"
+    } else {
+        Write-Host "[verify-mainnet-identity] ok:   $name"
     }
+}
+
+if ($failures.Count -gt 0) {
+    Write-Host ""
+    Write-Host "==== legacycoind params output (verbatim) ===="
+    Write-Host $params
+    Write-Host "==== end params output ===="
+    throw "mainnet identity check failed: $($failures -join ', ')"
 }
 
 Write-Host "Mainnet identity verification passed."

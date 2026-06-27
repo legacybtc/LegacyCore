@@ -26,13 +26,28 @@ export CGO_ENABLED=1
 export GOOS=darwin
 export GOARCH="$ARCH"
 
-if [[ "$(go env GOHOSTOS)" != "darwin" && -z "${CC:-}" ]]; then
+HOST_OS="$(go env GOHOSTOS)"
+HOST_ARCH="$(go env GOARCH)"
+
+if [[ "$HOST_OS" != "darwin" ]]; then
   echo "[package-macos] non-mac host detected. Set CC for darwin cross-compile (for example osxcross/zig)." >&2
   exit 2
 fi
 
+# Pick the right C compiler for native or cross-arch CGO on macOS.
+# Apple's clang supports both amd64 and arm64 via -arch.
+case "$ARCH" in
+  amd64) export CC="clang -arch x86_64" ;;
+  arm64) export CC="clang -arch arm64" ;;
+esac
+echo "[package-macos] using CC=$CC"
+
+if [[ "$HOST_ARCH" != "$ARCH" ]]; then
+  echo "[package-macos] cross-compiling darwin/$ARCH on darwin/$HOST_ARCH"
+fi
+
 echo "[package-macos] building darwin/$ARCH binaries"
-go build -trimpath -ldflags "-s -w" -o "$PKG_DIR/legacycoind" ./cmd/legacycoind
+go build -trimpath -ldflags "-s -w" -o "$PKG_DIR/legacycoind"   ./cmd/legacycoind
 go build -trimpath -ldflags "-s -w" -o "$PKG_DIR/legacycoin-cli" ./cmd/legacycoin-cli
 
 cp "$ROOT_DIR/LICENSE" "$PKG_DIR/LICENSE"
