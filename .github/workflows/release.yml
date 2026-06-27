@@ -160,13 +160,14 @@ jobs:
 
   macos-matrix:
     name: macOS package (${{ matrix.arch }}, experimental)
+    if: false   # Experimental — disabled in v1.0.7 until macOS cross-compile is finalized.
     runs-on: macos-latest
     needs: source-clean
     continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
-        arch: []   # Experimental — disabled in v1.0.7 until macOS cross-compile is finalized.
+        arch: [amd64, arm64]
     steps:
       - name: Checkout
         uses: actions/checkout@v4

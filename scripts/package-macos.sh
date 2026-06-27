@@ -80,10 +80,13 @@ bash "$ROOT_DIR/scripts/generate-sha256s.sh" "$PKG_DIR"
 (
   cd "$DIST_ROOT"
   rm -f "$TMP_TAR" "$PKG_PATH"
-  tar --owner=0 --group=0 --numeric-owner --mode='0755' -cf "$TMP_TAR" \
+  # NOTE: --owner/--group/--numeric-owner are GNU tar flags but widely
+  # supported on macOS tar as well.  --mode is *not* supported on
+  # BSD tar (macOS); we already set file modes with chmod above.
+  tar --owner=0 --group=0 --numeric-owner -cf "$TMP_TAR" \
     "macos-${ARCH}/legacycoind" \
     "macos-${ARCH}/legacycoin-cli"
-  tar --owner=0 --group=0 --numeric-owner --mode='0644' -rf "$TMP_TAR" \
+  tar --owner=0 --group=0 --numeric-owner -rf "$TMP_TAR" \
     "macos-${ARCH}/legacycoin.conf.example" \
     "macos-${ARCH}/LICENSE" \
     "macos-${ARCH}/NOTICE" \

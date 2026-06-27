@@ -45,24 +45,45 @@ Copy-Item $walletExe (Join-Path $stageDir "LegacyWallet.exe")
 Copy-Item $coreExe (Join-Path $stageDir "legacycoind.exe")
 Copy-Item $cliExe (Join-Path $stageDir "legacycoin-cli.exe")
 
-$dllCandidates = @(
-    "C:\msys64\ucrt64\bin",
-    "C:\msys64\mingw64\bin",
-    "C:\msys64\clang64\bin"
-)
+function Find-Dll {
+    param([string]$Name)
+    # 1) Known MSYS2 bin dirs
+    $candidates = @(
+        "C:\msys64\ucrt64\bin",
+        "C:\msys64\mingw64\bin",
+        "C:\msys64\clang64\bin",
+        "C:\msys64\mingw32\bin"
+    )
+    foreach ($dir in $candidates) {
+        $path = Join-Path $dir $Name
+        if (Test-Path $path) { return $path }
+    }
+    # 2) Ask the C compiler where its own runtime lives
+    $gcc = Get-Command gcc -ErrorAction SilentlyContinue
+    if ($gcc) {
+        try {
+            $result = & $gcc.Source -print-file-name=$Name 2>$null
+            if ($result -and $result -ne $Name -and (Test-Path $result)) {
+                return $result
+            }
+        } catch {}
+    }
+    # 3) Recursive search under MSYS2 root
+    if (Test-Path "C:\msys64") {
+        $found = Get-ChildItem -Recurse -Path "C:\msys64" -Filter $Name -ErrorAction SilentlyContinue |
+            Select-Object -First 1 -ExpandProperty FullName
+        if ($found) { return $found }
+    }
+    return $null
+}
 $dlls = @("libgcc_s_seh-1.dll", "libstdc++-6.dll", "libwinpthread-1.dll")
 foreach ($dll in $dlls) {
-    $copied = $false
-    foreach ($dir in $dllCandidates) {
-        $path = Join-Path $dir $dll
-        if (Test-Path $path) {
-            Copy-Item $path (Join-Path $stageDir $dll)
-            $copied = $true
-            break
-        }
-    }
-    if (-not $copied) {
-        throw "required DLL not found: $dll"
+    $path = Find-Dll $dll
+    if ($path) {
+        Copy-Item $path (Join-Path $stageDir $dll)
+        Write-Host "[package-windows] bundled $dll"
+    } else {
+        Write-Host "[package-windows] WARNING: $dll not found — binaries may not run without MSYS2 in PATH"
     }
 }
 
