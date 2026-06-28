@@ -34,6 +34,7 @@ const (
 	maxServeInvItems             = 2048
 	maxAddrRelayItems            = 10
 	maxAddrDialItems             = 8
+	maxAddrDialsPerPeer          = 16
 	maxKnownPeerAddresses        = 2048
 	addrMaxAge                   = 7 * 24 * time.Hour
 	dnsSeedLookupTimeout         = 5 * time.Second
@@ -107,6 +108,7 @@ type peer struct {
 	lastPenaltyAt     time.Time
 	lastPenaltyReason string
 	rateLimited       bool
+	addrDialCount     int
 	bannedUntil       time.Time
 	rateWindowStart   time.Time
 	rateWindowCount   int
@@ -2122,10 +2124,19 @@ func (s *Server) handleAddrPayload(ctx context.Context, p *peer, payload []byte)
 			}
 		}
 		if fresh && dialed < maxAddrDialItems && !s.peerAddressActive(addr) {
+			p.lastMu.Lock()
+			overLimit := p.addrDialCount >= maxAddrDialsPerPeer
+			p.lastMu.Unlock()
+			if overLimit {
+				continue
+			}
 			if err := s.AddNode(ctx, addr); err != nil {
 				s.log.Printf("p2p discovered peer %s from %s not dialed: %v", addr, p.remote, err)
 			} else {
 				dialed++
+				p.lastMu.Lock()
+				p.addrDialCount++
+				p.lastMu.Unlock()
 			}
 		}
 	}
