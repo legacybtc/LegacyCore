@@ -9,7 +9,7 @@ Set-Location $repoRoot
 Write-Host ""
 Write-Host "======================================================"
 Write-Host "  Legacy Core Wallet - Windows Build Script"
-Write-Host "  Version 1.0.7"
+  Write-Host "  Version 1.0.8"
 Write-Host "======================================================"
 Write-Host ""
 

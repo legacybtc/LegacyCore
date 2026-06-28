@@ -69,6 +69,9 @@ All standard Bitcoin-derived checks enforced:
 | `listtransactions` | ✅ | Paginated via `maxRows` param (was full chain scan in v1.0.7) |
 | `getnewaddress` | ✅ | |
 | `validateaddress` | ✅ | |
+| `verifymessage` | ✅ | Added in v1.0.8 — recovers pubkey from compact signature, compares address |
+| `getchaintips` | ✅ | Added in v1.0.8 — returns all chain tips |
+| `uptime` | ✅ | Added in v1.0.8 — returns server uptime seconds | |
 | `getnetworkinfo` | ✅ | |
 | `getpeerinfo` | ✅ | |
 | `estimatefee` / `estimatesmartfee` | ✅ | **Added.** Median mempool feerate with `nblocks` tiers: ≤2→75th pctile, ≤5→50th, >5→25th. Falls back to `MinRelayFeePerKB` when mempool empty. |

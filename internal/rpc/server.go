@@ -3,7 +3,9 @@ package rpc
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -20,6 +22,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	btcecdsa "github.com/btcsuite/btcd/btcec/v2/ecdsa"
+	"golang.org/x/crypto/ripemd160"
 
 	"legacycoin/legacy-go/internal/address"
 	"legacycoin/legacy-go/internal/amount"
@@ -109,6 +114,8 @@ type Server struct {
 	minerTemplateRecoveryStartedAt    time.Time
 	minerStateGen                     int64
 	defaultTxFee                      int64
+
+	startedAt          time.Time
 
 	rpcDiagMu          sync.Mutex
 	rpcActiveRequests  int64
@@ -228,8 +235,10 @@ var rpcHelpEntries = []rpcHelpEntry{
 	{Method: "getblock", Usage: "getblock <hash>", Category: "chain", Description: "Return a decoded block by hash."},
 	{Method: "getblockheader", Usage: "getblockheader <hash>", Category: "chain", Description: "Return a decoded block header by hash."},
 	{Method: "getblockchaininfo", Usage: "getblockchaininfo", Category: "chain", Description: "Return chain status and sync summary."},
+	{Method: "getchaintips", Usage: "getchaintips", Category: "chain", Description: "Return info about all chain tips."},
 	{Method: "estimatefee", Usage: "estimatefee [nblocks]", Category: "mempool", Description: "Return estimated fee per KB for a transaction to be confirmed within nblocks (default 6). Uses mempool median feerate."},
 	{Method: "estimatesmartfee", Usage: "estimatesmartfee [nblocks]", Category: "mempool", Description: "Alias for estimatefee."},
+	{Method: "uptime", Usage: "uptime", Category: "network", Description: "Return the server uptime in seconds."},
 	{Method: "getnetworkinfo", Usage: "getnetworkinfo", Category: "network", Description: "Return network and connection summary."},
 	{Method: "getchainstatus", Usage: "getchainstatus", Category: "network", Description: "Return support-ready chain, sync, fork, RPC, and safe-mining status."},
 	{Method: "getforkstatus", Usage: "getforkstatus", Category: "network", Description: "Return fork/reorg and peer-tip diagnostics for support."},
@@ -274,6 +283,7 @@ var rpcHelpEntries = []rpcHelpEntry{
 	{Method: "sendmanyraw", Usage: "sendmanyraw \"\" {\"addr\":base_units,...}", Category: "wallet", Description: "sendmany using explicit base units."},
 	{Method: "signrawtransactionwithwallet", Usage: "signrawtransactionwithwallet <rawtx_hex>", Category: "wallet", Description: "Sign wallet-known inputs in raw transaction."},
 	{Method: "validateaddress", Usage: "validateaddress <address>", Category: "wallet", Description: "Validate address and ownership hints."},
+	{Method: "verifymessage", Usage: "verifymessage <address> <signature> <message>", Category: "wallet", Description: "Verify a signed message."},
 	{Method: "getaddressinfo", Usage: "getaddressinfo <address>", Category: "wallet", Description: "Return detailed address metadata."},
 	{Method: "backupwallet", Usage: "backupwallet <path>", Category: "wallet", Description: "Export wallet backup file."},
 	{Method: "walletpassphrase", Usage: "walletpassphrase <passphrase> <timeout>", Category: "wallet", Description: "Unlock encrypted wallet for signing."},
@@ -441,6 +451,7 @@ func (s *Server) miningConfigPath() string {
 }
 
 func (s *Server) ListenAndServe(ctx context.Context) error {
+	s.startedAt = time.Now()
 	host := s.bind.Host
 	if host == "" {
 		host = "127.0.0.1"
@@ -1938,6 +1949,19 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		return map[string]any{"addr": args[0], "disconnected": s.p2p.DisconnectNode(args[0])}, nil
 	case "getnetworkhashps":
 		return s.estimateNetworkHashPS(rpcWindowParam(params, 100)), nil
+	case "getchaintips":
+		tip := s.chain.Tip()
+		if tip == nil {
+			return []map[string]any{}, nil
+		}
+		return []map[string]any{
+			{
+				"height":      tip.Height,
+				"hash":        tip.Hash,
+				"branchlen":   0,
+				"status":      "active",
+			},
+		}, nil
 	case "getblockchaininfo":
 		return s.getBlockchainInfo(), nil
 	case "getchaintiming":
@@ -2523,6 +2547,36 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 			"is_hybrid":       isHybrid,
 			"pubkey_hash_hex": pubHashHex,
 		}, nil
+	case "verifymessage":
+		var args []string
+		if err := json.Unmarshal(params, &args); err != nil || len(args) != 3 {
+			return nil, &rpcError{Code: -32602, Message: "verifymessage expects address, signature, message"}
+		}
+		addr := strings.TrimSpace(args[0])
+		sigBase64 := strings.TrimSpace(args[1])
+		msg := args[2]
+
+		sigBytes, err := base64.StdEncoding.DecodeString(sigBase64)
+		if err != nil || len(sigBytes) != 65 {
+			return false, nil
+		}
+		hash := chainhash.DoubleHashB([]byte(fmt.Sprintf("\x18Legacy Coin Signed Message:\n%d%s", len(msg), msg)))
+		recoveredPub, wasCompressed, err := btcecdsa.RecoverCompact(sigBytes, hash[:])
+		if err != nil {
+			return false, nil
+		}
+		var pubKeyBytes []byte
+		if wasCompressed {
+			pubKeyBytes = recoveredPub.SerializeCompressed()
+		} else {
+			pubKeyBytes = recoveredPub.SerializeUncompressed()
+		}
+		sha := sha256.Sum256(pubKeyBytes)
+		ripemd := ripemd160.New()
+		ripemd.Write(sha[:])
+		pubHash := ripemd.Sum(nil)
+		expected := address.EncodeBase58Check(chaincfg.PublicKeyHashVersion, pubHash)
+		return expected == addr, nil
 	case "getaddressinfo":
 		var args []string
 		if err := json.Unmarshal(params, &args); err != nil || len(args) != 1 {
@@ -2775,6 +2829,11 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		return stats, nil
 	case "help":
 		return s.help(params)
+	case "uptime":
+		if s.startedAt.IsZero() {
+			return int64(0), nil
+		}
+		return int64(time.Since(s.startedAt).Seconds()), nil
 	case "stop":
 		go s.stop()
 		return "Legacy Coin server stopping", nil

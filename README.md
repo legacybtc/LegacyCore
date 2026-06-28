@@ -89,12 +89,12 @@ Produces: `legacycoind`, `legacycoin-cli`
 **Prerequisites:** Xcode Command Line Tools (`clang`), Go 1.22+
 
 ```bash
-bash scripts/package-macos.sh v1.0.7 amd64
+bash scripts/package-macos.sh v1.0.8 amd64
 ```
 
 For Apple Silicon (ARM64):
 ```bash
-bash scripts/package-macos.sh v1.0.7 arm64
+bash scripts/package-macos.sh v1.0.8 arm64
 ```
 
 Produces: `dist/LegacyCore-LBTC-mainnet-macos-*.tar.gz`

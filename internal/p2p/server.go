@@ -1155,7 +1155,7 @@ func (s *Server) syncDiagnostic(localHeight, bestPeerHeight int32, behind bool, 
 	case hdrBatches > 0 && hdrRejected == hdrBatches && blocksReqd == 0:
 		return fmt.Sprintf("all %d header batch(es) REJECTED by ValidateHeaderSequence; no getdata sent. Likely a consensus/protocol mismatch with the peer (difficulty, bits, pow, or parent linkage). Check daemon log for 'header batch ... REJECTED'.", hdrBatches)
 	case blocksReqd > 0 && blockMsgs == 0:
-		return fmt.Sprintf("requested %d block bodies via getdata but received 0 block messages; the peer is silently NOT serving blocks (header_batches_recv=%d, rejected=%d). If even the %d blocks the peer itself announced in inv are being requested with the peer's own hashes and still not served, the peer node itself is broken - it must be upgraded to 1.0.7 (which has the orphan fix and proper block serving). 1.0.2 seed nodes must be retired. Run: legacycoin-cli getpeerinfo and check subver/chain_id to confirm the peer version.", blocksReqd, hdrBatches, hdrRejected, blockInvs)
+		return fmt.Sprintf("requested %d block bodies via getdata but received 0 block messages; the peer is silently NOT serving blocks (header_batches_recv=%d, rejected=%d). If even the %d blocks the peer itself announced in inv are being requested with the peer's own hashes and still not served, the peer node itself is broken - it must be upgraded to 1.0.8 (which has the orphan fix and proper block serving). 1.0.2 seed nodes must be retired. Run: legacycoin-cli getpeerinfo and check subver/chain_id to confirm the peer version.", blocksReqd, hdrBatches, hdrRejected, blockInvs)
 	case blockMsgs > 0 && lastBlockHash == "":
 		return fmt.Sprintf("received %d block message(s) but none were processed as connected; all orphaned or rejected. Check 'Block processed | status=orphan' lines and last_block_reason.", blockMsgs)
 	case missingReqs > 0:
@@ -1226,7 +1226,7 @@ func (s *Server) noteSyncBeat() {
 // logSyncHeartbeat emits one consolidated sync-progress line per sync tick so
 // the exact stall point (no headers / headers rejected / no block bodies) is
 // visible in the daemon log without an RPC call. This is the single most
-// useful diagnostic for the 1.0.6/1.0.7 seed-node sync investigation.
+// useful diagnostic for the 1.0.6/1.0.8 seed-node sync investigation.
 func (s *Server) logSyncHeartbeat() {
 	tipHeight := int32(-1)
 	tipHash := ""
