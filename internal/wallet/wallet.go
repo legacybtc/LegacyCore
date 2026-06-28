@@ -401,6 +401,7 @@ func (w *Wallet) Unlock(passphrase string, timeout time.Duration) error {
 		w.hybridKeys = make(map[string]pqc.HybridPrivateBytes)
 	}
 	w.seedHex = state.SeedHex
+	w.mnemonic = state.Mnemonic
 	w.nextIndex = state.NextIndex
 	w.refreshMetadataLocked()
 	w.locked = false
@@ -438,6 +439,8 @@ func (w *Wallet) Lock() error {
 		w.unlockPass[i] = 0
 	}
 	w.unlockPass = nil
+	w.mnemonic = ""
+	w.seedHex = ""
 	return nil
 }
 
