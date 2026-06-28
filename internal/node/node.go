@@ -20,6 +20,7 @@ import (
 	"legacycoin/legacy-go/internal/pow"
 	"legacycoin/legacy-go/internal/rpc"
 	"legacycoin/legacy-go/internal/storage"
+	"legacycoin/legacy-go/internal/stratum"
 	"legacycoin/legacy-go/internal/version"
 	"legacycoin/legacy-go/internal/wallet"
 )
@@ -167,18 +168,20 @@ func repairPrettyLogArtifacts(line string, emoji bool) string {
 }
 
 type Node struct {
-	chain   *blockchain.Chain
-	pool    *mempool.Pool
-	wallet  *wallet.Wallet
-	p2p     *p2p.Server
-	auth    config.RPCAuth
-	rpcBind config.RPCBind
-	p2pBind config.P2PBind
-	policy  config.LaunchPolicy
-	interop config.InteropReference
-	logCfg  config.LogConfig
-	peerPol config.PeerPolicy
-	paths   config.RuntimePaths
+	chain       *blockchain.Chain
+	pool        *mempool.Pool
+	wallet      *wallet.Wallet
+	p2p         *p2p.Server
+	auth        config.RPCAuth
+	rpcBind     config.RPCBind
+	p2pBind     config.P2PBind
+	policy      config.LaunchPolicy
+	interop     config.InteropReference
+	logCfg      config.LogConfig
+	peerPol     config.PeerPolicy
+	paths       config.RuntimePaths
+	stratum     *stratum.Server
+	stratumAddr string
 }
 
 func New() (*Node, error) {
@@ -333,7 +336,18 @@ func NewWithOptions(opts Options) (*Node, error) {
 	if err := validateInteropReference(chaincfg.MainNet, interop); err != nil {
 		return nil, err
 	}
-	return &Node{chain: chain, pool: pool, wallet: w, p2p: p2pServer, auth: auth, rpcBind: rpcBind, p2pBind: p2pBind, policy: policy, interop: interop, logCfg: logCfg, peerPol: peerPol, paths: paths}, nil
+	stratumCfg, err := config.LoadStratumConfig(paths.ConfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("load stratum config: %w", err)
+	}
+	var stratumServer *stratum.Server
+	var stratumAddr string
+	if stratumCfg.Enabled {
+		stratumServer = stratum.New(params, chain, pool)
+		stratumServer.SetShareDiff(stratumCfg.Diff)
+		stratumAddr = fmt.Sprintf("0.0.0.0:%d", stratumCfg.Port)
+	}
+	return &Node{chain: chain, pool: pool, wallet: w, p2p: p2pServer, auth: auth, rpcBind: rpcBind, p2pBind: p2pBind, policy: policy, interop: interop, logCfg: logCfg, peerPol: peerPol, paths: paths, stratum: stratumServer, stratumAddr: stratumAddr}, nil
 }
 
 func isLocalhostBind(host string) bool {
@@ -398,8 +412,18 @@ func (n *Node) Run(ctx context.Context, cancel context.CancelFunc) error {
 	go func() {
 		errc <- rpc.New(n.chain, n.pool, n.wallet, n.p2p, cancel, n.auth, n.rpcBind, n.policy, n.paths.ConfigPath).ListenAndServe(ctx)
 	}()
+	if n.stratum != nil && n.stratumAddr != "" {
+		go func() {
+			if err := n.stratum.Start(n.stratumAddr); err != nil {
+				log.Printf("[Stratum] start error: %v", err)
+			}
+		}()
+	}
 	err := <-errc
 	cancel()
+	if n.stratum != nil {
+		n.stratum.Stop()
+	}
 	if err != nil {
 		return err
 	}

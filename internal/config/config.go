@@ -467,6 +467,36 @@ func LoadLogConfig(path string) (LogConfig, error) {
 	return cfg, nil
 }
 
+type StratumConfig struct {
+	Enabled bool
+	Port    int
+	Diff    float64
+}
+
+func LoadStratumConfig(path string) (StratumConfig, error) {
+	kv, err := loadConfigKV(path)
+	if err != nil {
+		return StratumConfig{}, err
+	}
+	cfg := StratumConfig{Port: 3333, Diff: 1.0}
+	cfg.Enabled = boolFromKV(kv, "stratum", false)
+	if vals := kv["stratum_port"]; len(vals) > 0 {
+		var n int
+		_, _ = fmt.Sscanf(strings.TrimSpace(vals[len(vals)-1]), "%d", &n)
+		if n > 0 && n <= 65535 {
+			cfg.Port = n
+		}
+	}
+	if vals := kv["stratum_diff"]; len(vals) > 0 {
+		var f float64
+		_, _ = fmt.Sscanf(strings.TrimSpace(vals[len(vals)-1]), "%f", &f)
+		if f > 0 {
+			cfg.Diff = f
+		}
+	}
+	return cfg, nil
+}
+
 type MiningConfig struct {
 	Enabled             bool
 	PubKeyHash          string

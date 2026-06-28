@@ -160,7 +160,7 @@ jobs:
 
   macos-matrix:
     name: macOS package (${{ matrix.arch }}, experimental)
-    if: false   # Experimental — disabled in v1.0.7 until macOS cross-compile is finalized.
+    if: true   # macOS build — native on macos-latest runner
     runs-on: macos-latest
     needs: source-clean
     continue-on-error: true

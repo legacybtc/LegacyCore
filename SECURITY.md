@@ -6,8 +6,8 @@ Legacy Core is early mainnet software. Treat RPC, wallet storage, private keys, 
 
 | Version | Status |
 | --- | --- |
-| v1.0.8 | active development & current release |
-| v1.0.7 | supported |
+| v1.0.9 | active development & current release |
+| v1.0.8 | supported |
 | older versions | unsupported |
 
 ## Critical Warnings
@@ -78,4 +78,4 @@ yespower backend: cgo-c-reference
 
 ## Consensus Safety
 
-v1.0.8 must not change consensus, genesis, chain ID, message start, yespower params, DGW/difficulty rules, ports, address/WIF formats, wallet DB compatibility, reward/supply schedule, halving interval, coinbase maturity, transaction validation consensus rules, P2P identity, or mainnet identity.
+v1.0.9 must not change consensus, genesis, chain ID, message start, yespower params, DGW/difficulty rules, ports, address/WIF formats, wallet DB compatibility, reward/supply schedule, halving interval, coinbase maturity, transaction validation consensus rules, P2P identity, or mainnet identity.

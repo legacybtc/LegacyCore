@@ -386,6 +386,32 @@ func applyRuntimeNodeFlags(args []string) error {
 			if err := config.AppendConfigLine(config.DefaultConfigPath(), "rpcport", strings.TrimSpace(val)); err != nil {
 				return err
 			}
+		case "-stratum", "--stratum":
+			if err := config.AppendConfigLine(config.DefaultConfigPath(), "stratum", "true"); err != nil {
+				return err
+			}
+		case "-stratumport", "--stratumport":
+			if !hasEq {
+				i++
+				if i >= len(args) {
+					return fmt.Errorf("%s requires value", key)
+				}
+				val = args[i]
+			}
+			if err := config.AppendConfigLine(config.DefaultConfigPath(), "stratum_port", strings.TrimSpace(val)); err != nil {
+				return err
+			}
+		case "-stratumdiff", "--stratumdiff":
+			if !hasEq {
+				i++
+				if i >= len(args) {
+					return fmt.Errorf("%s requires value", key)
+				}
+				val = args[i]
+			}
+			if err := config.AppendConfigLine(config.DefaultConfigPath(), "stratum_diff", strings.TrimSpace(val)); err != nil {
+				return err
+			}
 		case "":
 			continue
 		default:

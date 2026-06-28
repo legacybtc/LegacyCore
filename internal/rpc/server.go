@@ -285,6 +285,8 @@ var rpcHelpEntries = []rpcHelpEntry{
 	{Method: "validateaddress", Usage: "validateaddress <address>", Category: "wallet", Description: "Validate address and ownership hints."},
 	{Method: "verifymessage", Usage: "verifymessage <address> <signature> <message>", Category: "wallet", Description: "Verify a signed message."},
 	{Method: "getaddressinfo", Usage: "getaddressinfo <address>", Category: "wallet", Description: "Return detailed address metadata."},
+	{Method: "sethdseed", Usage: "sethdseed [seed|mnemonic]", Category: "wallet", Description: "Set HD seed from hex or BIP39 mnemonic. Empty = generate new."},
+	{Method: "exportmnemonic", Usage: "exportmnemonic", Category: "wallet", Description: "Export wallet backup mnemonic phrase (BIP39)."},
 	{Method: "backupwallet", Usage: "backupwallet <path>", Category: "wallet", Description: "Export wallet backup file."},
 	{Method: "walletpassphrase", Usage: "walletpassphrase <passphrase> <timeout>", Category: "wallet", Description: "Unlock encrypted wallet for signing."},
 	{Method: "walletpassphrasechange", Usage: "walletpassphrasechange <oldpassphrase> <newpassphrase>", Category: "wallet", Description: "Change encrypted wallet passphrase."},
@@ -1803,13 +1805,19 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 				return nil, &rpcError{Code: -13, Message: "setupwallet encrypt: " + err.Error()}
 			}
 		}
-		return map[string]any{
+		mnem := s.wallet.Mnemonic()
+		res := map[string]any{
 			"wallet":             s.wallet.SecurityInfo(),
 			"mining_address":     miningInfo.Address,
 			"mining_pubkey_hash": miningInfo.PubKeyHashHex,
 			"config":             s.miningConfigPath(),
 			"next":               "start miner with this mining_pubkey_hash; coinbase rewards mature after 100 blocks",
-		}, nil
+		}
+		if mnem != "" {
+			res["mnemonic"] = mnem
+			res["warning"] = "WRITE DOWN THESE 24 WORDS — they are the ONLY backup of your wallet. Without them, coins are unrecoverable."
+		}
+		return res, nil
 	case "getminingaddress":
 		cfg, _ := config.LoadMiningConfig(s.miningConfigPath())
 		dest, err := s.resolveMiningDestination(cfg, true)
@@ -2608,7 +2616,18 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		if err != nil {
 			return nil, &rpcError{Code: -8, Message: err.Error()}
 		}
-		return map[string]any{"seed": seedHex}, nil
+		mnem := s.wallet.Mnemonic()
+		res := map[string]any{"seed": seedHex}
+		if mnem != "" {
+			res["mnemonic"] = mnem
+		}
+		return res, nil
+	case "exportmnemonic":
+		mnem := s.wallet.Mnemonic()
+		if mnem == "" {
+			return nil, &rpcError{Code: -8, Message: "wallet has no mnemonic seed"}
+		}
+		return map[string]any{"mnemonic": mnem}, nil
 	case "generate":
 		var args []json.RawMessage
 		if err := json.Unmarshal(params, &args); err != nil {

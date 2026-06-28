@@ -8,7 +8,7 @@ PKG ?= ./...
 
 build: build-core
 
-build-core: daemon cli wallet-internal
+build-core: daemon cli wallet-internal explorer
 
 daemon:
 	$(GO) build -trimpath -o legacycoind ./cmd/legacycoind
@@ -18,6 +18,9 @@ cli:
 
 wallet-internal:
 	$(GO) build -trimpath -o legacy-wallet-internal ./cmd/legacywallet
+
+explorer:
+	$(GO) build -trimpath -o legacycoin-explorer ./cmd/explorer
 
 test:
 	$(GO) test ./internal/p2p ./internal/rpc ./internal/wallet ./internal/mempool
@@ -53,22 +56,22 @@ windows-amd64:
 	powershell.exe -ExecutionPolicy Bypass -File scripts/build-windows.ps1
 
 package-linux:
-	bash scripts/package-linux.sh v1.0.8 amd64
+	bash scripts/package-linux.sh v1.0.9 amd64
 
 package-linux-arm64:
-	bash scripts/package-linux.sh v1.0.8 arm64
+	bash scripts/package-linux.sh v1.0.9 arm64
 
 package-macos-amd64:
-	bash scripts/package-macos.sh v1.0.8 amd64
+	bash scripts/package-macos.sh v1.0.9 amd64
 
 package-macos-arm64:
-	bash scripts/package-macos.sh v1.0.8 arm64
+	bash scripts/package-macos.sh v1.0.9 arm64
 
 package-windows:
-	powershell.exe -ExecutionPolicy Bypass -File scripts/package-windows.ps1 -Version v1.0.8
+	powershell.exe -ExecutionPolicy Bypass -File scripts/package-windows.ps1 -Version v1.0.9
 
 release-source:
-	powershell.exe -ExecutionPolicy Bypass -File scripts/release-source-archive.ps1 -Version v1.0.8 -OutputDir dist
+	powershell.exe -ExecutionPolicy Bypass -File scripts/release-source-archive.ps1 -Version v1.0.9 -OutputDir dist
 
 release-verify:
 	powershell.exe -ExecutionPolicy Bypass -File scripts/verify-release-assets.ps1 dist/*.zip dist/*.tar.gz

@@ -1,8 +1,10 @@
-# Legacy Core v1.0.8 — Exchange & Mining Pool Readiness Audit
+# Legacy Core v1.0.9 — Exchange & Mining Pool Readiness Audit
 
 **Date:** 2026-06-28
-**Version:** v1.0.8 (commit `a094295`)
+**Versions:** v1.0.8 (commit `f65d2f9`) → v1.0.9 (current)
 **Coin:** Legacy Coin (LBTC) — Yespower PoW
+
+> **v1.0.9 adds:** BIP39 mnemonic seeds, block explorer (standalone binary), real-time SSE event notifications, embedded Stratum server for pool mining, compact blocks (BIP 152) wire messages, exchange/pool API reference documentation. See `docs/` for guides.
 
 ---
 
@@ -115,7 +117,7 @@ All standard Bitcoin-derived checks enforced:
 |---|---|
 | `notfound` | Peers silently skip missing inventory instead of replying with `notfound` |
 | `sendheaders` (BIP 130) | All block announcements go through inv→getdata round-trip |
-| Compact blocks (BIP 152) | Full blocks always transmitted — bandwidth consideration for high-volume pools |
+| Compact blocks (BIP 152) | ✅ **v1.0.9** — wire messages implemented (`sendcmpct`, `cmpctblock`, `getblocktxn`, `blocktxn`) + SipHash short ID computation. Relay logic not yet activated |
 
 ### DoS Protection — PASS
 Good size limits on all message types, per-peer rate limiting (250/10s), global 3000/10s, per-IP inbound caps (8), per-subnet caps (IPv4 /24, IPv6 /64), ban/score system with decay, IP-level banning with expiry.
@@ -134,7 +136,7 @@ Headers-first IBD, dual-hash interop (Yespower + SHA256d), orphan-parent resolut
 | **Fee estimation** | **PASS** | Auto fee when `fee ≤ 0`: `(10 + inputs×148 + outputs×34) × MinRelayFeePerKB / 1000`. Minimum `MinRelayFeePerKB` (0.00001 LBTC/KB) |
 | **Passphrase memory** | **PASS** | `unlockPass` changed from `string` to `[]byte`, explicitly zeroed on `Lock()` and after `persist()` |
 | **CLI security** | **PASS** | `walletpassphrase`/`walletpassphrasechange` support `-` to read from stdin (avoiding process list leak) |
-| **Key derivation** | **WARNING** | Custom HMAC-SHA256 derivation, NOT BIP32/39/44. No mnemonic phrase, no extended pubkeys. Seeds are opaque 32-byte hex |
+| **Key derivation** | **PASS (v1.0.9)** | Custom HMAC-SHA256 derivation (BIP32-style). **v1.0.9 adds BIP39 mnemonic seed support** — wallet generates/accepts mnemonic phrases, exports via `exportmnemonic`. Backwards compatible with existing hex seeds |
 | **Address types** | **WARNING** | P2PKH (Base58, version 48) + custom Hybrid P2PKH (`lhyb1`). No P2SH, no Bech32/SegWit |
 | **Transaction signing** | **WARNING** | P2PKH + Hybrid only. Hardcoded `SIGHASH_ALL`. No RBF. Malleable (no low-R enforcement) |
 | **Coin selection** | **WARNING** | Simple first-fit. No knapsack/BnB |
@@ -153,10 +155,13 @@ Headers-first IBD, dual-hash interop (Yespower + SHA256d), orphan-parent resolut
 | **Yespower** | ✅ Correct implementation (N=2048, r=32, `"LegacyCoinPoW"`). CGO backend (fast) + pure-Go fallback. Test vector verified. |
 | **getblocktemplate** | ✅ BIP22/BIP23 compliant. All standard fields. `coinbasetxn` capability for pool payout splitting. Longpoll support. |
 | **submitblock** | ✅ Full BIP22 reject codes. submitblockdebug returns rich diagnostics. |
-| **Built-in miner** | ✅ Solo CPU mining only. No stratum. Thread-safe with proper lifecycle management. |
-| **Pool mining** | ✅ External pools use JSON-RPC (getblocktemplate + submitblock). No built-in stratum server. |
+| **Built-in miner** | ✅ Solo CPU mining. Thread-safe with proper lifecycle management. |
+| **Built-in Stratum** | ✅ **New in v1.0.9** — `-stratum` flag enables embedded TCP server. Miners connect via Stratum v1 protocol. Share difficulty configurable (`-stratumdiff`). |
+| **Pool mining** | ✅ External pools use JSON-RPC (getblocktemplate + submitblock) or built-in Stratum server. |
 
 **Pool deployment:** Pools should submit blocks via `submitblock` RPC (returns proper reject codes) rather than broadcasting raw blocks over P2P.
+
+**v1.0.9 adds:** Built-in Stratum server (`-stratum` flag, port `3333`) for simplified pool deployment. Miners connect directly to the node. See `docs/pool-operator-guide.md`.
 
 ---
 
@@ -216,8 +221,9 @@ Headers-first IBD, dual-hash interop (Yespower + SHA256d), orphan-parent resolut
 - [x] **Fix estimatefee nblocks tiers** (75/50/25 percentile)
 - [x] **Fix IPv6 subnet limiting** (was broken for IPv6)
 - [x] **Fix AES-GCM additional data** (bound `"legacycoin-wallet-v1"`)
-- [ ] **Upgrade seed nodes to v1.0.8** — currently on 1.0.6, block sync stalls until upgraded
+- [ ] **Upgrade seed nodes to v1.0.9** — currently on 1.0.6, block sync stalls until upgraded
 - [ ] **BIP44 HD derivation** — design-level, wallet is intentionally custom. Exchanges should use their own wallet backend
+- [x] **BIP39 mnemonic seeds** (v1.0.9) — wallet now generates/accepts mnemonic phrases. Exports via `exportmnemonic` RPC. Backwards compatible with hex seeds.
 
 ---
 
@@ -227,7 +233,8 @@ Headers-first IBD, dual-hash interop (Yespower + SHA256d), orphan-parent resolut
 - [x] **`coinbasetxn` capability** in getblocktemplate for payout splitting
 - [x] **Rate limiting** for RPC (per-IP, max concurrent)
 - [ ] **Enable txindex=1** — config option, recommend for pool nodes
-- [ ] **Upgrade seed nodes to v1.0.8** — currently block sync stalls on 1.0.6
+- [ ] **Upgrade seed nodes to v1.0.9** — currently block sync stalls on 1.0.6
+- [x] **Built-in Stratum server** (v1.0.9) — `-stratum` flag enables embedded pool server on port 3333
 
 **Not-blocking but recommended:**
 - Implement `sendheaders` (BIP 130) for faster block propagation

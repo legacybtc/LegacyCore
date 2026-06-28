@@ -19,6 +19,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	btcecdsa "github.com/btcsuite/btcd/btcec/v2/ecdsa"
+	"github.com/tyler-smith/go-bip39"
 	"golang.org/x/crypto/scrypt"
 
 	"legacycoin/legacy-go/internal/address"
@@ -47,6 +48,7 @@ type Wallet struct {
 	unlockPass   []byte
 	unlockTimer  *time.Timer
 	seedHex      string
+	mnemonic     string
 	nextIndex    uint32
 	classicCount uint32
 	hybridCount  uint32
@@ -63,6 +65,7 @@ type stored struct {
 	Nonce           string                            `json:"nonce,omitempty"`
 	Cipher          string                            `json:"cipher,omitempty"`
 	SeedHex         string                            `json:"seed_hex,omitempty"`
+	Mnemonic        string                            `json:"mnemonic,omitempty"`
 	NextIndex       uint32                            `json:"next_index,omitempty"`
 	ClassicKeyCount uint32                            `json:"classic_key_count,omitempty"`
 	HybridKeyCount  uint32                            `json:"hybrid_key_count,omitempty"`
@@ -73,6 +76,7 @@ type keyState struct {
 	Keys            map[string]string                 `json:"keys"`
 	HybridKeys      map[string]pqc.HybridPrivateBytes `json:"hybrid_keys,omitempty"`
 	SeedHex         string                            `json:"seed_hex,omitempty"`
+	Mnemonic        string                            `json:"mnemonic,omitempty"`
 	NextIndex       uint32                            `json:"next_index,omitempty"`
 	ClassicKeyCount uint32                            `json:"classic_key_count,omitempty"`
 	HybridKeyCount  uint32                            `json:"hybrid_key_count,omitempty"`
@@ -131,6 +135,7 @@ func Open(dataDir string) (*Wallet, error) {
 				w.hybridKeys = s.HybridKeys
 			}
 			w.seedHex = s.SeedHex
+			w.mnemonic = s.Mnemonic
 			w.nextIndex = s.NextIndex
 			w.refreshMetadataLocked()
 		}
@@ -195,24 +200,62 @@ func (w *Wallet) SetHDSeed(seedHex string) (string, error) {
 		return "", err
 	}
 	seed := make([]byte, 32)
+	mnem := ""
 	if seedHex == "" {
 		if _, err := io.ReadFull(rand.Reader, seed); err != nil {
 			return "", err
 		}
-	} else {
-		decoded, err := hex.DecodeString(seedHex)
-		if err != nil || len(decoded) < 16 {
-			return "", fmt.Errorf("seed must be hex with at least 16 bytes")
+		mnem, err := bip39.NewMnemonic(seed)
+		if err != nil {
+			return "", err
 		}
-		sum := sha256.Sum256(decoded)
-		copy(seed, sum[:])
+		_ = mnem // store below
+	} else {
+		if bip39.IsMnemonicValid(seedHex) {
+			decoded, err := bip39.MnemonicToByteArray(seedHex)
+			if err != nil || len(decoded) < 16 {
+				return "", fmt.Errorf("invalid mnemonic phrase")
+			}
+			if len(decoded) != 32 {
+				h := sha256.Sum256(decoded)
+				seed = h[:]
+			} else {
+				copy(seed, decoded)
+			}
+			mnem = seedHex
+		} else {
+			decoded, err := hex.DecodeString(seedHex)
+			if err != nil || len(decoded) < 16 {
+				return "", fmt.Errorf("seed must be a 24-word mnemonic phrase or hex with at least 16 bytes")
+			}
+			sum := sha256.Sum256(decoded)
+			copy(seed, sum[:])
+		}
+	}
+	if mnem == "" {
+		var err error
+		mnem, err = bip39.NewMnemonic(seed)
+		if err != nil {
+			return "", err
+		}
 	}
 	w.mu.Lock()
 	w.seedHex = hex.EncodeToString(seed)
+	w.mnemonic = mnem
 	w.nextIndex = 0
 	w.refreshMetadataLocked()
 	w.mu.Unlock()
 	return w.seedHex, w.persist()
+}
+
+func (w *Wallet) SetHDMnemonic(mnemonic string) (string, error) {
+	return w.SetHDSeed(mnemonic)
+}
+
+func (w *Wallet) Mnemonic() string {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.mnemonic
 }
 
 func (w *Wallet) ListAddresses() []string {
@@ -1175,6 +1218,7 @@ func (w *Wallet) persist() error {
 			Keys:            w.keys,
 			HybridKeys:      w.hybridKeys,
 			SeedHex:         w.seedHex,
+			Mnemonic:        w.mnemonic,
 			NextIndex:       w.nextIndex,
 			ClassicKeyCount: w.classicCount,
 			HybridKeyCount:  w.hybridCount,
@@ -1202,6 +1246,7 @@ func (w *Wallet) persist() error {
 	s.Addresses = sortedAddressKeys(w.addresses)
 	s.HybridAddresses = sortedAddressKeys(w.hybridAddrs)
 	s.SeedHex = w.seedHex
+	s.Mnemonic = w.mnemonic
 	s.NextIndex = w.nextIndex
 	s.ClassicKeyCount = uint32(len(w.keys))
 	s.HybridKeyCount = uint32(len(w.hybridKeys))
