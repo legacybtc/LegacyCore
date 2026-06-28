@@ -9,6 +9,7 @@ import (
 	"log"
 	"math/big"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -41,11 +42,23 @@ type StratumNotify struct {
 	Params any    `json:"params"`
 }
 
+const (
+	maxConnsPerIP      = 3
+	maxConnsGlobal     = 100
+	shareRateWindow    = 30 * time.Second
+	shareRateLimit     = 10
+	idleTimeout        = 5 * time.Minute
+	submitTimeout      = 30 * time.Second
+)
+
 type Miner struct {
-	conn       net.Conn
-	enc        *json.Encoder
-	worker     string
-	difficulty float64
+	conn         net.Conn
+	enc          *json.Encoder
+	worker       string
+	difficulty   float64
+	ip           string
+	sharesInWin  int
+	windowStart  time.Time
 }
 
 type miningJob struct {
@@ -63,6 +76,7 @@ type Server struct {
 	listener    net.Listener
 	mu          sync.Mutex
 	miners      map[*Miner]struct{}
+	ipCounts    map[string]int
 	activeJob   *miningJob
 	jobCounter  uint64
 	shareDiff   float64
@@ -80,6 +94,7 @@ func New(params chaincfg.Params, chain *blockchain.Chain, pool *mempool.Pool) *S
 		chain:     chain,
 		pool:      pool,
 		miners:    make(map[*Miner]struct{}),
+		ipCounts:  make(map[string]int),
 		shareDiff: 1.0,
 		pow:       pow.YespowerHasher{Personalization: params.YespowerPers},
 		done:      make(chan struct{}),
@@ -133,7 +148,34 @@ func (s *Server) acceptLoop() {
 		if err != nil {
 			return
 		}
-		m := &Miner{conn: conn, enc: json.NewEncoder(conn), difficulty: s.shareDiff}
+		host, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
+		if host == "" {
+			host = conn.RemoteAddr().String()
+		}
+
+		s.mu.Lock()
+		if len(s.miners) >= maxConnsGlobal {
+			s.mu.Unlock()
+			conn.Close()
+			log.Printf("[Stratum] rejected connection (global limit %d)", maxConnsGlobal)
+			continue
+		}
+		if s.ipCounts[host] >= maxConnsPerIP {
+			s.mu.Unlock()
+			conn.Close()
+			log.Printf("[Stratum] rejected connection from %s (per-IP limit %d)", host, maxConnsPerIP)
+			continue
+		}
+		s.ipCounts[host]++
+		s.mu.Unlock()
+
+		m := &Miner{
+			conn:        conn,
+			enc:         json.NewEncoder(conn),
+			difficulty:  s.shareDiff,
+			ip:          host,
+			windowStart: time.Now(),
+		}
 		s.mu.Lock()
 		s.miners[m] = struct{}{}
 		s.mu.Unlock()
@@ -146,11 +188,22 @@ func (s *Server) handleMiner(m *Miner) {
 		m.conn.Close()
 		s.mu.Lock()
 		delete(s.miners, m)
+		if m.ip != "" {
+			s.ipCounts[m.ip]--
+			if s.ipCounts[m.ip] <= 0 {
+				delete(s.ipCounts, m.ip)
+			}
+		}
 		s.mu.Unlock()
 	}()
 	sc := bufio.NewScanner(m.conn)
 	sc.Buffer(make([]byte, 1024*1024), 1024*1024)
-	for sc.Scan() {
+	for {
+		m.conn.SetReadDeadline(time.Now().Add(idleTimeout))
+		if !sc.Scan() {
+			break
+		}
+		m.conn.SetReadDeadline(time.Time{})
 		line := sc.Text()
 		var req StratumRequest
 		if err := json.Unmarshal([]byte(line), &req); err != nil {
@@ -202,9 +255,37 @@ func (s *Server) handleSubmit(m *Miner, req *StratumRequest) {
 	}
 	workerName := params[0]
 	jobID := params[1]
-	_ = params[2] // extraNonce2
+	extraNonce2 := params[2]
 	ntimeStr := params[3]
 	nonceStr := params[4]
+
+	if len(nonceStr) > 8 || len(nonceStr) == 0 {
+		s.sendError(m, req.ID, 24, "invalid nonce")
+		return
+	}
+	nonceStr = strings.Repeat("0", 8-len(nonceStr)) + nonceStr
+
+	if len(ntimeStr) != 8 {
+		s.sendError(m, req.ID, 24, "invalid ntime")
+		return
+	}
+
+	if len(extraNonce2) > 16 || len(extraNonce2) == 0 {
+		s.sendError(m, req.ID, 24, "invalid extranonce2")
+		return
+	}
+
+	// Share rate limiting
+	now := time.Now()
+	if now.Sub(m.windowStart) > shareRateWindow {
+		m.sharesInWin = 0
+		m.windowStart = now
+	}
+	m.sharesInWin++
+	if m.sharesInWin > shareRateLimit {
+		s.sendError(m, req.ID, -1, "rate limited")
+		return
+	}
 
 	s.mu.Lock()
 	job := s.activeJob
