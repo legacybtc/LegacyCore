@@ -118,12 +118,69 @@ type Server struct {
 	rpcTimeoutCount    int64
 	rpcErrorCount      int64
 
+	rateLimiters sync.Map
+
 	minerStatusDiagActive atomic.Int64
 	minerStatusDiagTotal  atomic.Int64
 	minerStatusDiagMax    atomic.Int64
 	netHashDiagActive     atomic.Int64
 	netHashDiagTotal      atomic.Int64
 	netHashDiagMax        atomic.Int64
+}
+
+type rateLimiter struct {
+	mu        sync.Mutex
+	tokens    int
+	lastRefill time.Time
+	maxTokens int
+	refillRate time.Duration
+}
+
+func newRateLimiter(maxTokens int, refillRate time.Duration) *rateLimiter {
+	return &rateLimiter{
+		tokens:    maxTokens,
+		lastRefill: time.Now(),
+		maxTokens: maxTokens,
+		refillRate: refillRate,
+	}
+}
+
+func (rl *rateLimiter) allow() bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	elapsed := time.Since(rl.lastRefill)
+	rl.tokens += int(elapsed / rl.refillRate)
+	if rl.tokens > rl.maxTokens {
+		rl.tokens = rl.maxTokens
+	}
+	rl.lastRefill = rl.lastRefill.Add(time.Duration(int(elapsed/rl.refillRate)) * rl.refillRate)
+	if rl.tokens > 0 {
+		rl.tokens--
+		return true
+	}
+	return false
+}
+
+func (s *Server) checkRateLimit(ip string) bool {
+	v, _ := s.rateLimiters.LoadOrStore(ip, newRateLimiter(60, time.Second))
+	return v.(*rateLimiter).allow()
+}
+
+func (s *Server) cleanupRateLimiters() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.rateLimiters.Range(func(key, value any) bool {
+			rl := value.(*rateLimiter)
+			rl.mu.Lock()
+			stale := time.Since(rl.lastRefill) > 10*time.Minute
+			rl.mu.Unlock()
+			if stale {
+				s.rateLimiters.Delete(key)
+			}
+			return true
+		})
+	}
 }
 
 type minerAcceptedRecord struct {
@@ -161,6 +218,7 @@ type rpcError struct {
 
 const (
 	MaxRPCBatchRequests = 100
+	MaxConcurrentRPC    = 32
 )
 
 var rpcHelpEntries = []rpcHelpEntry{
@@ -170,6 +228,8 @@ var rpcHelpEntries = []rpcHelpEntry{
 	{Method: "getblock", Usage: "getblock <hash>", Category: "chain", Description: "Return a decoded block by hash."},
 	{Method: "getblockheader", Usage: "getblockheader <hash>", Category: "chain", Description: "Return a decoded block header by hash."},
 	{Method: "getblockchaininfo", Usage: "getblockchaininfo", Category: "chain", Description: "Return chain status and sync summary."},
+	{Method: "estimatefee", Usage: "estimatefee [nblocks]", Category: "mempool", Description: "Return estimated fee per KB for a transaction to be confirmed within nblocks (default 6). Uses mempool median feerate."},
+	{Method: "estimatesmartfee", Usage: "estimatesmartfee [nblocks]", Category: "mempool", Description: "Alias for estimatefee."},
 	{Method: "getnetworkinfo", Usage: "getnetworkinfo", Category: "network", Description: "Return network and connection summary."},
 	{Method: "getchainstatus", Usage: "getchainstatus", Category: "network", Description: "Return support-ready chain, sync, fork, RPC, and safe-mining status."},
 	{Method: "getforkstatus", Usage: "getforkstatus", Category: "network", Description: "Return fork/reorg and peer-tip diagnostics for support."},
@@ -400,9 +460,10 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		// Mining RPC calls can legitimately run longer than 30 seconds at launch
-		// difficulty. Leave WriteTimeout disabled so long-running generate calls can
-		// return JSON instead of causing curl "empty reply from server" errors.
-		WriteTimeout: 0,
+		// difficulty. Use 60s as a reasonable timeout for all calls; long-running
+		// generate calls should be handled asynchronously rather than leaving
+		// WriteTimeout disabled.
+		WriteTimeout: 60 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
 	go func() {
@@ -415,6 +476,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 		time.Sleep(120 * time.Second)
 		SetDiagWarmupDone()
 	}()
+	go s.cleanupRateLimiters()
 	if cfg, err := config.LoadMiningConfig(s.miningConfigPath()); err == nil && !s.policy.SeedNode && (cfg.AutoStart || cfg.Enabled) {
 		go func() {
 			time.Sleep(2 * time.Second)
@@ -436,6 +498,11 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "JSON-RPC requires POST", http.StatusMethodNotAllowed)
+		return
+	}
+	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if !s.checkRateLimit(ip) {
+		http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
 		return
 	}
 	if s.auth.Enabled && !s.authorized(r) {
@@ -494,6 +561,10 @@ func (s *Server) handleRPCRequest(ctx context.Context, req request) response {
 	}
 
 	s.rpcDiagMu.Lock()
+	if s.rpcActiveRequests >= MaxConcurrentRPC {
+		s.rpcDiagMu.Unlock()
+		return response{ID: req.ID, Error: &rpcError{Code: -32603, Message: "server too busy"}}
+	}
 	s.rpcActiveRequests++
 	s.rpcTotalCalls++
 	if s.rpcActiveRequests == 1 {
@@ -2264,7 +2335,7 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		if skip < 0 {
 			skip = 0
 		}
-		rows, err := s.walletTransactionRows()
+		rows, err := s.walletTransactionRows(count)
 		if err != nil {
 			return nil, &rpcError{Code: -32603, Message: err.Error()}
 		}
@@ -2290,7 +2361,7 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 				startHeight = idx.Height
 			}
 		}
-		rows, err := s.walletTransactionRows()
+		rows, err := s.walletTransactionRows(1000)
 		if err != nil {
 			return nil, &rpcError{Code: -32603, Message: err.Error()}
 		}
@@ -2691,6 +2762,43 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 	case "stop":
 		go s.stop()
 		return "Legacy Coin server stopping", nil
+	case "estimatefee", "estimatesmartfee":
+		var args []json.RawMessage
+		_ = json.Unmarshal(params, &args)
+		nblocks := 6
+		if len(args) > 0 {
+			var n int
+			if err := json.Unmarshal(args[0], &n); err == nil && n > 0 {
+				nblocks = n
+			}
+		}
+		entries := s.pool.Entries()
+		var feeEstimate int64
+		if len(entries) == 0 {
+			feeEstimate = mempool.MinRelayFeePerKB
+		} else {
+			rates := make([]float64, 0, len(entries))
+			for _, e := range entries {
+				if e.Size > 0 {
+					rates = append(rates, float64(e.Fee*1000)/float64(e.Size))
+				}
+			}
+			if len(rates) == 0 {
+				feeEstimate = mempool.MinRelayFeePerKB
+			} else {
+				sort.Slice(rates, func(i, j int) bool { return rates[i] < rates[j] })
+				idx := len(rates) / 2
+				feeEstimate = int64(rates[idx])
+			}
+		}
+		if feeEstimate < mempool.MinRelayFeePerKB {
+			feeEstimate = mempool.MinRelayFeePerKB
+		}
+		return map[string]any{
+			"feerate": float64(feeEstimate) / float64(chaincfg.Coin),
+			"blocks":  nblocks,
+			"errors":  []string{},
+		}, nil
 	default:
 		return nil, &rpcError{Code: -32601, Message: "method not found"}
 	}
@@ -3755,10 +3863,10 @@ func (s *Server) summarizeWalletTx(txid string, tx *wire.MsgTx, confirmations in
 	return summary
 }
 
-func (s *Server) walletTransactionRows() ([]map[string]any, error) {
+func (s *Server) walletTransactionRows(maxRows int) ([]map[string]any, error) {
 	rows := make([]map[string]any, 0, 128)
 	if tip := s.chain.Tip(); tip != nil {
-		for h := tip.Height; h >= 0; h-- {
+		for h := tip.Height; h >= 0 && len(rows) < maxRows; h-- {
 			idx, err := s.chain.IndexByHeight(h)
 			if err != nil {
 				continue

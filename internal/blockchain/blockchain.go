@@ -748,7 +748,6 @@ func (c *Chain) acceptOrphanChildrenLocked(parentHash string) {
 		cur := queue[0]
 		queue = queue[1:]
 		children := c.orphanByPrev[cur]
-		delete(c.orphanByPrev, cur)
 		for _, orphanHash := range children {
 			orphanBlock, ok := c.orphanByHash[orphanHash]
 			if !ok {
@@ -764,6 +763,7 @@ func (c *Chain) acceptOrphanChildrenLocked(parentHash string) {
 			delete(c.sideBlocks, orphanHash)
 			queue = append(queue, orphanHash)
 		}
+		delete(c.orphanByPrev, cur)
 	}
 }
 
@@ -890,8 +890,8 @@ func (c *Chain) tryActivateSideChainLocked(sideTipHash string) error {
 		if c.tip == nil || c.tip.Hash != forkHash {
 			// Reorg failed - restore old chain
 			fmt.Printf("blockchain: reorg failed to reach fork point, restoring old chain\n")
-			for i := len(removed) - 1; i >= 0; i-- {
-				_ = c.connectBlockLocked(removed[i])
+			if err := c.reconnectBlocksLocked(removed); err != nil {
+				return fmt.Errorf("main-branch restore failed after reorg failure: %v", err)
 			}
 			return fmt.Errorf("failed to reach fork point")
 		}

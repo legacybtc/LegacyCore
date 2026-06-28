@@ -2381,6 +2381,9 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 				blockHash := "unknown"
 				if h, hashErr := s.chain.BlockHash(block); hashErr == nil {
 					blockHash = h.String()
+					s.sendRejectWithHash(p, "block", wire.RejectInvalid, err.Error(), h)
+				} else {
+					s.sendReject(p, "block", wire.RejectInvalid, err.Error())
 				}
 				s.log.Printf("p2p reject block from %s: hash=%s prev=%s reason=%v", conn.RemoteAddr(), blockHash, block.Header.PrevBlock.String(), err)
 				return
@@ -2430,6 +2433,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 				if errors.Is(err, mempool.ErrOrphanTx) {
 					continue
 				}
+				s.sendReject(p, "tx", wire.RejectInvalid, err.Error())
 				s.log.Printf("p2p reject tx from %s: %v", conn.RemoteAddr(), err)
 				continue
 			}
@@ -2529,6 +2533,13 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 				s.healthMu.Unlock()
 				s.log.Printf("p2p ignore non-syncable headers from %s: %v", conn.RemoteAddr(), err)
 			}
+		case wire.CommandReject:
+			reject, err := wire.ReadReject(bytes.NewReader(msg.Payload))
+			if err != nil {
+				s.log.Printf("p2p bad reject message from %s: %v", p.remote, err)
+				break
+			}
+			s.log.Printf("p2p reject from %s: %s %s", p.remote, reject.Cmd, reject.Reason)
 		}
 		if gotVersion && gotVerAck && !didSyncRequest {
 			didSyncRequest = true
@@ -2762,6 +2773,24 @@ func (s *Server) writePeerMessage(p *peer, command string, payload []byte) error
 		p.addBytesSent(uint64(len(payload) + 24))
 	}
 	return err
+}
+
+func (s *Server) sendReject(p *peer, cmd string, code uint8, reason string) {
+	reject := wire.NewReject(cmd, code, reason)
+	payload, err := reject.Bytes()
+	if err != nil {
+		return
+	}
+	_ = s.writePeerMessage(p, wire.CommandReject, payload)
+}
+
+func (s *Server) sendRejectWithHash(p *peer, cmd string, code uint8, reason string, hash chainhash.Hash) {
+	reject := wire.NewRejectWithHash(cmd, code, reason, hash)
+	payload, err := reject.Bytes()
+	if err != nil {
+		return
+	}
+	_ = s.writePeerMessage(p, wire.CommandReject, payload)
 }
 
 func (s *Server) writeVersion(p *peer, remote net.Addr) error {

@@ -25,6 +25,7 @@ const (
 	CommandGetBlocks  = "getblocks"
 	CommandGetHeaders = "getheaders"
 	CommandHeaders    = "headers"
+	CommandReject     = "reject"
 
 	MaxMessagePayload = 32 * 1024 * 1024
 )

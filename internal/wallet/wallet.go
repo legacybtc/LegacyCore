@@ -956,6 +956,10 @@ func (w *Wallet) sendWithSource(chain *blockchain.Chain, pool *mempool.Pool, fro
 	if amount < 0 || fee < 0 || (amount == 0 && len(extraOutputs) == 0) {
 		return "", fmt.Errorf("bad amount or fee")
 	}
+	autoFee := fee <= 0
+	if autoFee {
+		fee = 0
+	}
 	var toScript []byte
 	var err error
 	if amount > 0 {
@@ -1026,6 +1030,28 @@ func (w *Wallet) sendWithSource(chain *blockchain.Chain, pool *mempool.Pool, fro
 	if total < target {
 		return "", fmt.Errorf("insufficient available funds: pending transactions already lock selected wallet inputs")
 	}
+	if autoFee {
+		numOuts := len(extraOutputs)
+		if amount > 0 {
+			numOuts++
+		}
+		if total > target {
+			numOuts++ // change output
+		}
+		estSize := 10 + len(selected)*148 + numOuts*34
+		fee = (int64(estSize)*mempool.MinRelayFeePerKB + 999) / 1000
+		if fee < mempool.MinRelayFeePerKB {
+			fee = mempool.MinRelayFeePerKB
+		}
+		newTarget := amount + fee
+		for _, out := range extraOutputs {
+			newTarget += out.Value
+		}
+		if total < newTarget {
+			return "", fmt.Errorf("insufficient funds for estimated fee")
+		}
+		target = newTarget
+	}
 	tx := &wire.MsgTx{Version: 1}
 	for _, c := range selected {
 		prevHash, err := blockchainHash(c.utxo.TxID)
@@ -1043,7 +1069,10 @@ func (w *Wallet) sendWithSource(chain *blockchain.Chain, pool *mempool.Pool, fro
 	tx.TxOut = append(tx.TxOut, extraOutputs...)
 	change := total - target
 	if change > 0 {
-		changeAddr := selected[0].utxo.Address
+		changeAddr, err := w.NewAddress()
+		if err != nil {
+			return "", err
+		}
 		var changeScript []byte
 		if hybridHash, err := address.DecodeHybridAddress(changeAddr); err == nil {
 			changeScript, err = script.PayToHybridPubKeyHashScript(hybridHash)
@@ -1289,7 +1318,7 @@ func encryptState(state keyState, passphrase string) (cipherHex string, saltHex 
 	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
 		return "", "", "", err
 	}
-	key, err := scrypt.Key([]byte(passphrase), salt, 32768, 8, 1, 32)
+	key, err := scrypt.Key([]byte(passphrase), salt, 65536, 8, 1, 32)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -1323,7 +1352,7 @@ func decryptState(cipherHex string, saltHex string, nonceHex string, passphrase 
 	if err != nil {
 		return zero, err
 	}
-	key, err := scrypt.Key([]byte(passphrase), salt, 32768, 8, 1, 32)
+	key, err := scrypt.Key([]byte(passphrase), salt, 65536, 8, 1, 32)
 	if err != nil {
 		return zero, err
 	}
