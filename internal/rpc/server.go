@@ -2623,6 +2623,16 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		}
 		return res, nil
 	case "exportmnemonic":
+		var args []json.RawMessage
+		if err := json.Unmarshal(params, &args); err == nil && len(args) > 0 {
+			pass, err := parsePassphraseArg(args[0])
+			if err != nil {
+				return nil, &rpcError{Code: -32602, Message: "bad passphrase"}
+			}
+			if err := s.wallet.VerifyPassphrase(pass); err != nil {
+				return nil, &rpcError{Code: -14, Message: "invalid passphrase"}
+			}
+		}
 		mnem := s.wallet.Mnemonic()
 		if mnem == "" {
 			return nil, &rpcError{Code: -8, Message: "wallet has no mnemonic seed"}

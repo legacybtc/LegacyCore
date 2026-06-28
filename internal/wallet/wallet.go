@@ -1363,6 +1363,16 @@ func (w *Wallet) requireUnlocked() error {
 	return nil
 }
 
+func (w *Wallet) VerifyPassphrase(passphrase string) error {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	if !w.encrypted {
+		return nil
+	}
+	_, err := decryptState(w.cipherHex, w.saltHex, w.nonceHex, passphrase)
+	return err
+}
+
 func encryptState(state keyState, passphrase string) (cipherHex string, saltHex string, nonceHex string, err error) {
 	plain, err := json.Marshal(state)
 	if err != nil {
