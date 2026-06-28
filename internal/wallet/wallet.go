@@ -44,7 +44,7 @@ type Wallet struct {
 	saltHex      string
 	nonceHex     string
 	cipherHex    string
-	unlockPass   string
+	unlockPass   []byte
 	unlockTimer  *time.Timer
 	seedHex      string
 	nextIndex    uint32
@@ -322,7 +322,10 @@ func (w *Wallet) Encrypt(passphrase string) error {
 	w.saltHex = saltHex
 	w.nonceHex = nonceHex
 	w.cipherHex = cipherHex
-	w.unlockPass = ""
+	for i := range w.unlockPass {
+		w.unlockPass[i] = 0
+	}
+	w.unlockPass = nil
 	for k := range w.keys {
 		delete(w.keys, k)
 	}
@@ -358,7 +361,7 @@ func (w *Wallet) Unlock(passphrase string, timeout time.Duration) error {
 	w.nextIndex = state.NextIndex
 	w.refreshMetadataLocked()
 	w.locked = false
-	w.unlockPass = passphrase
+	w.unlockPass = []byte(passphrase)
 	if w.unlockTimer != nil {
 		w.unlockTimer.Stop()
 		w.unlockTimer = nil
@@ -388,7 +391,10 @@ func (w *Wallet) Lock() error {
 		delete(w.hybridKeys, k)
 	}
 	w.locked = true
-	w.unlockPass = ""
+	for i := range w.unlockPass {
+		w.unlockPass[i] = 0
+	}
+	w.unlockPass = nil
 	return nil
 }
 
@@ -420,7 +426,10 @@ func (w *Wallet) ChangePassphrase(oldPassphrase, newPassphrase string) error {
 	w.cipherHex = cipherHex
 	w.saltHex = saltHex
 	w.nonceHex = nonceHex
-	w.unlockPass = newPassphrase
+	for i := range w.unlockPass {
+		w.unlockPass[i] = 0
+	}
+	w.unlockPass = []byte(newPassphrase)
 	w.mu.Unlock()
 	return w.persistLocked()
 }
@@ -1170,7 +1179,7 @@ func (w *Wallet) persist() error {
 			ClassicKeyCount: w.classicCount,
 			HybridKeyCount:  w.hybridCount,
 			HasHDSeed:       w.hasHDSeed,
-		}, w.unlockPass)
+		}, string(w.unlockPass))
 		if err != nil {
 			w.mu.Unlock()
 			return err
@@ -1334,7 +1343,7 @@ func encryptState(state keyState, passphrase string) (cipherHex string, saltHex 
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		return "", "", "", err
 	}
-	ciphertext := gcm.Seal(nil, nonce, plain, nil)
+	ciphertext := gcm.Seal(nil, nonce, plain, []byte("legacycoin-wallet-v1"))
 	return hex.EncodeToString(ciphertext), hex.EncodeToString(salt), hex.EncodeToString(nonce), nil
 }
 
@@ -1364,7 +1373,7 @@ func decryptState(cipherHex string, saltHex string, nonceHex string, passphrase 
 	if err != nil {
 		return zero, err
 	}
-	plain, err := gcm.Open(nil, nonce, ciphertext, nil)
+	plain, err := gcm.Open(nil, nonce, ciphertext, []byte("legacycoin-wallet-v1"))
 	if err != nil {
 		return zero, fmt.Errorf("decrypt wallet: %w", err)
 	}

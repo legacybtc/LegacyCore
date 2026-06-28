@@ -40,13 +40,22 @@ func NewRejectWithHash(cmd string, code uint8, reason string, hash [32]byte) *Re
 }
 
 func (r *Reject) Bytes() ([]byte, error) {
+	hasHash := false
+	for _, b := range r.Hash {
+		if b != 0 {
+			hasHash = true
+			break
+		}
+	}
 	buf := make([]byte, 0, 200)
 	buf = append(buf, byte(len(r.Cmd)))
 	buf = append(buf, []byte(r.Cmd)...)
 	buf = append(buf, r.Code)
 	buf = append(buf, byte(len(r.Reason)))
 	buf = append(buf, []byte(r.Reason)...)
-	buf = append(buf, r.Hash[:]...)
+	if hasHash {
+		buf = append(buf, r.Hash[:]...)
+	}
 	return buf, nil
 }
 
@@ -73,8 +82,11 @@ func ReadReject(r io.Reader) (*Reject, error) {
 		return nil, err
 	}
 	result.Reason = string(reason)
-	if _, err := io.ReadFull(r, result.Hash[:]); err != nil {
-		return nil, err
+	// Hash is optional per BIP 61 (omitted for non-block/tx rejects).
+	// Attempt to read the 32-byte hash, but it may not be present.
+	var hashBuf [32]byte
+	if n, err := io.ReadFull(r, hashBuf[:]); err == nil && n == 32 {
+		result.Hash = hashBuf
 	}
 	return result, nil
 }

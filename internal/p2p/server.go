@@ -407,6 +407,11 @@ func subnetKey(host string) string {
 	if v4 := ip.To4(); v4 != nil {
 		return fmt.Sprintf("%d.%d.%d.0/24", v4[0], v4[1], v4[2])
 	}
+	// IPv6: use /64 subnet
+	if len(ip) == net.IPv6len {
+		return fmt.Sprintf("%02x%02x:%02x%02x:%02x%02x:%02x%02x::/64",
+			ip[0], ip[1], ip[2], ip[3], ip[4], ip[5], ip[6], ip[7])
+	}
 	return ""
 }
 

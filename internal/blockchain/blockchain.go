@@ -575,6 +575,7 @@ func (c *Chain) processBlockLocked(block *wire.MsgBlock) (BlockProcessResult, er
 		return result, err
 	}
 	c.acceptOrphanChildrenLocked(hashStr)
+	c.pruneSideBlocksLocked()
 	result.Connected = true
 	result.Status = BlockStatusConnected
 	result.Reason = "extends active best chain"
@@ -646,6 +647,7 @@ func (c *Chain) blockProcessPreviewLocked(block *wire.MsgBlock, mutate bool) (Bl
 				}
 				result.finish(c.tip)
 				if result.BestChanged && result.NewBestHash == hashStr {
+					c.acceptOrphanChildrenLocked(hashStr)
 					result.Connected = true
 					result.Status = BlockStatusConnected
 					result.Reason = "side branch became active best chain"
@@ -675,6 +677,7 @@ func (c *Chain) blockProcessPreviewLocked(block *wire.MsgBlock, mutate bool) (Bl
 				}
 				result.finish(c.tip)
 				if result.BestChanged && result.NewBestHash == hashStr {
+					c.acceptOrphanChildrenLocked(hashStr)
 					result.Connected = true
 					result.Status = BlockStatusConnected
 					result.Reason = "stored branch became active best chain"
@@ -704,6 +707,7 @@ func (c *Chain) blockProcessPreviewLocked(block *wire.MsgBlock, mutate bool) (Bl
 				}
 				result.finish(c.tip)
 				if result.BestChanged && result.NewBestHash == hashStr {
+					c.acceptOrphanChildrenLocked(hashStr)
 					result.Connected = true
 					result.Status = BlockStatusConnected
 					result.Reason = "side branch became active best chain"
@@ -884,7 +888,10 @@ func (c *Chain) tryActivateSideChainLocked(sideTipHash string) error {
 			removed = append(removed, block)
 			if err := c.disconnectTipLocked(); err != nil {
 				fmt.Printf("blockchain: reorg failed during disconnect at height %d: %v\n", c.tip.Height, err)
-				return err
+				if restoreErr := c.reconnectBlocksLocked(removed); restoreErr != nil {
+					return fmt.Errorf("disconnect failed: %v (restore also failed: %v)", err, restoreErr)
+				}
+				return fmt.Errorf("reorg failed during disconnect at height %d: %v", c.tip.Height, err)
 			}
 		}
 		if c.tip == nil || c.tip.Hash != forkHash {
@@ -915,6 +922,7 @@ func (c *Chain) tryActivateSideChainLocked(sideTipHash string) error {
 		for _, n := range attachRev {
 			delete(c.sideBlocks, n.hash)
 		}
+		c.pruneSideBlocksLocked()
 		fmt.Printf("blockchain: reorg completed successfully to height %d\n", c.tip.Height)
 		return nil
 	}
@@ -933,6 +941,7 @@ func (c *Chain) tryActivateSideChainLocked(sideTipHash string) error {
 	for _, n := range attachRev {
 		delete(c.sideBlocks, n.hash)
 	}
+	c.pruneSideBlocksLocked()
 	return nil
 }
 
@@ -990,6 +999,9 @@ func (c *Chain) validateBlockTransactions(block *wire.MsgBlock, height int32) ([
 	for txIndex, tx := range block.Transactions {
 		if txIndex > 0 && isCoinbase(tx) {
 			return nil, nil, nil, ErrBadCoinbase
+		}
+		if txIndex > 0 && len(tx.TxIn) == 0 {
+			return nil, nil, nil, errors.New("non-coinbase transaction with no inputs")
 		}
 		if !IsFinalizedTx(tx, height, blockTime) {
 			return nil, nil, nil, ErrNonFinalTx
@@ -1699,4 +1711,17 @@ func (c *Chain) ReindexActiveChain() (map[string]any, error) {
 		result["warning"] = health.Error
 	}
 	return result, nil
+}
+
+func (c *Chain) pruneSideBlocksLocked() {
+	if c.tip == nil || len(c.sideBlocks) == 0 {
+		return
+	}
+	const maxSideChainDepth = 288
+	minHeight := c.tip.Height - maxSideChainDepth
+	for hash, node := range c.sideBlocks {
+		if node.height < minHeight {
+			delete(c.sideBlocks, hash)
+		}
+	}
 }

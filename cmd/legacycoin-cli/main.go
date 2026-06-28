@@ -225,22 +225,42 @@ func printHelp() {
 	fmt.Println("  legacycoin-cli sendtoaddress <address> 100000000 --base-units --yes")
 }
 
+func readStdinPassword() string {
+	data, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil {
+		return ""
+	}
+	return strings.TrimRight(data, "\r\n")
+}
+
 func buildParams(method string, args []string) ([]any, string, error) {
 	switch method {
 	case "walletpassphrase":
 		if len(args) != 2 {
-			return nil, method, fmt.Errorf("walletpassphrase expects <passphrase> <timeout_seconds>")
+			return nil, method, fmt.Errorf("walletpassphrase expects <passphrase> <timeout_seconds>; use '-' as passphrase to read from stdin")
 		}
 		timeout, err := strconv.Atoi(args[1])
 		if err != nil || timeout <= 0 {
 			return nil, method, fmt.Errorf("walletpassphrase timeout must be a positive integer")
 		}
-		return []any{args[0], timeout}, method, nil
+		passphrase := args[0]
+		if passphrase == "-" {
+			passphrase = readStdinPassword()
+		}
+		return []any{passphrase, timeout}, method, nil
 	case "walletpassphrasechange":
 		if len(args) != 2 {
-			return nil, method, fmt.Errorf("walletpassphrasechange expects <oldpassphrase> <newpassphrase>")
+			return nil, method, fmt.Errorf("walletpassphrasechange expects <oldpassphrase> <newpassphrase>; use '-' for either to read from stdin")
 		}
-		return []any{args[0], args[1]}, method, nil
+		oldPass := args[0]
+		if oldPass == "-" {
+			oldPass = readStdinPassword()
+		}
+		newPass := args[1]
+		if newPass == "-" {
+			newPass = readStdinPassword()
+		}
+		return []any{oldPass, newPass}, method, nil
 	case "sendtoaddress":
 		return buildSendToAddress(method, args)
 	case "sendfromaddress":

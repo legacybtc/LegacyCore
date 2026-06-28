@@ -496,6 +496,13 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 }
 
 func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	if r.Method != http.MethodPost {
 		http.Error(w, "JSON-RPC requires POST", http.StatusMethodNotAllowed)
 		return
@@ -1261,6 +1268,15 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		if err != nil {
 			return nil, &rpcError{Code: -32603, Message: err.Error()}
 		}
+		txids := make([]string, len(block.Transactions))
+		for i, tx := range block.Transactions {
+			h, err := tx.TxHash()
+			if err != nil {
+				txids[i] = ""
+			} else {
+				txids[i] = h.String()
+			}
+		}
 		return map[string]any{
 			"hash":          idx.Hash,
 			"height":        idx.Height,
@@ -1269,7 +1285,7 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 			"time":          block.Header.Timestamp,
 			"bits":          strconv.FormatUint(uint64(block.Header.Bits), 16),
 			"nonce":         block.Header.Nonce,
-			"tx":            len(block.Transactions),
+			"tx":            txids,
 			"confirmations": confirmations(s.chain.Tip(), idx),
 			"hex":           hex.EncodeToString(raw),
 		}, nil
@@ -2314,7 +2330,7 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 			}
 			total += u.Value
 		}
-		return total, nil
+		return amountFloat(total), nil
 	case "listtransactions":
 		var args []json.RawMessage
 		_ = json.Unmarshal(params, &args)
@@ -2765,9 +2781,9 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 	case "estimatefee", "estimatesmartfee":
 		var args []json.RawMessage
 		_ = json.Unmarshal(params, &args)
-		nblocks := 6
+		nblocks := int64(6)
 		if len(args) > 0 {
-			var n int
+			var n int64
 			if err := json.Unmarshal(args[0], &n); err == nil && n > 0 {
 				nblocks = n
 			}
@@ -2787,7 +2803,16 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 				feeEstimate = mempool.MinRelayFeePerKB
 			} else {
 				sort.Slice(rates, func(i, j int) bool { return rates[i] < rates[j] })
-				idx := len(rates) / 2
+				var pct float64
+				switch {
+				case nblocks <= 2:
+					pct = 0.75
+				case nblocks <= 5:
+					pct = 0.50
+				default:
+					pct = 0.25
+				}
+				idx := int(float64(len(rates)-1) * pct)
 				feeEstimate = int64(rates[idx])
 			}
 		}
@@ -3980,6 +4005,9 @@ func amountFloat(v int64) float64 {
 
 func writeResponse(w http.ResponseWriter, resp response) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
