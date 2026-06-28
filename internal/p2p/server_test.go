@@ -295,7 +295,9 @@ func TestRequestMissingParentSendsGetDataForOrphanPrev(t *testing.T) {
 	parent := chainhash.DoubleHashB([]byte("missing parent of an orphan block"))
 	done := make(chan error, 1)
 	go func() {
-		s.requestMissingParent(p, parent.String())
+		if payload, ok := s.tryClaimMissingParent(parent.String()); ok {
+			s.sendMissingParentRequest(p, parent.String(), payload)
+		}
 		done <- nil
 	}()
 
@@ -323,7 +325,10 @@ func TestRequestMissingParentSendsGetDataForOrphanPrev(t *testing.T) {
 
 	// Dedupe: a second call for the same parent within the TTL must NOT
 	// queue another write on the pipe (the reader would otherwise block).
-	s.requestMissingParent(p, parent.String())
+	if payload, ok := s.tryClaimMissingParent(parent.String()); ok {
+		s.sendMissingParentRequest(p, parent.String(), payload)
+		t.Fatal("duplicate missing-parent request was not deduped")
+	}
 	_ = clientConn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
 	if _, err := wire.ReadMessage(clientConn, chaincfg.MainNet.MessageStart); err == nil {
 		t.Fatal("duplicate missing-parent request was re-sent within TTL")

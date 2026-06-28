@@ -2419,7 +2419,9 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 				// (via getheaders/getblocks), so an orphan whose parent is
 				// not on the active chain leaves sync stuck forever.
 				if result.Status == blockchain.BlockStatusOrphan && !result.ParentKnown && result.PrevHash != "" {
-					s.requestMissingParent(p, result.PrevHash)
+					if payload, ok := s.tryClaimMissingParent(result.PrevHash); ok {
+						s.sendMissingParentRequest(p, result.PrevHash, payload)
+					}
 				}
 				continue
 			}
@@ -3129,14 +3131,13 @@ func (s *Server) requestUnknownBlocks(p *peer, inv []wire.InvVect) error {
 	return s.writePeerMessage(p, wire.CommandGetData, payload)
 }
 
-// requestMissingParent asks peer p (and, via a bounded goroutine, a few other
-// ahead peers) for the block whose hash is parentHash. It is called when a
-// block is processed as an orphan whose parent is unknown: relaying the
-// parent by hash is the only way the chain can connect in that case, because
-// the ordinary sync path only ever requests blocks after the active tip.
-func (s *Server) requestMissingParent(p *peer, parentHash string) {
+// tryClaimMissingParent checks the dedup map for parentHash under
+// missingParentMu and, if not recently seen, builds and returns a getdata
+// payload. Returns (ok, payload). Callers must NOT hold any peer writeMu
+// (locking convention: missingParentMu before writeMu).
+func (s *Server) tryClaimMissingParent(parentHash string) ([]byte, bool) {
 	if parentHash == "" {
-		return
+		return nil, false
 	}
 	now := time.Now()
 	s.missingParentMu.Lock()
@@ -3145,7 +3146,7 @@ func (s *Server) requestMissingParent(p *peer, parentHash string) {
 	}
 	if last, ok := s.missingParentSeen[parentHash]; ok && now.Sub(last) < missingParentTTL {
 		s.missingParentMu.Unlock()
-		return
+		return nil, false
 	}
 	if len(s.missingParentSeen) >= missingParentSeenCap {
 		for h, t := range s.missingParentSeen {
@@ -3160,15 +3161,20 @@ func (s *Server) requestMissingParent(p *peer, parentHash string) {
 	h, err := chainhash.FromString(parentHash)
 	if err != nil {
 		s.log.Printf("p2p orphan parent %s not a valid hash: %v", parentHash, err)
-		return
+		return nil, false
 	}
 	inv := []wire.InvVect{{Type: wire.InvTypeBlock, Hash: h}}
 	payload, err := wire.InvPayload(inv)
 	if err != nil {
 		s.log.Printf("p2p orphan parent %s inv payload: %v", parentHash, err)
-		return
+		return nil, false
 	}
+	return payload, true
+}
 
+// sendMissingParentRequest sends the pre-built getdata payload to peer p,
+// then spawns a goroutine to ask a few other ahead peers asynchronously.
+func (s *Server) sendMissingParentRequest(p *peer, parentHash string, payload []byte) {
 	if p != nil {
 		if err := s.writePeerMessage(p, wire.CommandGetData, payload); err != nil {
 			s.log.Printf("p2p request missing parent %s from %s: %v", parentHash, p.remote, err)
@@ -3385,7 +3391,9 @@ func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error 
 		// block we do not yet have. Request that exact parent by hash
 		// (same mechanism as the block-orphan path) instead of stalling.
 		if firstPrev != "" && firstPrev != tipHash {
-			s.requestMissingParent(p, firstPrev)
+			if payload, ok := s.tryClaimMissingParent(firstPrev); ok {
+				s.sendMissingParentRequest(p, firstPrev, payload)
+			}
 		}
 		return err
 	}
