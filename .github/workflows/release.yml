@@ -12,7 +12,7 @@ on:
       - "v*"
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   RELEASE_VERSION: ${{ github.event.inputs.version || github.ref_name }}
@@ -215,3 +215,29 @@ jobs:
         with:
           name: release-sha256s
           path: release-assets/SHA256SUMS.txt
+
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [release-sha256s]
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Flatten release assets
+        run: |
+          mkdir -p release-assets
+          find dist -type f \( -name "*.zip" -o -name "*.tar.gz" -o -name "SHA256SUMS.txt" \) -exec cp {} release-assets/ \;
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_VERSION }}
+          name: Legacy Core ${{ env.RELEASE_VERSION }}
+          body: |
+            Automated release from commit ${{ github.sha }}.
+          files: release-assets/*
+          generate_release_notes: false
+          fail_on_unmatched_files: true
