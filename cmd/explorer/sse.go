@@ -14,6 +14,8 @@ type SSEEvent struct {
 	Time int64  `json:"time"`
 }
 
+const sseMaxClients = 50
+
 type SSEHub struct {
 	mu      sync.RWMutex
 	clients map[chan []byte]struct{}
@@ -22,8 +24,12 @@ type SSEHub struct {
 var sseHub = &SSEHub{clients: make(map[chan []byte]struct{})}
 
 func (h *SSEHub) subscribe() chan []byte {
-	ch := make(chan []byte, 64)
 	h.mu.Lock()
+	if len(h.clients) >= sseMaxClients {
+		h.mu.Unlock()
+		return nil
+	}
+	ch := make(chan []byte, 64)
 	h.clients[ch] = struct{}{}
 	h.mu.Unlock()
 	return ch
@@ -60,6 +66,10 @@ func sseHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	ch := sseHub.subscribe()
+	if ch == nil {
+		http.Error(w, "too many clients", http.StatusServiceUnavailable)
+		return
+	}
 	defer sseHub.unsubscribe(ch)
 
 	ctx := r.Context()
