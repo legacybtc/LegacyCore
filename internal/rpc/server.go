@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
@@ -2053,30 +2054,37 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		if err := json.Unmarshal(params, &args); err != nil || len(args) != 1 {
 			return nil, &rpcError{Code: -32602, Message: "backupwallet expects destination path"}
 		}
-		src := config.DefaultDataDir() + string(os.PathSeparator) + "wallet.json"
+		dest, err := resolveSafePath(args[0], config.DefaultDataDir())
+		if err != nil {
+			return nil, &rpcError{Code: -8, Message: err.Error()}
+		}
+		src := filepath.Join(config.DefaultDataDir(), "wallet.json")
 		data, err := os.ReadFile(src)
 		if err != nil {
 			return nil, &rpcError{Code: -32603, Message: err.Error()}
 		}
-		if err := os.WriteFile(args[0], data, 0600); err != nil {
+		if err := os.WriteFile(dest, data, 0600); err != nil {
 			return nil, &rpcError{Code: -32603, Message: err.Error()}
 		}
-		return map[string]any{"backup": args[0], "ok": true}, nil
+		return map[string]any{"backup": dest, "ok": true}, nil
 	case "dumpwallet":
-		// Public-safe dump: writes the encrypted/raw wallet file as a backup.
 		var args []string
 		if err := json.Unmarshal(params, &args); err != nil || len(args) != 1 {
 			return nil, &rpcError{Code: -32602, Message: "dumpwallet expects destination path"}
 		}
-		src := config.DefaultDataDir() + string(os.PathSeparator) + "wallet.json"
+		dest, err := resolveSafePath(args[0], config.DefaultDataDir())
+		if err != nil {
+			return nil, &rpcError{Code: -8, Message: err.Error()}
+		}
+		src := filepath.Join(config.DefaultDataDir(), "wallet.json")
 		data, err := os.ReadFile(src)
 		if err != nil {
 			return nil, &rpcError{Code: -32603, Message: err.Error()}
 		}
-		if err := os.WriteFile(args[0], data, 0600); err != nil {
+		if err := os.WriteFile(dest, data, 0600); err != nil {
 			return nil, &rpcError{Code: -32603, Message: err.Error()}
 		}
-		return map[string]any{"dump": args[0], "ok": true, "note": "encrypted wallets remain encrypted"}, nil
+		return map[string]any{"dump": dest, "ok": true, "note": "encrypted wallets remain encrypted"}, nil
 	case "dumpprivkey":
 		var args []string
 		if err := json.Unmarshal(params, &args); err != nil || len(args) != 1 {
@@ -6316,6 +6324,27 @@ func staleRate(accepted, stale, rejected int64) float64 {
 		return 0
 	}
 	return float64(stale) / float64(total)
+}
+
+// resolveSafePath resolves dest relative to base and ensures it stays within
+// base (preventing directory traversal). Returns the cleaned absolute path.
+func resolveSafePath(dest, base string) (string, error) {
+	cleaned := filepath.Clean(dest)
+	if !filepath.IsAbs(cleaned) {
+		cleaned = filepath.Join(base, cleaned)
+	}
+	absDest, err := filepath.Abs(cleaned)
+	if err != nil {
+		return "", err
+	}
+	absBase, err := filepath.Abs(base)
+	if err != nil {
+		return "", err
+	}
+	if !strings.HasPrefix(absDest, absBase+string(os.PathSeparator)) && absDest != absBase {
+		return "", fmt.Errorf("destination path is outside allowed directory")
+	}
+	return absDest, nil
 }
 
 func coinbaseTxID(block *wire.MsgBlock) string {

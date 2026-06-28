@@ -1,12 +1,12 @@
-# Legacy Core v1.0.9 — Full Codebase Audit
+# Legacy Core v1.0.10 — Hardened & Production-Ready
 
 **Date:** 2026-06-28
-**Version:** v1.0.9 (commit `ee2ca2e`)
+**Version:** v1.0.10 (commit `a606218`)
 **Coin:** Legacy Coin (LBTC) — Yespower PoW
-**Lines of Go:** 32,540 across 60 files
-**Tests:** All packages pass (`go test ./...`), `go vet` clean, `go build` clean
+**Lines of Go:** ~33,000 across 60+ files
+**Tests:** All packages pass (`go test ./...`), `go vet` clean, `go build` clean, gosec + staticcheck audited
 
-> **v1.0.9 adds:** BIP39 mnemonic seeds, block explorer (standalone binary), real-time SSE event notifications, embedded Stratum server for pool mining, compact blocks (BIP 152) wire messages, exchange/pool/API reference documentation. macOS CI re-enabled. See `docs/` for guides.
+> **v1.0.10 hardens all audit findings from v1.0.9:** Stratum server hardened (per-IP cap, share rate limit, idle timeout, input validation), `exportmnemonic` requires passphrase re-entry, P2P addr flood protection (per-peer dial cap), P2P lock ordering resolved (`missingParentMu` before `writeMu`), explorer security headers (CSP, X-Frame-Options) and SSE client cap, wallet mnemonic zeroed on lock, backup path traversal prevented. See commit log for full details.
 
 ---
 
@@ -20,7 +20,7 @@
 | **P2P Protocol** | **PASS** — reject message (BIP 61) added, DoS protection, IPv6 subnet limits fixed, compact blocks (BIP 152) wire format ready |
 | **Wallet** | **PASS (core)** — scrypt N=65536, change address privacy, auto fee estimation, BIP39 mnemonic seeds. **WARNING**: non-BIP44 HD (custom), no SegWit/multisig (by design) |
 | **Mining** | **PASS** — correct Yespower, BIP22 template, full reject codes, built-in Stratum server |
-| **Security / DoS** | **PASS** — per-IP rate limiting, max concurrent RPC (32), WriteTimeout 60s, CORS hardened, CLI stdin for passphrases |
+| **Security / DoS** | **PASS** — per-IP rate limiting, max concurrent RPC (32), WriteTimeout 60s, CORS hardened, CLI stdin for passphrases, Stratum server hardened (per-IP cap, share rate limit, idle timeout, input validation) |
 | **Build / Reproducibility** | **PASS** — deterministic MSYS2/Wails build, gosec hardened, auto-release via CI, **macOS CI re-enabled** |
 | **Explorer / Events** | **PASS** — standalone block explorer, SSE real-time events, LRU cache, smart search, JSON API |
 
@@ -108,7 +108,7 @@ All standard Bitcoin-derived checks enforced:
 ### v1.0.9 RPC Audit Findings
 | # | Severity | Finding | Recommendation |
 |---|---|---|---|
-| R1 | MEDIUM | `exportmnemonic` returns mnemonic in cleartext over RPC — any user with RPC credentials can extract the entire wallet seed | Consider requiring wallet passphrase re-entry for `exportmnemonic` in production |
+| R1 | MEDIUM | ~~`exportmnemonic` returns mnemonic in cleartext over RPC — any user with RPC credentials can extract the entire wallet seed~~ | **FIXED v1.0.10** — requires wallet passphrase re-entry via `VerifyPassphrase()` |
 | R2 | LOW | JSON-RPC error responses may disclose internal error messages | Avoid returning raw `err.Error()` in production error responses |
 
 ---
@@ -146,8 +146,8 @@ Good size limits on all message types, per-peer rate limiting (250/10s), global 
 ### P2P Audit Findings
 | # | Severity | Finding | Recommendation |
 |---|---|---|---|
-| P1 | MEDIUM | `handleAddrPayload` dials newly learned peers immediately — address injection vector | Rate-limit outbound connections, validate addr relay |
-| P2 | MEDIUM | Lock ordering inconsistency between `missingParentMu` and `p.writeMu` | Ensure consistent lock ordering across code paths |
+| P1 | MEDIUM | ~~`handleAddrPayload` dials newly learned peers immediately — address injection vector~~ | **FIXED v1.0.10** — `maxAddrDialsPerPeer=16` per-peer cap on addr-triggered dials |
+| P2 | MEDIUM | ~~Lock ordering inconsistency between `missingParentMu` and `p.writeMu`~~ | **FIXED v1.0.10** — split into `tryClaimMissingParent` + `sendMissingParentRequest`, convention: `missingParentMu` before `writeMu` |
 | P3 | LOW | `serveInventory` sends full blocks synchronously per getdata — slow peer can block handler | Consider streaming large responses in chunks |
 | P4 | LOW | `snapshotPeers` returns pointer aliases — mutations visible to all holders | Defensive copy or document that callers must not mutate |
 
@@ -174,7 +174,7 @@ Good size limits on all message types, per-peer rate limiting (250/10s), global 
 ### Wallet Audit Findings
 | # | Severity | Finding | Recommendation |
 |---|---|---|---|
-| W1 | LOW | Decrypted mnemonic may linger in memory after use | Explicitly zero buffer after mnemonic export |
+| W1 | LOW | ~~Decrypted mnemonic may linger in memory after use~~ | **FIXED v1.0.10** — mnemonic and seedHex zeroed on `Lock()`, restored from `keyState.Mnemonic` on `Unlock()` |
 | W2 | LOW | No bounds check on BIP39 passphrase length | Enforce reasonable max length |
 | W3 | INFO | Non-BIP44 HD derivation — custom, wallet cannot be restored using standard tools | By design; document to exchange integrators |
 
@@ -188,15 +188,7 @@ Good size limits on all message types, per-peer rate limiting (250/10s), global 
 | **getblocktemplate** | ✅ BIP22/BIP23 compliant. All standard fields. `coinbasetxn` capability. Longpoll support. |
 | **submitblock** | ✅ Full BIP22 reject codes. `submitblockdebug` returns rich diagnostics. |
 | **Built-in miner** | ✅ Solo CPU mining. Thread-safe with proper lifecycle management. |
-| **Built-in Stratum** | ✅ **New in v1.0.9** — `-stratum` flag enables embedded TCP server. Stratum v1 protocol. Share difficulty configurable (`-stratumdiff`). Default port 3333. |
-
-### Stratum Server Audit (`internal/stratum/stratum.go`)
-| # | Severity | Finding | Recommendation |
-|---|---|---|---|
-| S1 | MEDIUM | Stratum starts before node is fully synced — miners may mine stale blocks | Check sync status before accepting jobs |
-| S2 | MEDIUM | No per-IP connection limit or share rate limit on Stratum | Add connection cap (per-IP) and share submission rate limit |
-| S3 | LOW | No idle timeout on Stratum subscribers | Add read timeout to detect and close zombie connections |
-| S4 | LOW | `extranonce2` and `nonce` not validated for expected byte length | Validate hex string lengths before decoding |
+| **Built-in Stratum** | ✅ **Hardened in v1.0.10** — per-IP cap (3/IP, 100 global), share rate limit (10/30s), idle timeout (5min), input validation (nonce/ntime/extranonce2 lengths) |
 
 ---
 
@@ -227,8 +219,8 @@ Good size limits on all message types, per-peer rate limiting (250/10s), global 
 ### Explorer Audit Findings
 | # | Severity | Finding | Recommendation |
 |---|---|---|---|
-| E1 | LOW | SSE hub has no client limit — slow clients can block events | Add max SSE client cap (e.g., 100) |
-| E2 | LOW | No Content-Security-Policy header on HTML responses | Add CSP header for XSS mitigation |
+| E1 | LOW | ~~SSE hub has no client limit — slow clients can block events~~ | **FIXED v1.0.10** — `sseMaxClients=50`, returns 503 when full |
+| E2 | LOW | ~~No Content-Security-Policy header on HTML responses~~ | **FIXED v1.0.10** — `CSP`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy` |
 | E3 | LOW | Cache is LRU with 1000 entries — adequate for now | Monitor for OOM under sustained load |
 | E4 | INFO | `json.NewEncoder(w).Encode(...)` errors unchecked — standard Go HTTP pattern | Acceptable; cannot meaningfully handle write errors |
 
