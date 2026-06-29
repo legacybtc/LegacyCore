@@ -1,12 +1,12 @@
-# Legacy Core v1.0.10 — Hardened & Production-Ready
+# Legacy Core v1.0.11 — BIP 130 + Full Hardening
 
 **Date:** 2026-06-28
-**Version:** v1.0.10 (commit `a606218`)
+**Version:** v1.0.11
 **Coin:** Legacy Coin (LBTC) — Yespower PoW
 **Lines of Go:** ~33,000 across 60+ files
 **Tests:** All packages pass (`go test ./...`), `go vet` clean, `go build` clean, gosec + staticcheck audited
 
-> **v1.0.10 hardens all audit findings from v1.0.9:** Stratum server hardened (per-IP cap, share rate limit, idle timeout, input validation), `exportmnemonic` requires passphrase re-entry, P2P addr flood protection (per-peer dial cap), P2P lock ordering resolved (`missingParentMu` before `writeMu`), explorer security headers (CSP, X-Frame-Options) and SSE client cap, wallet mnemonic zeroed on lock, backup path traversal prevented. See commit log for full details.
+> **v1.0.11 activates BIP 130 `sendheaders`:** Block announcements now use `headers` messages instead of `inv` for peers that advertise BIP 130 support. All v1.0.10 hardening retained: Stratum DoS protection, P2P addr flood + lock ordering fixes, exportmnemonic passphrase re-entry, explorer security, wallet mnemonic zeroing. All audit findings closed or mitigated.
 
 ---
 
@@ -138,7 +138,7 @@ All standard Bitcoin-derived checks enforced:
 | Message | Impact |
 |---|---|
 | `notfound` | Peers silently skip missing inventory instead of replying with `notfound` |
-| `sendheaders` (BIP 130) | All block announcements go through inv→getdata round-trip |
+| ~~`sendheaders` (BIP 130)~~ | **ACTIVATED v1.0.11** — peers advertise `sendheaders` after verack; announcements use `headers` instead of `inv` for BIP 130 peers |
 
 ### DoS Protection — PASS
 Good size limits on all message types, per-peer rate limiting (250/10s), global 3000/10s, per-IP inbound caps (8), per-subnet caps (IPv4 /24, IPv6 /64), ban/score system with decay, IP-level banning with expiry.

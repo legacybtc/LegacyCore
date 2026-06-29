@@ -19,20 +19,44 @@ func (s *Server) announceBlockToPeers(hash chainhash.Hash) {
 }
 
 func (s *Server) announceBlockToPeersExcept(hash chainhash.Hash, skip *peer) {
-	payload, err := wire.InvPayload([]wire.InvVect{{Type: wire.InvTypeBlock, Hash: hash}})
+	// Pre-build both payloads so we only do it once.
+	invPayload, err := wire.InvPayload([]wire.InvVect{{Type: wire.InvTypeBlock, Hash: hash}})
 	if err != nil {
 		s.log.Printf("p2p: build block inv for %s: %v", hash.String(), err)
 		return
 	}
+	var hdrPayload []byte
 
 	sent := 0
 	for _, p := range s.snapshotPeers() {
 		if p == nil || p == skip {
 			continue
 		}
-		if err := s.writePeerMessage(p, wire.CommandInv, payload); err != nil {
-			s.log.Printf("p2p: announce block %s to %s: %v", hash.String(), p.remote, err)
-			continue
+		p.lastMu.Lock()
+		wantHdr := p.wantHeaders
+		p.lastMu.Unlock()
+		if wantHdr {
+			if hdrPayload == nil {
+				block, _, err := s.chain.BlockByHash(hash.String())
+				if err != nil {
+					s.log.Printf("p2p: get block for %s: %v", hash.String(), err)
+					continue
+				}
+				hdrPayload, err = wire.HeadersPayload([]wire.BlockHeader{block.Header})
+				if err != nil {
+					s.log.Printf("p2p: build headers payload for %s: %v", hash.String(), err)
+					continue
+				}
+			}
+			if err := s.writePeerMessage(p, wire.CommandHeaders, hdrPayload); err != nil {
+				s.log.Printf("p2p: announce block %s to %s: %v", hash.String(), p.remote, err)
+				continue
+			}
+		} else {
+			if err := s.writePeerMessage(p, wire.CommandInv, invPayload); err != nil {
+				s.log.Printf("p2p: announce block %s to %s: %v", hash.String(), p.remote, err)
+				continue
+			}
 		}
 		sent++
 	}

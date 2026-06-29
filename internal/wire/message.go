@@ -26,6 +26,7 @@ const (
 	CommandGetHeaders = "getheaders"
 	CommandHeaders    = "headers"
 	CommandReject     = "reject"
+	CommandSendHeaders = "sendheaders"
 
 	MaxMessagePayload = 32 * 1024 * 1024
 )

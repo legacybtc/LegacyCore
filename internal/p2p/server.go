@@ -109,6 +109,7 @@ type peer struct {
 	lastPenaltyReason string
 	rateLimited       bool
 	addrDialCount     int
+	wantHeaders       bool
 	bannedUntil       time.Time
 	rateWindowStart   time.Time
 	rateWindowCount   int
@@ -2364,6 +2365,14 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 			}
 		case wire.CommandVerAck:
 			gotVerAck = true
+			p.lastMu.Lock()
+			p.wantHeaders = true
+			p.lastMu.Unlock()
+			_ = s.writePeerMessage(p, wire.CommandSendHeaders, nil)
+		case wire.CommandSendHeaders:
+			p.lastMu.Lock()
+			p.wantHeaders = true
+			p.lastMu.Unlock()
 		case wire.CommandPing:
 			if err := s.writePeerMessage(p, wire.CommandPong, msg.Payload); err != nil {
 				s.log.Printf("p2p write pong to %s: %v", conn.RemoteAddr(), err)

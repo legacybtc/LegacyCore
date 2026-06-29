@@ -212,7 +212,7 @@ func TestPostHandshakeIdlePeerIsDisconnected(t *testing.T) {
 			}
 			break
 		}
-		if msg.Command != wire.CommandGetHeaders && msg.Command != wire.CommandGetBlocks && msg.Command != wire.CommandAddr && msg.Command != wire.CommandGetAddr {
+		if msg.Command != wire.CommandGetHeaders && msg.Command != wire.CommandGetBlocks && msg.Command != wire.CommandAddr && msg.Command != wire.CommandGetAddr && msg.Command != wire.CommandSendHeaders {
 			t.Fatalf("read post-handshake maintenance message: msg=%v err=%v", msg, err)
 		}
 	}
