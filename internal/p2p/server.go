@@ -30,7 +30,7 @@ const (
 	userAgent                    = "/Legacy-GO:0.1.0/"
 	maxPeers                     = 125
 	maxOutboundPeers             = 16
-	maxGetDataItems              = 2048
+	maxGetDataItems              = 256
 	maxServeInvItems             = 2048
 	maxAddrRelayItems            = 10
 	maxAddrDialItems             = 8

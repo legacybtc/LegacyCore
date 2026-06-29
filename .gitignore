@@ -34,3 +34,6 @@ testdata/
 # Local temporary build folders
 .tmp-linux-build/
 TEST-BUILD-*
+
+# Local blockchain data
+data/
