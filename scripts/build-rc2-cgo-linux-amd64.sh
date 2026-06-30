@@ -14,7 +14,7 @@ echo "== RC2 CGO yespower verification =="
 go test ./internal/pow -v
 
 echo "== Wallet frontend assets =="
-(cd "$ROOT/cmd/legacywallet/frontend" && npm install && npm run build)
+(cd "$ROOT/cmd/legacywallet/frontend" && npm ci && npm run build)
 
 echo "== Full test suite =="
 go test ./...
