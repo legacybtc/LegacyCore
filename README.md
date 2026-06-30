@@ -3,7 +3,7 @@
 [![Go](https://github.com/legacybtc/LegacyCore/actions/workflows/ci.yml/badge.svg)](https://github.com/legacybtc/LegacyCore/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/legacybtc/LegacyCore/actions/workflows/codeql.yml/badge.svg)](https://github.com/legacybtc/LegacyCore/actions/workflows/codeql.yml)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/legacybtc/LegacyCore/badge)](https://securityscorecards.dev/viewer/?uri=github.com/legacybtc/LegacyCore)
-[![OpenSSF Best Practices](https://bestpractices.coreinfrastructure.org/projects/13444/badge)](https://www.bestpractices.dev/projects/13444)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13444/badge)](https://www.bestpractices.dev/projects/13444)
 
 Legacy Core is the official full-node, CLI, miner, and desktop wallet for **Legacy Coin (LBTC)** — a CPU-friendly Yespower Proof-of-Work cryptocurrency.
 
