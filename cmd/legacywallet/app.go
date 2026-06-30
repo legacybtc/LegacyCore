@@ -73,7 +73,7 @@ type NodeTestResult struct {
 	Message string `json:"message"`
 }
 
-const lifecycleBuildMarker = "v1.0.12"
+const lifecycleBuildMarker = "v1.0.13"
 
 func NewApp() *App {
 	s := defaultSettings()

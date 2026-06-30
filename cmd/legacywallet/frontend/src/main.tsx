@@ -2515,8 +2515,8 @@ function SettingsPage({ snap, run }: PageProps) {
         </div>
       </section>
       <InfoPanel title="About" rows={[
-["Product", "Legacy Wallet 1.0.8"],
-      ["Core Engine", "Legacy Core 1.0.8"],
+["Product", snap.coin?.wallet_app + " " + snap.coin?.wallet_version],
+        ["Core Engine", snap.coin?.node_software + " " + snap.coin?.core_version],
         ["Network", "Legacy Coin Mainnet"],
         ["Coin", "Legacy Coin / LBTC"],
         ["P2P port", snap.coin?.p2p_port],
@@ -2912,8 +2912,8 @@ function RPCConsolePage({ snap }: { snap: Dict }) {
 }
 
 function resolveBuildInfo(snap: Dict | null) {
-const markerRaw = String(snap?.lifecycle?.marker || "v1.0.8").trim();
-const marker = markerRaw.toLowerCase().includes("debug") ? "v1.0.8" : (markerRaw || "v1.0.8");
+const markerRaw = String(snap?.lifecycle?.marker || "v1.0.13").trim();
+const marker = markerRaw.toLowerCase().includes("debug") ? "v1.0.13" : (markerRaw || "v1.0.13");
   const commitRaw = String(snap?.lifecycle?.commit_short || snap?.lifecycle?.commit || "").trim();
   const commit = !commitRaw || commitRaw.toLowerCase() === "unknown" ? "local build" : commitRaw;
   const buildTimeRaw = String(snap?.lifecycle?.build_time || "").trim();
@@ -2927,7 +2927,7 @@ function AboutPage({ snap }: { snap: Dict }) {
     <div className="page aboutPage">
       <InfoPanel title="About Legacy Wallet" rows={[
         ["Product", "Legacy Wallet"],
-        ["Core", "Legacy Core v1.0.8"],
+        ["Core", `${snap.coin?.node_software || "Legacy Core"} v${snap.coin?.core_version || "1.0.13"}`],
         ["Build", build.marker],
         ["Commit", build.commit],
         ["Build time", build.buildTimeLabel],

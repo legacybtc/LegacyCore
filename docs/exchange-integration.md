@@ -164,7 +164,7 @@ LegacyCoin RPC is broadly compatible with Bitcoin Core 0.18+ JSON-RPC. Key diffe
 
 ## Troubleshooting
 
-**Node won't sync past genesis** — upgrade seed nodes to v1.0.9+.
+**Node won't sync past genesis** — upgrade seed nodes to v1.0.12+.
 
 **Wallet shows "No wallet available"** — run `setupwallet` first.
 

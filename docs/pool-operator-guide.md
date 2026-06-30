@@ -9,7 +9,7 @@ Miners → Stratum (:3333) → legacycoind (RPC :19556) → P2P Network
 ```
 
 Two approaches:
-1. **Built-in Stratum** (new in v1.0.9) — simple embedded server in `legacycoind`
+1. **Built-in Stratum** (new in v1.0.10) — simple embedded server in `legacycoind`
 2. **Standalone pool** — use the Stratum protocol with a custom pool backend
 
 ## Option 1: Built-in Stratum Server
