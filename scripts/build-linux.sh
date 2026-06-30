@@ -15,7 +15,7 @@ mkdir -p "$OUT_DIR"
 echo ""
 echo "======================================================"
 echo "  Legacy Core Server - Linux Build Script"
-echo "  Version 1.0.20"
+echo "  Version 1.0.21"
 if [[ -n "$TARGET_ARCH" ]]; then echo "  Target arch: $TARGET_ARCH"; fi
 echo "======================================================"
 echo ""

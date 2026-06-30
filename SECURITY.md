@@ -6,7 +6,8 @@ Legacy Core is early mainnet software. Treat RPC, wallet storage, private keys, 
 
 | Version | Status |
 | --- | --- |
-| v1.0.20 | current release |
+| v1.0.21 | current release |
+| v1.0.20 | unsupported |
 | v1.0.12 | unsupported |
 | v1.0.10 | unsupported |
 | older versions | unsupported |

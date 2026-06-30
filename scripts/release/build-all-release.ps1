@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "v1.0.5",
+    [string]$Version = "v1.0.21",
     [switch]$ManualGuiSmokePassed,
     [switch]$SkipLinux
 )
@@ -9,7 +9,7 @@ $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 Set-Location $repoRoot
 
 if (-not $ManualGuiSmokePassed) {
-    throw "Manual Windows GUI smoke has not been confirmed. Do not build final v1.0.5 packages until Eco 15-minute and Performance 60-minute smoke tests pass. Re-run with -ManualGuiSmokePassed after that is true."
+    throw "Manual Windows GUI smoke has not been confirmed. Do not build final v1.0.21 packages until Eco 15-minute and Performance 60-minute smoke tests pass. Re-run with -ManualGuiSmokePassed after that is true."
 }
 
 Write-Host "[release/all] building Windows wallet"

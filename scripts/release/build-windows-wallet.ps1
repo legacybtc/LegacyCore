@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "v1.0.5",
+    [string]$Version = "v1.0.21",
     [switch]$ManualGuiSmokePassed
 )
 

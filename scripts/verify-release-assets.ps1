@@ -8,10 +8,10 @@ $ErrorActionPreference = "Stop"
 $sensitivePatterns = @(
     [regex]::Escape(('C:' + '\Users')),
     [regex]::Escape(('C:' + '\Users' + '\MAX')),
-    '\bMA' + 'X/\b',
-    '\bCo' + 'dex\b',
+    [regex]::Escape('MA' + 'X/'),
+    [regex]::Escape('Co' + 'dex'),
     [regex]::Escape('/home/ma' + 'xgor'),
-    '\bserver' + '2\b',
+    [regex]::Escape('server' + '2'),
     [regex]::Escape('root' + '@'),
     'wallet\.dat',
     '\.cookie',
@@ -31,17 +31,32 @@ function Verify-ZipArchive([string]$archive) {
     $zip = [System.IO.Compression.ZipFile]::OpenRead($archive)
     try {
         $names = $zip.Entries | ForEach-Object { $_.FullName.TrimStart('/') }
-        $required = @(
-            "LegacyWallet.exe",
-            "legacycoind.exe",
-            "legacycoin-cli.exe",
-            "README_WALLET.txt",
-            "README_FIRST.txt",
-            "LICENSE",
-            "NOTICE",
-            "SHA256SUMS.txt",
-            "START_HERE.bat"
-        )
+        $baseName = Split-Path -Leaf $archive
+        if ($baseName -like "*source-clean.zip") {
+            $required = @()
+        } elseif ($baseName -like "LegacyCore-*-windows-*.zip") {
+            $required = @(
+                "legacycoind.exe",
+                "legacycoin-cli.exe",
+                "README_FIRST.txt",
+                "LICENSE",
+                "NOTICE",
+                "SHA256SUMS.txt",
+                "legacycoin.conf.example"
+            )
+        } else {
+            $required = @(
+                "LegacyWallet.exe",
+                "legacycoind.exe",
+                "legacycoin-cli.exe",
+                "README_WALLET.txt",
+                "README_FIRST.txt",
+                "LICENSE",
+                "NOTICE",
+                "SHA256SUMS.txt",
+                "START_HERE.bat"
+            )
+        }
         foreach ($item in $required) {
             if (-not ($names -contains $item)) {
                 throw "missing '$item' in $archive"
