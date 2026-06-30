@@ -68,12 +68,12 @@ import (
 )
 
 var (
-	localInit   atomic.Int64
-	localFree   atomic.Int64
-	cgoActive   atomic.Int64
-	cgoMax      atomic.Int64
-	chainInit   atomic.Int64
-	chainFree   atomic.Int64
+	localInit atomic.Int64
+	localFree atomic.Int64
+	cgoActive atomic.Int64
+	cgoMax    atomic.Int64
+	chainInit atomic.Int64
+	chainFree atomic.Int64
 )
 
 type yespowerContext struct {
@@ -174,20 +174,20 @@ func (h YespowerHasher) HashHeader(header wire.BlockHeader) (chainhash.Hash, err
 func YespowerCounters() map[string]int64 {
 	return map[string]int64{
 		"worker_contexts_initialized": localInit.Load(),
-		"worker_contexts_freed":      localFree.Load(),
-		"worker_contexts_active":     localInit.Load() - localFree.Load(),
-		"chain_contexts_initialized": chainInit.Load(),
-		"chain_contexts_freed":       chainFree.Load(),
-		"chain_contexts_active":      chainInit.Load() - chainFree.Load(),
-		"total_contexts_active":      (localInit.Load() - localFree.Load()) + (chainInit.Load() - chainFree.Load()),
-		"cgo_calls_active":           cgoActive.Load(),
-		"cgo_calls_max_concurrent":   cgoMax.Load(),
+		"worker_contexts_freed":       localFree.Load(),
+		"worker_contexts_active":      localInit.Load() - localFree.Load(),
+		"chain_contexts_initialized":  chainInit.Load(),
+		"chain_contexts_freed":        chainFree.Load(),
+		"chain_contexts_active":       chainInit.Load() - chainFree.Load(),
+		"total_contexts_active":       (localInit.Load() - localFree.Load()) + (chainInit.Load() - chainFree.Load()),
+		"cgo_calls_active":            cgoActive.Load(),
+		"cgo_calls_max_concurrent":    cgoMax.Load(),
 	}
 }
 
-func RecordChainContextInit()   { chainInit.Add(1) }
-func RecordChainContextFree()   { chainFree.Add(1) }
-func RecordWorkerContextInit()  { localInit.Add(1) }
-func RecordWorkerContextFree()  { localFree.Add(1) }
+func RecordChainContextInit()  { chainInit.Add(1) }
+func RecordChainContextFree()  { chainFree.Add(1) }
+func RecordWorkerContextInit() { localInit.Add(1) }
+func RecordWorkerContextFree() { localFree.Add(1) }
 
 func BackendName() string { return "cgo-c-reference" }

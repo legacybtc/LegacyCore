@@ -70,38 +70,61 @@ func BuildSanitizedSnapshot(raw map[string]any) SanitizedSnapshot {
 		s.GoodPeerCount = int32(numInt(sync, "good_peer_count"))
 		s.AgreeingPeers = int32(numInt(sync, "agreeing_peer_count"))
 	}
-	if n, ok := raw["node"].(map[string]any); ok { s.NodeRunning = boo(n, "running") }
+	if n, ok := raw["node"].(map[string]any); ok {
+		s.NodeRunning = boo(n, "running")
+	}
 	if w, ok := raw["wallet"].(map[string]any); ok {
-		if sec, ok := w["wallet"].(map[string]any); ok { s.WalletLocked = boo(sec, "locked") }
+		if sec, ok := w["wallet"].(map[string]any); ok {
+			s.WalletLocked = boo(sec, "locked")
+		}
 		s.AvailableLBTC = str(w, "available_lbtc", "0")
 		s.TotalLBTC = str(w, "total_lbtc", "0")
 		s.ImmatureLBTC = str(w, "immature_lbtc", "0")
 	}
-	if st, ok := raw["storage"].(map[string]any); ok { s.StorageOK = boo(st, "ok"); s.StorageError = str(st, "error", "") }
-	if coin, ok := raw["coin"].(map[string]any); ok { s.DNSSEEDs = len(ss(coin, "dns_seeds")) }
+	if st, ok := raw["storage"].(map[string]any); ok {
+		s.StorageOK = boo(st, "ok")
+		s.StorageError = str(st, "error", "")
+	}
+	if coin, ok := raw["coin"].(map[string]any); ok {
+		s.DNSSEEDs = len(ss(coin, "dns_seeds"))
+	}
 	return s
 }
 
 func str(m map[string]any, k, fallback string) string {
 	if v, ok := m[k]; ok {
-		if s, ok := v.(string); ok { return strings.TrimSpace(s) }
+		if s, ok := v.(string); ok {
+			return strings.TrimSpace(s)
+		}
 	}
 	return fallback
 }
 func boo(m map[string]any, k string) bool { v, _ := m[k].(bool); return v }
 func numInt(m map[string]any, k string) int {
-	v, _ := m[k]; switch n := v.(type) {
-	case float64: return int(n)
-	case int: return n
-	case int32: return int(n)
-	case int64: return int(n)
-	case json.Number: i, _ := n.Int64(); return int(i)
+	v, _ := m[k]
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	case int32:
+		return int(n)
+	case int64:
+		return int(n)
+	case json.Number:
+		i, _ := n.Int64()
+		return int(i)
 	}
 	return 0
 }
 func num64(m map[string]any, k string) int64 { return int64(numInt(m, k)) }
 func ss(m map[string]any, k string) []string {
-	v, _ := m[k].([]any); out := make([]string, 0, len(v))
-	for _, item := range v { if s, ok := item.(string); ok { out = append(out, s) } }
+	v, _ := m[k].([]any)
+	out := make([]string, 0, len(v))
+	for _, item := range v {
+		if s, ok := item.(string); ok {
+			out = append(out, s)
+		}
+	}
 	return out
 }

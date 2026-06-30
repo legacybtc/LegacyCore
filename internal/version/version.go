@@ -8,8 +8,8 @@ const (
 )
 
 var (
-	CoreCommit  = "unknown"
-	BuildTime   = "unknown"
+	CoreCommit = "unknown"
+	BuildTime  = "unknown"
 )
 
 func WalletFull() string {

@@ -14,14 +14,15 @@ import (
 	"sync/atomic"
 	"time"
 
+	"legacycoin/legacy-go/internal/address"
 	"legacycoin/legacy-go/internal/blockchain"
+	"legacycoin/legacy-go/internal/chaincfg"
+	"legacycoin/legacy-go/internal/chainhash"
+	"legacycoin/legacy-go/internal/consensus"
 	"legacycoin/legacy-go/internal/mempool"
 	"legacycoin/legacy-go/internal/mining"
 	"legacycoin/legacy-go/internal/pow"
 	"legacycoin/legacy-go/internal/wire"
-	"legacycoin/legacy-go/internal/chaincfg"
-	"legacycoin/legacy-go/internal/chainhash"
-	"legacycoin/legacy-go/internal/consensus"
 )
 
 type StratumRequest struct {
@@ -31,9 +32,9 @@ type StratumRequest struct {
 }
 
 type StratumResponse struct {
-	ID     any    `json:"id"`
-	Result any    `json:"result"`
-	Error  any    `json:"error,omitempty"`
+	ID     any `json:"id"`
+	Result any `json:"result"`
+	Error  any `json:"error,omitempty"`
 }
 
 type StratumNotify struct {
@@ -43,22 +44,22 @@ type StratumNotify struct {
 }
 
 const (
-	maxConnsPerIP      = 3
-	maxConnsGlobal     = 100
-	shareRateWindow    = 30 * time.Second
-	shareRateLimit     = 10
-	idleTimeout        = 5 * time.Minute
-	submitTimeout      = 30 * time.Second
+	maxConnsPerIP   = 3
+	maxConnsGlobal  = 100
+	shareRateWindow = 30 * time.Second
+	shareRateLimit  = 10
+	idleTimeout     = 5 * time.Minute
+	submitTimeout   = 30 * time.Second
 )
 
 type Miner struct {
-	conn         net.Conn
-	enc          *json.Encoder
-	worker       string
-	difficulty   float64
-	ip           string
-	sharesInWin  int
-	windowStart  time.Time
+	conn        net.Conn
+	enc         *json.Encoder
+	worker      string
+	difficulty  float64
+	ip          string
+	sharesInWin int
+	windowStart time.Time
 }
 
 type miningJob struct {
@@ -69,36 +70,70 @@ type miningJob struct {
 	cleanJobs bool
 }
 
+type ipShareState struct {
+	count int
+	start time.Time
+}
+
 type Server struct {
-	params      chaincfg.Params
-	chain       *blockchain.Chain
-	pool        *mempool.Pool
-	listener    net.Listener
-	mu          sync.Mutex
-	miners      map[*Miner]struct{}
-	ipCounts    map[string]int
-	activeJob   *miningJob
-	jobCounter  uint64
-	shareDiff   float64
-	pow         pow.YespowerHasher
-	done        chan struct{}
-	startedAt   time.Time
-	sharesFound int64
-	blocksFound int64
-	Port        int
+	params          chaincfg.Params
+	chain           *blockchain.Chain
+	pool            *mempool.Pool
+	listener        net.Listener
+	mu              sync.Mutex
+	miners          map[*Miner]struct{}
+	ipCounts        map[string]int
+	ipShares        map[string]ipShareState
+	activeJob       *miningJob
+	jobCounter      uint64
+	shareDiff       float64
+	pow             pow.YespowerHasher
+	operatorPKH     []byte
+	done            chan struct{}
+	startedAt       time.Time
+	sharesFound     int64
+	blocksFound     int64
+	Port            int
+	extranonce2Size int
 }
 
 func New(params chaincfg.Params, chain *blockchain.Chain, pool *mempool.Pool) *Server {
 	return &Server{
-		params:    params,
-		chain:     chain,
-		pool:      pool,
-		miners:    make(map[*Miner]struct{}),
-		ipCounts:  make(map[string]int),
-		shareDiff: 1.0,
-		pow:       pow.YespowerHasher{Personalization: params.YespowerPers},
-		done:      make(chan struct{}),
-		startedAt: time.Now(),
+		params:          params,
+		chain:           chain,
+		pool:            pool,
+		miners:          make(map[*Miner]struct{}),
+		ipCounts:        make(map[string]int),
+		ipShares:        make(map[string]ipShareState),
+		shareDiff:       1.0,
+		pow:             pow.YespowerHasher{Personalization: params.YespowerPers},
+		done:            make(chan struct{}),
+		startedAt:       time.Now(),
+		extranonce2Size: 8,
+	}
+}
+
+func (s *Server) SetOperatorAddress(addr string) error {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		s.operatorPKH = nil
+		return nil
+	}
+	version, payload, err := decodeP2PKHAddress(addr, s.params)
+	if err != nil {
+		return fmt.Errorf("stratum operator address: %w", err)
+	}
+	_ = version
+	if len(payload) != 20 {
+		return fmt.Errorf("stratum operator address: expected 20-byte hash, got %d", len(payload))
+	}
+	s.operatorPKH = append([]byte(nil), payload...)
+	return nil
+}
+
+func (s *Server) SetExtraNonce2Size(n int) {
+	if n > 0 && n <= 16 {
+		s.extranonce2Size = n
 	}
 }
 
@@ -143,6 +178,11 @@ func (s *Server) Stats() map[string]any {
 }
 
 func (s *Server) acceptLoop() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[Stratum] acceptLoop panic: %v", r)
+		}
+	}()
 	for {
 		conn, err := s.listener.Accept()
 		if err != nil {
@@ -154,6 +194,11 @@ func (s *Server) acceptLoop() {
 		}
 
 		s.mu.Lock()
+		if s.miners == nil {
+			s.mu.Unlock()
+			conn.Close()
+			continue
+		}
 		if len(s.miners) >= maxConnsGlobal {
 			s.mu.Unlock()
 			conn.Close()
@@ -177,6 +222,11 @@ func (s *Server) acceptLoop() {
 			windowStart: time.Now(),
 		}
 		s.mu.Lock()
+		if s.miners == nil {
+			s.mu.Unlock()
+			conn.Close()
+			continue
+		}
 		s.miners[m] = struct{}{}
 		s.mu.Unlock()
 		go s.handleMiner(m)
@@ -185,6 +235,9 @@ func (s *Server) acceptLoop() {
 
 func (s *Server) handleMiner(m *Miner) {
 	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[Stratum] handler panic from %s: %v", m.ip, r)
+		}
 		m.conn.Close()
 		s.mu.Lock()
 		delete(s.miners, m)
@@ -255,7 +308,7 @@ func (s *Server) handleSubmit(m *Miner, req *StratumRequest) {
 	}
 	workerName := params[0]
 	jobID := params[1]
-	extraNonce2 := params[2]
+	extraNonce2Hex := params[2]
 	ntimeStr := params[3]
 	nonceStr := params[4]
 
@@ -264,25 +317,48 @@ func (s *Server) handleSubmit(m *Miner, req *StratumRequest) {
 		return
 	}
 	nonceStr = strings.Repeat("0", 8-len(nonceStr)) + nonceStr
+	nonce, ok := new(big.Int).SetString(nonceStr, 16)
+	if !ok {
+		s.sendError(m, req.ID, 24, "invalid nonce hex")
+		return
+	}
+	if nonce.Uint64() > 0xffffffff {
+		s.sendError(m, req.ID, 24, "nonce out of range")
+		return
+	}
 
 	if len(ntimeStr) != 8 {
 		s.sendError(m, req.ID, 24, "invalid ntime")
 		return
 	}
-
-	if len(extraNonce2) > 16 || len(extraNonce2) == 0 {
-		s.sendError(m, req.ID, 24, "invalid extranonce2")
+	ntime, ok := new(big.Int).SetString(ntimeStr, 16)
+	if !ok {
+		s.sendError(m, req.ID, 24, "invalid ntime hex")
 		return
 	}
 
-	// Share rate limiting
-	now := time.Now()
-	if now.Sub(m.windowStart) > shareRateWindow {
-		m.sharesInWin = 0
-		m.windowStart = now
+	if len(extraNonce2Hex) == 0 || len(extraNonce2Hex) > 32 || len(extraNonce2Hex)%2 != 0 {
+		s.sendError(m, req.ID, 24, "invalid extranonce2")
+		return
 	}
-	m.sharesInWin++
-	if m.sharesInWin > shareRateLimit {
+	extraNonce2, err := hex.DecodeString(extraNonce2Hex)
+	if err != nil {
+		s.sendError(m, req.ID, 24, "invalid extranonce2 hex")
+		return
+	}
+
+	// Share rate limiting (per-IP, survives reconnects).
+	now := time.Now()
+	s.mu.Lock()
+	ipState := s.ipShares[m.ip]
+	if now.Sub(ipState.start) > shareRateWindow {
+		ipState.count = 0
+		ipState.start = now
+	}
+	ipState.count++
+	s.ipShares[m.ip] = ipState
+	s.mu.Unlock()
+	if ipState.count > shareRateLimit*maxConnsPerIP {
 		s.sendError(m, req.ID, -1, "rate limited")
 		return
 	}
@@ -296,14 +372,11 @@ func (s *Server) handleSubmit(m *Miner, req *StratumRequest) {
 		return
 	}
 
-	nonce := new(big.Int)
-	nonce.SetString(nonceStr, 16)
-	ntime := new(big.Int)
-	ntime.SetString(ntimeStr, 16)
-
-	header := job.block.Header
-	header.Nonce = uint32(nonce.Uint64())
-	header.Timestamp = uint32(ntime.Uint64())
+	header, _, err := s.buildSubmissionHeader(job, extraNonce2, uint32(nonce.Uint64()), uint32(ntime.Uint64()))
+	if err != nil {
+		s.sendError(m, req.ID, 24, fmt.Sprintf("build header: %v", err))
+		return
+	}
 
 	hash, err := s.pow.HashHeader(header)
 	if err != nil {
@@ -318,8 +391,12 @@ func (s *Server) handleSubmit(m *Miner, req *StratumRequest) {
 	blockTarget := consensus.CompactToBig(job.block.Header.Bits)
 
 	if hashBig.Cmp(blockTarget) <= 0 {
+		// Rebuild the full block with this miner's extranonce2 baked in.
+		blk := s.cloneBlockWithExtranonce(job.block, extraNonce2)
+		blk.Header.Nonce = uint32(nonce.Uint64())
+		blk.Header.Timestamp = uint32(ntime.Uint64())
 		atomic.AddInt64(&s.blocksFound, 1)
-		if err := s.chain.ProcessBlock(job.block); err != nil {
+		if err := s.chain.ProcessBlock(blk); err != nil {
 			s.sendError(m, req.ID, 24, fmt.Sprintf("block rejected: %v", err))
 			return
 		}
@@ -336,6 +413,51 @@ func (s *Server) handleSubmit(m *Miner, req *StratumRequest) {
 	}
 
 	s.sendError(m, req.ID, 24, "low difficulty share")
+}
+
+// buildSubmissionHeader clones the job's header, bakes extraNonce2 into the
+// coinbase signature script, recomputes the merkle root, and applies the
+// miner's nonce/timestamp. This ensures every (job, extranonce2) tuple yields
+// a distinct merkle root, preventing share-replay theft between miners.
+func (s *Server) buildSubmissionHeader(job *miningJob, extraNonce2 []byte, nonce, ntime uint32) (wire.BlockHeader, []byte, error) {
+	blk := s.cloneBlockWithExtranonce(job.block, extraNonce2)
+	root, err := blk.BuildMerkleRoot()
+	if err != nil {
+		return wire.BlockHeader{}, nil, err
+	}
+	hdr := blk.Header
+	hdr.MerkleRoot = root
+	hdr.Nonce = nonce
+	hdr.Timestamp = ntime
+	return hdr, root[:], nil
+}
+
+// cloneBlockWithExtranonce returns a shallow-enough copy of the block whose
+// coinbase carries the miner's extraNonce2 appended to the signature script.
+// The original template is never mutated.
+func (s *Server) cloneBlockWithExtranonce(template *wire.MsgBlock, extraNonce2 []byte) *wire.MsgBlock {
+	if len(template.Transactions) == 0 {
+		blk := *template
+		return &blk
+	}
+	origCB := template.Transactions[0]
+	cb := *origCB
+	newTxIn := make([]wire.TxIn, len(origCB.TxIn))
+	copy(newTxIn, origCB.TxIn)
+	if len(newTxIn) > 0 {
+		origScript := newTxIn[0].SignatureScript
+		newScript := make([]byte, 0, len(origScript)+len(extraNonce2))
+		newScript = append(newScript, origScript...)
+		newScript = append(newScript, extraNonce2...)
+		newTxIn[0].SignatureScript = newScript
+	}
+	cb.TxIn = newTxIn
+	txs := make([]*wire.MsgTx, len(template.Transactions))
+	copy(txs, template.Transactions)
+	txs[0] = &cb
+	blk := *template
+	blk.Transactions = txs
+	return &blk
 }
 
 func (s *Server) notifyMiner(m *Miner, job *miningJob) {
@@ -374,11 +496,15 @@ func (s *Server) broadcastJob(job *miningJob) {
 }
 
 func (s *Server) refreshJob(cleanJobs bool) {
-	pubKeyHash := make([]byte, 20)
-	pubKeyHash[0] = 0x6f
-	pubKeyHash[19] = 0x01
+	s.mu.Lock()
+	pkh := s.operatorPKH
+	s.mu.Unlock()
+	if len(pkh) != 20 {
+		log.Printf("[Stratum] refreshJob skipped: no operator payout address configured (use stratum_operator_address)")
+		return
+	}
 
-	block, height, err := mining.NewBlockTemplate(s.chain, s.pool, pubKeyHash)
+	block, height, err := mining.NewBlockTemplate(s.chain, s.pool, pkh)
 	if err != nil {
 		log.Printf("[Stratum] template error: %v", err)
 		return
@@ -459,4 +585,17 @@ func stratumHexBE(v uint32) string {
 	b := make([]byte, 4)
 	binary.BigEndian.PutUint32(b, v)
 	return hex.EncodeToString(b)
+}
+
+// decodeP2PKHAddress decodes a Base58Check P2PKH address into its version byte
+// and 20-byte pubkey hash, validating the version against the chain params.
+func decodeP2PKHAddress(addr string, params chaincfg.Params) (byte, []byte, error) {
+	version, payload, err := address.DecodeBase58Check(addr)
+	if err != nil {
+		return 0, nil, err
+	}
+	if version != chaincfg.PublicKeyHashVersion {
+		return version, payload, fmt.Errorf("unexpected address version %d, want %d", version, chaincfg.PublicKeyHashVersion)
+	}
+	return version, payload, nil
 }

@@ -60,13 +60,13 @@ func (ws *WebSearcher) Search(ctx context.Context, query string, maxResults int)
 }
 
 type ddgResponse struct {
-	AbstractText string `json:"AbstractText"`
-	AbstractURL  string `json:"AbstractURL"`
+	AbstractText   string `json:"AbstractText"`
+	AbstractURL    string `json:"AbstractURL"`
 	AbstractSource string `json:"AbstractSource"`
-	Heading      string `json:"Heading"`
-	RelatedTopics []struct {
-		Text     string `json:"Text"`
-		FirstURL string `json:"FirstURL"`
+	Heading        string `json:"Heading"`
+	RelatedTopics  []struct {
+		Text     string               `json:"Text"`
+		FirstURL string               `json:"FirstURL"`
 		Icon     struct{ URL string } `json:"Icon"`
 	} `json:"RelatedTopics"`
 }
@@ -176,11 +176,11 @@ func (ms *MemoryStore) Len() int {
 
 // GroqProvider connects to Groq API (free tier: https://console.groq.com)
 type GroqProvider struct {
-	apiKey     string
-	model      string
-	baseURL    string
-	client     *http.Client
-	started    int32
+	apiKey  string
+	model   string
+	baseURL string
+	client  *http.Client
+	started int32
 }
 
 func NewGroqProvider(apiKey string) *GroqProvider {
@@ -195,7 +195,7 @@ func NewGroqProvider(apiKey string) *GroqProvider {
 	}
 }
 
-func (g *GroqProvider) SetAPIKey(key string) { g.apiKey = key }
+func (g *GroqProvider) SetAPIKey(key string)  { g.apiKey = key }
 func (g *GroqProvider) SetModel(model string) { g.model = model }
 
 func (g *GroqProvider) Start(_ context.Context, _ AIConfig) error {
@@ -221,7 +221,7 @@ func (g *GroqProvider) ListModels(_ context.Context) ([]AIModel, error) {
 }
 
 func (g *GroqProvider) LoadModel(_ context.Context, model string) error { g.model = model; return nil }
-func (g *GroqProvider) UnloadModel(_ context.Context) error            { return nil }
+func (g *GroqProvider) UnloadModel(_ context.Context) error             { return nil }
 
 func (g *GroqProvider) Chat(ctx context.Context, req ChatRequest) (<-chan ChatEvent, error) {
 	ch := make(chan ChatEvent, 64)
@@ -285,7 +285,9 @@ func (g *GroqProvider) Chat(ctx context.Context, req ChatRequest) (<-chan ChatEv
 				} `json:"usage"`
 			}
 			if err := decoder.Decode(&chunk); err != nil {
-				if err == io.EOF { break }
+				if err == io.EOF {
+					break
+				}
 				ch <- ChatEvent{Type: "error", Error: err.Error()}
 				return
 			}
@@ -323,7 +325,9 @@ func buildSnapshotContext(s SanitizedSnapshot) string {
 		s.AvailableLBTC, s.TotalLBTC,
 		s.ImmatureLBTC,
 		func() string {
-			if s.StorageOK { return "healthy" }
+			if s.StorageOK {
+				return "healthy"
+			}
 			return s.StorageError
 		}(),
 		s.RPCHealth,

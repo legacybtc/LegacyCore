@@ -183,7 +183,7 @@ func TestCountersAfterAllClosed(t *testing.T) {
 		t.Errorf("worker init delta=%d free delta=%d want both 3",
 			localInit.Load()-prevWInit, localFree.Load()-prevWFree)
 	}
-	total := (localInit.Load()-prevWInit) - (localFree.Load()-prevWFree) + (chainInit.Load()-prevChainInit) - (chainFree.Load()-prevChainFree)
+	total := (localInit.Load() - prevWInit) - (localFree.Load() - prevWFree) + (chainInit.Load() - prevChainInit) - (chainFree.Load() - prevChainFree)
 	if total != 0 {
 		t.Errorf("total active contexts delta=%d want 0", total)
 	}

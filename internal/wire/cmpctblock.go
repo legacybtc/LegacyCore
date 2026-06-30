@@ -2,14 +2,18 @@ package wire
 
 import (
 	"encoding/binary"
+	"fmt"
 	"io"
 
 	"legacycoin/legacy-go/internal/chainhash"
 )
 
 const (
-	CmpctBlockVersion = 1
-	ShortIDSize       = 6
+	CmpctBlockVersion  = 1
+	ShortIDSize        = 6
+	maxCmpctShortIDs   = 100_000
+	maxCmpctTxs        = 100_000
+	maxBlockTxnIndexes = 100_000
 )
 
 type PrefilledTransaction struct {
@@ -69,6 +73,9 @@ func (m *MsgCmpctBlock) Deserialize(r io.Reader) error {
 	if err != nil {
 		return err
 	}
+	if shortCount > maxCmpctShortIDs {
+		return fmt.Errorf("cmpctblock short id count %d exceeds max %d", shortCount, maxCmpctShortIDs)
+	}
 	m.ShortIDs = make([][ShortIDSize]byte, shortCount)
 	for i := uint64(0); i < shortCount; i++ {
 		if _, err := io.ReadFull(r, m.ShortIDs[i][:]); err != nil {
@@ -78,6 +85,9 @@ func (m *MsgCmpctBlock) Deserialize(r io.Reader) error {
 	txCount, err := ReadVarInt(r)
 	if err != nil {
 		return err
+	}
+	if txCount > maxCmpctTxs {
+		return fmt.Errorf("cmpctblock prefilled tx count %d exceeds max %d", txCount, maxCmpctTxs)
 	}
 	m.PrefilledTxs = make([]PrefilledTransaction, txCount)
 	prevIndex := uint64(0)
@@ -125,6 +135,9 @@ func (m *MsgGetBlockTxn) Deserialize(r io.Reader) error {
 	if err != nil {
 		return err
 	}
+	if count > maxBlockTxnIndexes {
+		return fmt.Errorf("getblocktxn index count %d exceeds max %d", count, maxBlockTxnIndexes)
+	}
 	m.Indexes = make([]uint64, count)
 	for i := uint64(0); i < count; i++ {
 		idx, err := ReadVarInt(r)
@@ -163,6 +176,9 @@ func (m *MsgBlockTxn) Deserialize(r io.Reader) error {
 	count, err := ReadVarInt(r)
 	if err != nil {
 		return err
+	}
+	if count > maxCmpctTxs {
+		return fmt.Errorf("blocktxn tx count %d exceeds max %d", count, maxCmpctTxs)
 	}
 	m.Transactions = make([]*MsgTx, count)
 	for i := uint64(0); i < count; i++ {

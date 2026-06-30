@@ -17,12 +17,21 @@ type MockProvider struct {
 
 func NewMockProvider() *MockProvider { return &MockProvider{} }
 
-func (m *MockProvider) Start(_ context.Context, _ AIConfig) error { atomic.StoreInt32(&m.started, 1); return nil }
-func (m *MockProvider) Stop(_ context.Context) error               { atomic.StoreInt32(&m.started, 0); atomic.StoreInt32(&m.modelLoaded, 0); return nil }
+func (m *MockProvider) Start(_ context.Context, _ AIConfig) error {
+	atomic.StoreInt32(&m.started, 1)
+	return nil
+}
+func (m *MockProvider) Stop(_ context.Context) error {
+	atomic.StoreInt32(&m.started, 0)
+	atomic.StoreInt32(&m.modelLoaded, 0)
+	return nil
+}
 
 func (m *MockProvider) Health(_ context.Context) (AIHealth, error) {
 	s := StatusStopped
-	if atomic.LoadInt32(&m.started) == 1 { s = StatusReady }
+	if atomic.LoadInt32(&m.started) == 1 {
+		s = StatusReady
+	}
 	return AIHealth{Status: s, ModelLoaded: atomic.LoadInt32(&m.modelLoaded) == 1, ModelName: m.modelName, Backend: "built-in", PID: int(time.Now().UnixNano() % 100000)}, nil
 }
 
@@ -30,8 +39,15 @@ func (m *MockProvider) ListModels(_ context.Context) ([]AIModel, error) {
 	return []AIModel{{Name: "built-in-1b", Path: "built-in", FileSizeMB: 0, Quantization: "none", License: "Built-in Legacy AI"}}, nil
 }
 
-func (m *MockProvider) LoadModel(_ context.Context, model string) error { atomic.StoreInt32(&m.modelLoaded, 1); m.modelName = model; return nil }
-func (m *MockProvider) UnloadModel(_ context.Context) error            { atomic.StoreInt32(&m.modelLoaded, 0); return nil }
+func (m *MockProvider) LoadModel(_ context.Context, model string) error {
+	atomic.StoreInt32(&m.modelLoaded, 1)
+	m.modelName = model
+	return nil
+}
+func (m *MockProvider) UnloadModel(_ context.Context) error {
+	atomic.StoreInt32(&m.modelLoaded, 0)
+	return nil
+}
 
 func (m *MockProvider) Chat(_ context.Context, req ChatRequest) (<-chan ChatEvent, error) {
 	ch := make(chan ChatEvent, 1)
@@ -302,24 +318,41 @@ func buildDefaultResponse(s SanitizedSnapshot, msg string) string {
 
 func overallHealth(s SanitizedSnapshot) string {
 	issues := 0
-	if s.SyncState != "current" { issues++ }
-	if s.PeerCount == 0 { issues++ }
-	if !s.MiningSafe && s.MinerState == "running" { issues++ }
-	if !s.StorageOK { issues++ }
-	if s.RPCErrorCount > 10 { issues++ }
+	if s.SyncState != "current" {
+		issues++
+	}
+	if s.PeerCount == 0 {
+		issues++
+	}
+	if !s.MiningSafe && s.MinerState == "running" {
+		issues++
+	}
+	if !s.StorageOK {
+		issues++
+	}
+	if s.RPCErrorCount > 10 {
+		issues++
+	}
 	switch {
-	case issues == 0: return "healthy and running well"
-	case issues <= 2: return "mostly healthy with minor issues"
-	default: return "experiencing some issues — check the specific areas above"
+	case issues == 0:
+		return "healthy and running well"
+	case issues <= 2:
+		return "mostly healthy with minor issues"
+	default:
+		return "experiencing some issues — check the specific areas above"
 	}
 }
 
 func describeSync(s SanitizedSnapshot) string {
 	switch s.SyncState {
-	case "current": return "fully synced"
-	case "no_peers": return "no peers — can't sync"
+	case "current":
+		return "fully synced"
+	case "no_peers":
+		return "no peers — can't sync"
 	default:
-		if s.BlocksBehind > 0 { return fmt.Sprintf("syncing (%d blocks behind)", s.BlocksBehind) }
+		if s.BlocksBehind > 0 {
+			return fmt.Sprintf("syncing (%d blocks behind)", s.BlocksBehind)
+		}
 		return s.SyncState
 	}
 }
@@ -327,14 +360,18 @@ func describeSync(s SanitizedSnapshot) string {
 func isGreeting(msg string) bool {
 	greetings := []string{"hello", "hi ", " hi", "hey", "greeting", "good morning", "good afternoon", "good evening", "howdy", "yo "}
 	for _, g := range greetings {
-		if strings.HasPrefix(msg, g) || msg == g { return true }
+		if strings.HasPrefix(msg, g) || msg == g {
+			return true
+		}
 	}
 	return false
 }
 
 func matches(msg string, keywords ...string) bool {
 	for _, kw := range keywords {
-		if strings.Contains(msg, kw) { return true }
+		if strings.Contains(msg, kw) {
+			return true
+		}
 	}
 	return false
 }

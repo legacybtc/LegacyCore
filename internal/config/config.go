@@ -468,9 +468,10 @@ func LoadLogConfig(path string) (LogConfig, error) {
 }
 
 type StratumConfig struct {
-	Enabled bool
-	Port    int
-	Diff    float64
+	Enabled         bool
+	Port            int
+	Diff            float64
+	OperatorAddress string
 }
 
 func LoadStratumConfig(path string) (StratumConfig, error) {
@@ -493,6 +494,9 @@ func LoadStratumConfig(path string) (StratumConfig, error) {
 		if f > 0 {
 			cfg.Diff = f
 		}
+	}
+	if vals := kv["stratum_operator_address"]; len(vals) > 0 {
+		cfg.OperatorAddress = strings.TrimSpace(vals[len(vals)-1])
 	}
 	return cfg, nil
 }

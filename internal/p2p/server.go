@@ -27,11 +27,12 @@ import (
 const (
 	protocolVersion       int32  = 70015
 	nodeNetwork           uint64 = 1
-	userAgent                    = "/Legacy-GO:0.1.0/"
+	userAgent                    = "/Legacy-GO:1.0.12/"
 	maxPeers                     = 125
 	maxOutboundPeers             = 16
 	maxGetDataItems              = 256
-	maxServeInvItems             = 2048
+	maxServeInvItems             = 256
+	peerWriteTimeout             = 60 * time.Second
 	maxAddrRelayItems            = 10
 	maxAddrDialItems             = 8
 	maxAddrDialsPerPeer          = 16
@@ -48,8 +49,24 @@ var (
 	peerReconnectEvery   = 8 * time.Second
 	syncWatchdogEvery    = 20 * time.Second
 	syncStaleThreshold   = 10 * time.Minute
+)
+
+var (
+	peerStaleThresholdMu sync.RWMutex
 	peerStaleThreshold   = 15 * time.Minute
 )
+
+func getPeerStaleThreshold() time.Duration {
+	peerStaleThresholdMu.RLock()
+	defer peerStaleThresholdMu.RUnlock()
+	return peerStaleThreshold
+}
+
+func setPeerStaleThreshold(d time.Duration) {
+	peerStaleThresholdMu.Lock()
+	defer peerStaleThresholdMu.Unlock()
+	peerStaleThreshold = d
+}
 
 const (
 	// missingParentTTL stops us hammering one peer for the same missing
@@ -322,7 +339,7 @@ func (s *Server) SetRuntimePolicy(maxInboundPeers int, temporaryBanSeconds int, 
 		s.misbehaviorDecay = time.Duration(misbehaviorDecaySeconds) * time.Second
 	}
 	if staleTimeoutSeconds >= 10 {
-		peerStaleThreshold = time.Duration(staleTimeoutSeconds) * time.Second
+		setPeerStaleThreshold(time.Duration(staleTimeoutSeconds) * time.Second)
 	}
 }
 
@@ -800,7 +817,7 @@ func (s *Server) PeerInfos() []PeerInfo {
 		if p.outbound {
 			direction = "outbound"
 		}
-		stale := (!heightUpdate.IsZero() && now.Sub(heightUpdate) > peerStaleThreshold) || (!seen.IsZero() && now.Sub(seen) > peerStaleThreshold)
+		stale := (!heightUpdate.IsZero() && now.Sub(heightUpdate) > getPeerStaleThreshold()) || (!seen.IsZero() && now.Sub(seen) > getPeerStaleThreshold())
 		syncState := "current"
 		if height > localHeight {
 			syncState = "peer_ahead"
@@ -966,8 +983,8 @@ func (s *Server) SyncStatus() map[string]any {
 		if height > localHeight {
 			syncingPeerCount++
 		}
-		heightStale := !lastHeightUpdate.IsZero() && now.Sub(lastHeightUpdate) > peerStaleThreshold
-		msgStale := !lastSeen.IsZero() && now.Sub(lastSeen) > peerStaleThreshold
+		heightStale := !lastHeightUpdate.IsZero() && now.Sub(lastHeightUpdate) > getPeerStaleThreshold()
+		msgStale := !lastSeen.IsZero() && now.Sub(lastSeen) > getPeerStaleThreshold()
 		if heightStale || msgStale {
 			stalePeerCount++
 		}
@@ -1123,10 +1140,10 @@ func (s *Server) SyncStatus() map[string]any {
 		"blocks_requested_from_peers":     health["blocks_requested_from_peers"],
 		"block_request_timeouts":          health["block_request_timeouts"],
 		"block_messages_received":         health["block_messages_received"],
-		"header_batches_received":        health["header_batches_received"],
-		"header_batches_rejected":        health["header_batches_rejected"],
-		"missing_parent_requests":        health["missing_parent_requests"],
-		"missing_parent_tracked":         health["missing_parent_tracked"],
+		"header_batches_received":         health["header_batches_received"],
+		"header_batches_rejected":         health["header_batches_rejected"],
+		"missing_parent_requests":         health["missing_parent_requests"],
+		"missing_parent_tracked":          health["missing_parent_tracked"],
 		"diagnostic":                      s.syncDiagnostic(localHeight, bestPeerHeight, behind, health, lastError, lastReject, lastBlockHash),
 		"health":                          health,
 	}
@@ -1716,8 +1733,8 @@ func (s *Server) watchdogStep(ctx context.Context) {
 		if peerHeight > localHeight {
 			syncingPeers++
 		}
-		metaStale := !lastHeightUpdate.IsZero() && now.Sub(lastHeightUpdate) > peerStaleThreshold
-		msgStale := !lastSeen.IsZero() && now.Sub(lastSeen) > peerStaleThreshold
+		metaStale := !lastHeightUpdate.IsZero() && now.Sub(lastHeightUpdate) > getPeerStaleThreshold()
+		msgStale := !lastSeen.IsZero() && now.Sub(lastSeen) > getPeerStaleThreshold()
 		if metaStale || msgStale {
 			stalePeers++
 		}
@@ -1835,7 +1852,7 @@ func (s *Server) syncCandidates() []*peer {
 		if height < 0 {
 			continue
 		}
-		stale := (!lastHeightUpdate.IsZero() && now.Sub(lastHeightUpdate) > peerStaleThreshold) || (!lastSeen.IsZero() && now.Sub(lastSeen) > peerStaleThreshold)
+		stale := (!lastHeightUpdate.IsZero() && now.Sub(lastHeightUpdate) > getPeerStaleThreshold()) || (!lastSeen.IsZero() && now.Sub(lastSeen) > getPeerStaleThreshold())
 		if stale && height <= localHeight && lastSyncError != "" {
 			continue
 		}
@@ -2012,9 +2029,9 @@ func (s *Server) logSeedError(seed string, err error) {
 		s.seedLastLog[seed] = now
 		s.seedMu.Unlock()
 		if count == 1 {
-			s.log.Printf("рџЊ± DNS seed unavailable | %s | normal if seeds are offline/private test", seed)
+			s.log.Printf("СЂСџРЉВ± DNS seed unavailable | %s | normal if seeds are offline/private test", seed)
 		} else {
-			s.log.Printf("рџЊ± DNS seed warning repeated | %s | repeats %d | suppressing noise", seed, count)
+			s.log.Printf("СЂСџРЉВ± DNS seed warning repeated | %s | repeats %d | suppressing noise", seed, count)
 		}
 		return
 	}
@@ -2224,9 +2241,9 @@ func (s *Server) logConnectOnlyReject(addr string) {
 		s.rejectLastLog[key] = now
 		s.rejectMu.Unlock()
 		if count == 1 {
-			s.log.Printf("рџ›ЎпёЏ Connect-only active | rejected inbound peer %s | allowed peers only", addr)
+			s.log.Printf("СЂСџвЂєРЋРїС‘РЏ Connect-only active | rejected inbound peer %s | allowed peers only", addr)
 		} else {
-			s.log.Printf("рџ›ЎпёЏ Connect-only summary | rejected inbound peer %s | repeats %d | suppressing repeats for 5m", key, count)
+			s.log.Printf("СЂСџвЂєРЋРїС‘РЏ Connect-only summary | rejected inbound peer %s | repeats %d | suppressing repeats for 5m", key, count)
 		}
 		return
 	}
@@ -2316,7 +2333,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 		msg, err := wire.ReadMessage(conn, s.params.MessageStart)
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
-				s.log.Printf("p2p read from %s: %v", conn.RemoteAddr(), err)
+				s.log.Printf("p2p read from %s: %v (got_version=%v got_verack=%v)", conn.RemoteAddr(), err, gotVersion, gotVerAck)
 			}
 			return
 		}
@@ -2353,7 +2370,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 			if s.enforceChainID && s.chainID != "" && meta.ChainID != s.chainID {
 				s.scorePeer(p, 100, "wrong or empty chain id")
 				if s.pretty {
-					s.log.Printf("рџљ« Peer rejected | %s | chain_id=%q expected=%q", conn.RemoteAddr(), meta.ChainID, s.chainID)
+					s.log.Printf("СЂСџС™В« Peer rejected | %s | chain_id=%q expected=%q", conn.RemoteAddr(), meta.ChainID, s.chainID)
 				} else {
 					s.log.Printf("p2p reject wrong-chain peer %s chain_id=%q expected=%q", conn.RemoteAddr(), meta.ChainID, s.chainID)
 				}
@@ -2387,9 +2404,9 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 				}
 				name := s.peerLabel(p)
 				if s.compactHeartbeat {
-					s.log.Printf("рџЏ“ %s pong %.1fms | peers %d | height %d | storage вњ…", name, float64(rtt.Microseconds())/1000, s.PeerCount(), height)
+					s.log.Printf("СЂСџРЏвЂњ %s pong %.1fms | peers %d | height %d | storage РІСљвЂ¦", name, float64(rtt.Microseconds())/1000, s.PeerCount(), height)
 				} else {
-					s.log.Printf("рџџў PONG в†ђ %s | latency %.1fms | height %d | connection stable", name, float64(rtt.Microseconds())/1000, height)
+					s.log.Printf("СЂСџСџСћ PONG РІвЂ С’ %s | latency %.1fms | height %d | connection stable", name, float64(rtt.Microseconds())/1000, height)
 				}
 			}
 		case wire.CommandBlock:
@@ -2416,7 +2433,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 			p.setLastBlockResult(result)
 			p.setLastBlockReject("")
 			if s.pretty {
-				s.log.Printf("📦 Block processed | status=%s | hash=%s | prev=%s | block_height=%d | parent_known=%v | extends_tip=%v | best_changed=%v | old_best=%d:%s | new_best=%d:%s | txs=%d | from=%s | reason=%s",
+				s.log.Printf("рџ“¦ Block processed | status=%s | hash=%s | prev=%s | block_height=%d | parent_known=%v | extends_tip=%v | best_changed=%v | old_best=%d:%s | new_best=%d:%s | txs=%d | from=%s | reason=%s",
 					result.Status, result.Hash, result.PrevHash, result.CalculatedHeight, result.ParentKnown, result.ExtendsActiveTip, result.BestChanged, result.OldBestHeight, result.OldBestHash, result.NewBestHeight, result.NewBestHash, len(block.Transactions), s.peerLabel(p), result.Reason)
 			} else {
 				s.log.Printf("p2p processed block from %s status=%s hash=%s height=%d best_changed=%v reason=%s", conn.RemoteAddr(), result.Status, result.Hash, result.CalculatedHeight, result.BestChanged, result.Reason)
@@ -2467,12 +2484,12 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 			// Relay accepted transactions onward so wallet-created transactions can
 			// propagate beyond the first peer and receivers can see pending funds.
 			if s.pretty {
-				s.log.Printf("рџ’ё TX accepted to mempool | %s | from %s", entry.TxID, s.peerLabel(p))
+				s.log.Printf("СЂСџвЂ™С‘ TX accepted to mempool | %s | from %s", entry.TxID, s.peerLabel(p))
 			}
 			if h, err := chainhash.FromString(entry.TxID); err == nil {
 				s.announceTxToPeersExcept(h, p)
 				if s.pretty {
-					s.log.Printf("рџ“Ј TX relayed | %s | peers %d", entry.TxID, s.PeerCount())
+					s.log.Printf("СЂСџвЂњР€ TX relayed | %s | peers %d", entry.TxID, s.PeerCount())
 				}
 			}
 		case wire.CommandInv:
@@ -2571,7 +2588,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 		if gotVersion && gotVerAck && !didSyncRequest {
 			didSyncRequest = true
 			if s.pretty {
-				s.log.Printf("рџЊђ Connected peer | %s | outbound=%v | height %d | chain_id=%s", s.peerLabel(p), outbound, p.height, p.chainID)
+				s.log.Printf("СЂСџРЉС’ Connected peer | %s | outbound=%v | height %d | chain_id=%s", s.peerLabel(p), outbound, p.height, p.chainID)
 			} else {
 				s.log.Printf("p2p handshake complete with %s outbound=%v", conn.RemoteAddr(), outbound)
 			}
@@ -2750,7 +2767,7 @@ func (s *Server) pingLoop(ctx context.Context, p *peer, done <-chan struct{}) {
 			}
 			p.markPing()
 			if s.pretty && s.heartbeat && !s.compactHeartbeat {
-				s.log.Printf("рџЏ“ PING в†’ %s", s.peerLabel(p))
+				s.log.Printf("СЂСџРЏвЂњ PING РІвЂ вЂ™ %s", s.peerLabel(p))
 			}
 			if err := s.writePeerMessage(p, wire.CommandPing, nonce); err != nil {
 				s.log.Printf("p2p ping %s failed: %v", p.remote, err)
@@ -2795,6 +2812,8 @@ func (s *Server) closeActivePeerConnections() {
 func (s *Server) writePeerMessage(p *peer, command string, payload []byte) error {
 	p.writeMu.Lock()
 	defer p.writeMu.Unlock()
+	_ = p.conn.SetWriteDeadline(time.Now().Add(peerWriteTimeout))
+	defer p.conn.SetWriteDeadline(time.Time{})
 	err := wire.WriteMessage(p.conn, s.params.MessageStart, command, payload)
 	if err == nil {
 		p.addBytesSent(uint64(len(payload) + 24))
@@ -2861,11 +2880,13 @@ func (s *Server) versionPayload(remote net.Addr) ([]byte, error) {
 	if err := buf.WriteByte(0); err != nil {
 		return nil, err
 	}
-	if err := wire.WriteVarBytes(&buf, []byte(s.chainID)); err != nil {
-		return nil, err
-	}
-	if _, err := buf.Write(s.params.MessageStart[:]); err != nil {
-		return nil, err
+	if s.enforceChainID {
+		if err := wire.WriteVarBytes(&buf, []byte(s.chainID)); err != nil {
+			return nil, err
+		}
+		if _, err := buf.Write(s.params.MessageStart[:]); err != nil {
+			return nil, err
+		}
 	}
 	return buf.Bytes(), nil
 }
@@ -3192,7 +3213,7 @@ func (s *Server) sendMissingParentRequest(p *peer, parentHash string, payload []
 			p.markBlocksRequested(1)
 			s.addBlocksRequested(1)
 			if s.pretty {
-				s.log.Printf("📦 Orphan parent %s unknown; requested getdata from %s", parentHash, s.peerLabel(p))
+				s.log.Printf("рџ“¦ Orphan parent %s unknown; requested getdata from %s", parentHash, s.peerLabel(p))
 			} else {
 				s.log.Printf("p2p orphan block parent %s unknown; requested getdata from %s", parentHash, p.remote)
 			}

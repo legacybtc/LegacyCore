@@ -20,9 +20,9 @@ type GPUInfo struct {
 }
 
 var (
-	gpuCache   GPUInfo
-	gpuOnce    sync.Once
-	gpuCached  bool
+	gpuCache  GPUInfo
+	gpuOnce   sync.Once
+	gpuCached bool
 )
 
 func DetectGPU() GPUInfo {

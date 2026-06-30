@@ -36,10 +36,18 @@ func (igp *ImageGenProvider) Generate(ctx context.Context, req ImageGenRequest) 
 	if req.Prompt == "" {
 		return nil, fmt.Errorf("prompt is required")
 	}
-	if req.Width <= 0 { req.Width = 512 }
-	if req.Height <= 0 { req.Height = 512 }
-	if req.Width > 1024 { req.Width = 1024 }
-	if req.Height > 1024 { req.Height = 1024 }
+	if req.Width <= 0 {
+		req.Width = 512
+	}
+	if req.Height <= 0 {
+		req.Height = 512
+	}
+	if req.Width > 1024 {
+		req.Width = 1024
+	}
+	if req.Height > 1024 {
+		req.Height = 1024
+	}
 
 	switch req.Model {
 	case "pollinations":
@@ -66,7 +74,9 @@ func (igp *ImageGenProvider) pollinationsGen(ctx context.Context, req ImageGenRe
 		// Return URL anyway
 		goto result
 	}
-	if resp != nil { resp.Body.Close() }
+	if resp != nil {
+		resp.Body.Close()
+	}
 
 result:
 	return &ImageGenResult{
@@ -128,45 +138,45 @@ func AvailableModels() []ModelInfo {
 		{
 			Name: "Legacy AI (Built-in)", Provider: "local", Type: "chat",
 			Description: "Intelligent snapshot-based responses. No setup, no keys, works offline.",
-			Free: true, RequiresKey: false,
+			Free:        true, RequiresKey: false,
 		},
 		{
 			Name: "Local GPU AI (llama.cpp)", Provider: "local", Type: "chat",
 			Description: "Runs a real LLM on your GPU. Fast, private, no internet needed. Requires llama-server + GGUF model.",
-			Free: true, RequiresKey: false,
-			Models: []string{"llama-3.2-1b", "llama-3.2-3b", "qwen2.5-0.5b", "phi-3-mini"},
+			Free:        true, RequiresKey: false,
+			Models:  []string{"llama-3.2-1b", "llama-3.2-3b", "qwen2.5-0.5b", "phi-3-mini"},
 			DocsURL: "https://github.com/ggml-org/llama.cpp",
 		},
 		{
 			Name: "Groq Cloud (Free Tier)", Provider: "groq", Type: "chat",
 			Description: "Fast cloud LLMs. Free tier: llama-3.1-8b, mixtral-8x7b. Needs free API key.",
-			Free: true, RequiresKey: true,
-			Models: []string{"llama-3.1-8b-instant", "llama-3.3-70b-versatile", "mixtral-8x7b-32768", "gemma2-9b-it"},
+			Free:        true, RequiresKey: true,
+			Models:  []string{"llama-3.1-8b-instant", "llama-3.3-70b-versatile", "mixtral-8x7b-32768", "gemma2-9b-it"},
 			DocsURL: "https://console.groq.com",
 		},
 		{
 			Name: "Ollama (Local)", Provider: "ollama", Type: "chat",
 			Description: "Local LLM runner. Pull any model. Runs on CPU or GPU.",
-			Free: true, RequiresKey: false,
-			Models: []string{"llama3.2:1b", "llama3.2:3b", "qwen2.5:0.5b", "phi3:mini", "mistral:7b"},
+			Free:        true, RequiresKey: false,
+			Models:  []string{"llama3.2:1b", "llama3.2:3b", "qwen2.5:0.5b", "phi3:mini", "mistral:7b"},
 			DocsURL: "https://ollama.com",
 		},
 		{
 			Name: "Image Generation (Pollinations)", Provider: "pollinations", Type: "image",
 			Description: "Free AI image generation. No API key needed. Creates images from text prompts.",
-			Free: true, RequiresKey: false,
+			Free:        true, RequiresKey: false,
 			DocsURL: "https://pollinations.ai",
 		},
 		{
 			Name: "Flux Image Gen (via Pollinations)", Provider: "pollinations", Type: "image",
 			Description: "High-quality Flux model for image generation. Free, no key required.",
-			Free: true, RequiresKey: false,
+			Free:        true, RequiresKey: false,
 			DocsURL: "https://pollinations.ai",
 		},
 		{
 			Name: "Hugging Face Inference", Provider: "huggingface", Type: "chat+image",
 			Description: "Thousands of free models. Chat, image, audio. Needs free API token.",
-			Free: true, RequiresKey: true,
+			Free:        true, RequiresKey: true,
 			DocsURL: "https://huggingface.co/inference-api",
 		},
 	}

@@ -17,9 +17,9 @@ import (
 )
 
 var (
-	diagSnapshotActive atomic.Int64
-	diagSnapshotTotal  atomic.Int64
-	diagSnapshotMax    atomic.Int64
+	diagSnapshotActive   atomic.Int64
+	diagSnapshotTotal    atomic.Int64
+	diagSnapshotMax      atomic.Int64
 	diagNodeStatusActive atomic.Int64
 	diagNodeStatusTotal  atomic.Int64
 	diagNodeStatusMax    atomic.Int64
@@ -52,7 +52,9 @@ const cooldownMs = 30000
 func EnterDiag(active, total, max *atomic.Int64) {
 	cur := active.Add(1)
 	total.Add(1)
-	if cur > max.Load() { max.Store(cur) }
+	if cur > max.Load() {
+		max.Store(cur)
+	}
 	thresholdCheck()
 }
 func LeaveDiag(active *atomic.Int64) { active.Add(-1) }
@@ -60,8 +62,12 @@ func LeaveDiag(active *atomic.Int64) { active.Add(-1) }
 func SpawnChildDiag() {
 	diagChildBorn.Add(1)
 	cur := diagFanoutActive.Add(1)
-	if cur > diagFanoutMax.Load() { diagFanoutMax.Store(cur) }
-	if cur > diagChildMax.Load() { diagChildMax.Store(cur) }
+	if cur > diagFanoutMax.Load() {
+		diagFanoutMax.Store(cur)
+	}
+	if cur > diagChildMax.Load() {
+		diagChildMax.Store(cur)
+	}
 	thresholdCheck()
 }
 func DoneChildDiag() { diagChildDone.Add(1); diagFanoutActive.Add(-1) }
@@ -80,7 +86,9 @@ func DiagCounters() map[string]int64 {
 }
 
 func thresholdCheck() {
-	if atomic.LoadInt32(&diagWarmupDone) == 0 { return }
+	if atomic.LoadInt32(&diagWarmupDone) == 0 {
+		return
+	}
 	g := runtime.NumGoroutine()
 	prev := atomic.LoadInt32(&diagPrevBelow)
 	var trigger string
@@ -144,8 +152,12 @@ func writeBundle(trigger, reason string, nowMs int64) {
 	_ = os.WriteFile(filepath.Join(dir, "memstats.json"), b, 0644)
 
 	counters := DiagCounters()
-	for k, v := range mining.LifecycleCounters() { counters["mining_"+k] = v }
-	for k, v := range pow.YespowerCounters() { counters["yespower_"+k] = v }
+	for k, v := range mining.LifecycleCounters() {
+		counters["mining_"+k] = v
+	}
+	for k, v := range pow.YespowerCounters() {
+		counters["yespower_"+k] = v
+	}
 	counters["trigger"] = 0
 	b, _ = json.MarshalIndent(counters, "", "  ")
 	_ = os.WriteFile(filepath.Join(dir, "counters.json"), b, 0644)
@@ -169,7 +181,9 @@ func writePprof(dir, name, profile string, debug int) {
 
 func writePprofBinary(dir, name, profile string) {
 	f, err := os.Create(filepath.Join(dir, name))
-	if err != nil { return }
+	if err != nil {
+		return
+	}
 	defer f.Close()
 	if p := pprof.Lookup(profile); p != nil {
 		p.WriteTo(f, 0)
@@ -187,6 +201,8 @@ func memstatsMap(ms *runtime.MemStats) map[string]uint64 {
 
 func diagBaseDir() string {
 	home, _ := os.UserHomeDir()
-	if home == "" { home = os.TempDir() }
+	if home == "" {
+		home = os.TempDir()
+	}
 	return filepath.Join(home, "LegacyCoin", "diagnostics")
 }

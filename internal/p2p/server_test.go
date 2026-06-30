@@ -653,9 +653,9 @@ func TestSyncStatusCountsStalePeerMetadata(t *testing.T) {
 		conn:             serverConn,
 		remote:           "127.0.0.1:19555",
 		height:           2,
-		lastSeen:         time.Now().Add(-peerStaleThreshold - time.Minute),
+		lastSeen:         time.Now().Add(-getPeerStaleThreshold() - time.Minute),
 		lastPong:         time.Now(),
-		lastHeightUpdate: time.Now().Add(-peerStaleThreshold - time.Minute),
+		lastHeightUpdate: time.Now().Add(-getPeerStaleThreshold() - time.Minute),
 	}
 	s.registerPeer(p)
 
@@ -774,7 +774,7 @@ func TestPeerInfosIncludePingAndSyncFields(t *testing.T) {
 		lastRTT:          25 * time.Millisecond,
 		minRTT:           10 * time.Millisecond,
 		missedPongs:      1,
-		lastHeightUpdate: time.Now().Add(-peerStaleThreshold - time.Second),
+		lastHeightUpdate: time.Now().Add(-getPeerStaleThreshold() - time.Second),
 	}
 	s.registerPeer(p)
 

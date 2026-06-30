@@ -116,7 +116,7 @@ type Server struct {
 	minerStateGen                     int64
 	defaultTxFee                      int64
 
-	startedAt          time.Time
+	startedAt time.Time
 
 	rpcDiagMu          sync.Mutex
 	rpcActiveRequests  int64
@@ -126,7 +126,10 @@ type Server struct {
 	rpcTimeoutCount    int64
 	rpcErrorCount      int64
 
-	rateLimiters sync.Map
+	rateLimiters     sync.Map
+	disableRateLimit bool
+
+	corsOrigin string
 
 	minerStatusDiagActive atomic.Int64
 	minerStatusDiagTotal  atomic.Int64
@@ -137,18 +140,18 @@ type Server struct {
 }
 
 type rateLimiter struct {
-	mu        sync.Mutex
-	tokens    int
+	mu         sync.Mutex
+	tokens     int
 	lastRefill time.Time
-	maxTokens int
+	maxTokens  int
 	refillRate time.Duration
 }
 
 func newRateLimiter(maxTokens int, refillRate time.Duration) *rateLimiter {
 	return &rateLimiter{
-		tokens:    maxTokens,
+		tokens:     maxTokens,
 		lastRefill: time.Now(),
-		maxTokens: maxTokens,
+		maxTokens:  maxTokens,
 		refillRate: refillRate,
 	}
 }
@@ -170,6 +173,9 @@ func (rl *rateLimiter) allow() bool {
 }
 
 func (s *Server) checkRateLimit(ip string) bool {
+	if s.disableRateLimit {
+		return true
+	}
 	v, _ := s.rateLimiters.LoadOrStore(ip, newRateLimiter(60, time.Second))
 	return v.(*rateLimiter).allow()
 }
@@ -509,9 +515,24 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	return err
 }
 
+var globalCORSOrigin string
+
+func (s *Server) SetCORSOrigin(origin string) {
+	origin = strings.TrimSpace(origin)
+	s.corsOrigin = origin
+	globalCORSOrigin = origin
+}
+
+func (s *Server) corsAllowedOrigin() string {
+	if s.corsOrigin != "" {
+		return s.corsOrigin
+	}
+	return "*"
+}
+
 func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Origin", s.corsAllowedOrigin())
 		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		w.WriteHeader(http.StatusOK)
@@ -594,7 +615,17 @@ func (s *Server) handleRPCRequest(ctx context.Context, req request) response {
 	s.rpcDiagMu.Unlock()
 	EnterDiag(&diagFanoutActive, &diagFanoutTotal, &diagFanoutMax)
 
+	var result any
+	var rpcErr *rpcError
+
 	defer func() {
+		if r := recover(); r != nil {
+			rpcErr = &rpcError{Code: -32603, Message: fmt.Sprintf("internal error: %v", r)}
+			result = nil
+			s.rpcDiagMu.Lock()
+			s.rpcErrorCount++
+			s.rpcDiagMu.Unlock()
+		}
 		LeaveDiag(&diagFanoutActive)
 		s.rpcDiagMu.Lock()
 		s.rpcActiveRequests--
@@ -605,7 +636,7 @@ func (s *Server) handleRPCRequest(ctx context.Context, req request) response {
 	}()
 
 	start := time.Now()
-	result, rpcErr := s.call(ctx, req.Method, params)
+	result, rpcErr = s.call(ctx, req.Method, params)
 	duration := time.Since(start)
 
 	if duration > 15*time.Second {
@@ -1965,10 +1996,10 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		}
 		return []map[string]any{
 			{
-				"height":      tip.Height,
-				"hash":        tip.Hash,
-				"branchlen":   0,
-				"status":      "active",
+				"height":    tip.Height,
+				"hash":      tip.Hash,
+				"branchlen": 0,
+				"status":    "active",
 			},
 		}, nil
 	case "getblockchaininfo":
@@ -2632,14 +2663,15 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		return res, nil
 	case "exportmnemonic":
 		var args []json.RawMessage
-		if err := json.Unmarshal(params, &args); err == nil && len(args) > 0 {
-			pass, err := parsePassphraseArg(args[0])
-			if err != nil {
-				return nil, &rpcError{Code: -32602, Message: "bad passphrase"}
-			}
-			if err := s.wallet.VerifyPassphrase(pass); err != nil {
-				return nil, &rpcError{Code: -14, Message: "invalid passphrase"}
-			}
+		if err := json.Unmarshal(params, &args); err != nil || len(args) == 0 {
+			return nil, &rpcError{Code: -32602, Message: "passphrase required (pass as 1st param, or \"-\" for stdin)"}
+		}
+		pass, err := parsePassphraseArg(args[0])
+		if err != nil {
+			return nil, &rpcError{Code: -32602, Message: "bad passphrase"}
+		}
+		if err := s.wallet.VerifyPassphrase(pass); err != nil {
+			return nil, &rpcError{Code: -14, Message: "invalid passphrase"}
 		}
 		mnem := s.wallet.Mnemonic()
 		if mnem == "" {
@@ -4101,7 +4133,11 @@ func amountFloat(v int64) float64 {
 
 func writeResponse(w http.ResponseWriter, resp response) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	origin := globalCORSOrigin
+	if origin == "" {
+		origin = "*"
+	}
+	w.Header().Set("Access-Control-Allow-Origin", origin)
 	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 	_ = json.NewEncoder(w).Encode(resp)

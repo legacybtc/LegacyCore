@@ -345,6 +345,11 @@ func NewWithOptions(opts Options) (*Node, error) {
 	if stratumCfg.Enabled {
 		stratumServer = stratum.New(params, chain, pool)
 		stratumServer.SetShareDiff(stratumCfg.Diff)
+		if stratumCfg.OperatorAddress != "" {
+			if err := stratumServer.SetOperatorAddress(stratumCfg.OperatorAddress); err != nil {
+				return nil, fmt.Errorf("stratum operator address: %w", err)
+			}
+		}
 		stratumAddr = fmt.Sprintf("0.0.0.0:%d", stratumCfg.Port)
 	}
 	return &Node{chain: chain, pool: pool, wallet: w, p2p: p2pServer, auth: auth, rpcBind: rpcBind, p2pBind: p2pBind, policy: policy, interop: interop, logCfg: logCfg, peerPol: peerPol, paths: paths, stratum: stratumServer, stratumAddr: stratumAddr}, nil

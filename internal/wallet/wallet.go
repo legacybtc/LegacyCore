@@ -1381,14 +1381,30 @@ func encryptState(state keyState, passphrase string) (cipherHex string, saltHex 
 	if err != nil {
 		return "", "", "", err
 	}
+	defer func() {
+		for i := range plain {
+			plain[i] = 0
+		}
+	}()
 	salt := make([]byte, 16)
 	if _, err := io.ReadFull(rand.Reader, salt); err != nil {
 		return "", "", "", err
 	}
-	key, err := scrypt.Key([]byte(passphrase), salt, 65536, 8, 1, 32)
+	passBytes := []byte(passphrase)
+	defer func() {
+		for i := range passBytes {
+			passBytes[i] = 0
+		}
+	}()
+	key, err := scrypt.Key(passBytes, salt, 65536, 8, 1, 32)
 	if err != nil {
 		return "", "", "", err
 	}
+	defer func() {
+		for i := range key {
+			key[i] = 0
+		}
+	}()
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return "", "", "", err
@@ -1419,10 +1435,21 @@ func decryptState(cipherHex string, saltHex string, nonceHex string, passphrase 
 	if err != nil {
 		return zero, err
 	}
-	key, err := scrypt.Key([]byte(passphrase), salt, 65536, 8, 1, 32)
+	passBytes := []byte(passphrase)
+	defer func() {
+		for i := range passBytes {
+			passBytes[i] = 0
+		}
+	}()
+	key, err := scrypt.Key(passBytes, salt, 65536, 8, 1, 32)
 	if err != nil {
 		return zero, err
 	}
+	defer func() {
+		for i := range key {
+			key[i] = 0
+		}
+	}()
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return zero, err
@@ -1435,6 +1462,11 @@ func decryptState(cipherHex string, saltHex string, nonceHex string, passphrase 
 	if err != nil {
 		return zero, fmt.Errorf("decrypt wallet: %w", err)
 	}
+	defer func() {
+		for i := range plain {
+			plain[i] = 0
+		}
+	}()
 	var state keyState
 	if err := json.Unmarshal(plain, &state); err != nil {
 		legacyKeys := make(map[string]string)

@@ -49,7 +49,9 @@ func (o *OllamaProvider) Stop(_ context.Context) error {
 
 func (o *OllamaProvider) Health(_ context.Context) (AIHealth, error) {
 	s := StatusStopped
-	if atomic.LoadInt32(&o.started) == 1 { s = StatusReady }
+	if atomic.LoadInt32(&o.started) == 1 {
+		s = StatusReady
+	}
 	return AIHealth{
 		Status:      s,
 		ModelLoaded: atomic.LoadInt32(&o.modelReady) == 1,
@@ -67,18 +69,26 @@ func (o *OllamaProvider) ping() bool {
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "GET", o.baseURL+"/api/tags", nil)
 	resp, err := o.client.Do(req)
-	if err != nil { return false }
+	if err != nil {
+		return false
+	}
 	defer resp.Body.Close()
 	return resp.StatusCode == 200
 }
 
 func (o *OllamaProvider) ListModels(ctx context.Context) ([]AIModel, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", o.baseURL+"/api/tags", nil)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	resp, err := o.client.Do(req)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 { return nil, fmt.Errorf("ollama returned %d", resp.StatusCode) }
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("ollama returned %d", resp.StatusCode)
+	}
 	type ollamaModel struct {
 		Name   string `json:"name"`
 		Size   int64  `json:"size"`
@@ -88,14 +98,16 @@ func (o *OllamaProvider) ListModels(ctx context.Context) ([]AIModel, error) {
 		Models []ollamaModel `json:"models"`
 	}
 	var tr tagsResp
-	if err := json.NewDecoder(resp.Body).Decode(&tr); err != nil { return nil, err }
+	if err := json.NewDecoder(resp.Body).Decode(&tr); err != nil {
+		return nil, err
+	}
 	out := make([]AIModel, 0, len(tr.Models))
 	for _, m := range tr.Models {
 		out = append(out, AIModel{
-			Name:     m.Name,
+			Name:       m.Name,
 			FileSizeMB: int(m.Size / (1024 * 1024)),
-			SHA256:   strings.TrimPrefix(m.Digest, "sha256:"),
-			License:  "See model source",
+			SHA256:     strings.TrimPrefix(m.Digest, "sha256:"),
+			License:    "See model source",
 		})
 	}
 	return out, nil
@@ -176,14 +188,18 @@ func (o *OllamaProvider) Chat(ctx context.Context, req ChatRequest) (<-chan Chat
 			default:
 			}
 			line := scanner.Text()
-			if line == "" { continue }
+			if line == "" {
+				continue
+			}
 			var evt struct {
 				Message struct {
 					Content string `json:"content"`
 				} `json:"message"`
 				Done bool `json:"done"`
 			}
-			if err := json.Unmarshal([]byte(line), &evt); err != nil { continue }
+			if err := json.Unmarshal([]byte(line), &evt); err != nil {
+				continue
+			}
 			if evt.Message.Content != "" {
 				totalTokens++
 				select {
@@ -192,7 +208,9 @@ func (o *OllamaProvider) Chat(ctx context.Context, req ChatRequest) (<-chan Chat
 					return
 				}
 			}
-			if evt.Done { break }
+			if evt.Done {
+				break
+			}
 		}
 		ch <- ChatEvent{Type: "done", Tokens: totalTokens}
 	}()
@@ -224,7 +242,11 @@ func buildOllamaSystemPrompt(req ChatRequest) string {
 }
 
 func storageStatus(s SanitizedSnapshot) string {
-	if s.StorageOK { return "healthy" }
-	if s.StorageError != "" { return s.StorageError }
+	if s.StorageOK {
+		return "healthy"
+	}
+	if s.StorageError != "" {
+		return s.StorageError
+	}
 	return "unknown"
 }

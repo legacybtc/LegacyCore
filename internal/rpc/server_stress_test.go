@@ -41,7 +41,7 @@ func TestSustainedRPCResponsiveness(t *testing.T) {
 	if err := chain.ProcessBlock(genesis); err != nil {
 		t.Fatal(err)
 	}
-	s := &Server{chain: chain}
+	s := &Server{chain: chain, disableRateLimit: true}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if v := recover(); v != nil {
@@ -127,7 +127,14 @@ func sustainedRPCStressTest(
 
 	worker := func() {
 		defer wg.Done()
-		client := &http.Client{Timeout: 30 * time.Second}
+		client := &http.Client{
+			Timeout: 30 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 100,
+				IdleConnTimeout:     90 * time.Second,
+			},
+		}
 		var methodIndex int
 		for {
 			if stop() {
@@ -231,7 +238,7 @@ func BenchmarkRPCMethodPoll(b *testing.B) {
 	if err := chain.ProcessBlock(genesis); err != nil {
 		b.Fatal(err)
 	}
-	s := &Server{chain: chain}
+	s := &Server{chain: chain, disableRateLimit: true}
 	methods := []string{
 		"help",
 		"getchainparams",
@@ -546,7 +553,9 @@ func TestMinerStatusSnapshotConsistency(t *testing.T) {
 	}
 	s := &Server{chain: chain}
 	w, err := wallet.Open(t.TempDir())
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	s.wallet = w
 
 	cfg := config.MiningConfig{}
@@ -583,11 +592,17 @@ func TestForcedPauseResumeTransitionsConsistent(t *testing.T) {
 		t.Skipf("requires production yespower backend")
 	}
 	chain, err := blockchain.New(chaincfg.MainNet, pow.YespowerHasher{Personalization: chaincfg.MainNet.YespowerPers}, storage.NewFileStore(t.TempDir()))
-	if err != nil { t.Fatal(err) }
-	if err := chain.EnsureGenesis(); err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.EnsureGenesis(); err != nil {
+		t.Fatal(err)
+	}
 
 	w, err := wallet.Open(t.TempDir())
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	s := &Server{chain: chain, wallet: w}
 
 	cfg := config.MiningConfig{}
@@ -600,24 +615,34 @@ func TestForcedPauseResumeTransitionsConsistent(t *testing.T) {
 		defer wg.Done()
 		for i := 0; i < cycles; i++ {
 			s.minerMu.Lock()
-			s.minerActive = true; s.minerHashing = true; s.minerThreads = 4; s.minerStateGen++
-			s.minerMu.Unlock()
-			time.Sleep(time.Millisecond)
-
-			s.minerMu.Lock()
-			s.minerActive = true; s.minerHashing = false; s.minerPausedReason = "peer_unsafe_test"
+			s.minerActive = true
+			s.minerHashing = true
+			s.minerThreads = 4
 			s.minerStateGen++
 			s.minerMu.Unlock()
 			time.Sleep(time.Millisecond)
 
 			s.minerMu.Lock()
-			s.minerActive = true; s.minerHashing = true; s.minerPausedReason = ""
+			s.minerActive = true
+			s.minerHashing = false
+			s.minerPausedReason = "peer_unsafe_test"
 			s.minerStateGen++
 			s.minerMu.Unlock()
 			time.Sleep(time.Millisecond)
 
 			s.minerMu.Lock()
-			s.minerActive = false; s.minerHashing = false; s.minerPausedReason = ""; s.minerStateGen++
+			s.minerActive = true
+			s.minerHashing = true
+			s.minerPausedReason = ""
+			s.minerStateGen++
+			s.minerMu.Unlock()
+			time.Sleep(time.Millisecond)
+
+			s.minerMu.Lock()
+			s.minerActive = false
+			s.minerHashing = false
+			s.minerPausedReason = ""
+			s.minerStateGen++
 			s.minerMu.Unlock()
 			time.Sleep(time.Millisecond * 5)
 		}
@@ -635,7 +660,9 @@ func TestForcedPauseResumeTransitionsConsistent(t *testing.T) {
 				threads := intVal(out, "active_threads")
 				cgo := intVal(out, "yespower_cgo_calls_active")
 
-				if !cons { continue }
+				if !cons {
+					continue
+				}
 				if !active && wActive > 0 {
 					mixedStopped.Add(1)
 					t.Errorf("stopped+workers: threads=%d workers=%d cgo=%d", threads, wActive, cgo)
@@ -661,11 +688,16 @@ func TestForcedPauseResumeTransitionsConsistent(t *testing.T) {
 
 func intVal(m map[string]any, key string) int64 {
 	v, ok := m[key]
-	if !ok { return 0 }
+	if !ok {
+		return 0
+	}
 	switch n := v.(type) {
-	case int64: return n
-	case float64: return int64(n)
-	case int: return int64(n)
+	case int64:
+		return n
+	case float64:
+		return int64(n)
+	case int:
+		return int64(n)
 	}
 	return 0
 }

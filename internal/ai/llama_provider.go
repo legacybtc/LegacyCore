@@ -51,9 +51,9 @@ func DefaultLlamaConfig() LlamaConfig {
 
 func NewLlamaProvider(cfg LlamaConfig) *LlamaProvider {
 	return &LlamaProvider{
-		serverURL: cfg.ServerURL,
-		apiKey:    cfg.APIKey,
-		config:    cfg,
+		serverURL:  cfg.ServerURL,
+		apiKey:     cfg.APIKey,
+		config:     cfg,
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
 }
@@ -87,10 +87,14 @@ func (p *LlamaProvider) startManaged(ctx context.Context) error {
 	p.pid = p.cmd.Process.Pid
 	for i := 0; i < 30; i++ {
 		select {
-		case <-ctx.Done(): p.killManaged(); return ctx.Err()
+		case <-ctx.Done():
+			p.killManaged()
+			return ctx.Err()
 		case <-time.After(time.Second):
 		}
-		if err := p.checkHealth(ctx); err == nil { return nil }
+		if err := p.checkHealth(ctx); err == nil {
+			return nil
+		}
 	}
 	p.killManaged()
 	return fmt.Errorf("llama-server not healthy after 30s")
@@ -122,9 +126,13 @@ func (p *LlamaProvider) Health(ctx context.Context) (AIHealth, error) {
 func (p *LlamaProvider) checkHealth(ctx context.Context) error {
 	req, _ := http.NewRequestWithContext(ctx, "GET", p.serverURL+"/health", nil)
 	resp, err := p.httpClient.Do(req)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer resp.Body.Close()
-	if resp.StatusCode != 200 { return fmt.Errorf("health: %d", resp.StatusCode) }
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("health: %d", resp.StatusCode)
+	}
 	return nil
 }
 
@@ -152,14 +160,18 @@ func (p *LlamaProvider) Chat(ctx context.Context, req ChatRequest) (<-chan ChatE
 	}
 	prompt := buildSystemPrompt(req)
 	payload, _ := json.Marshal(body{
-		Messages:    []msg{{Role: "system", Content: prompt}, {Role: "user", Content: req.Message}},
-		Stream:      true, MaxTokens: 512, Temperature: 0.1,
+		Messages: []msg{{Role: "system", Content: prompt}, {Role: "user", Content: req.Message}},
+		Stream:   true, MaxTokens: 512, Temperature: 0.1,
 	})
 	httpReq, _ := http.NewRequestWithContext(ctx, "POST", p.serverURL+"/v1/chat/completions", bytes.NewReader(payload))
 	httpReq.Header.Set("Content-Type", "application/json")
-	if p.apiKey != "" { httpReq.Header.Set("Authorization", "Bearer "+p.apiKey) }
+	if p.apiKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	}
 	resp, err := p.httpClient.Do(httpReq)
-	if err != nil { return nil, fmt.Errorf("chat: %w", err) }
+	if err != nil {
+		return nil, fmt.Errorf("chat: %w", err)
+	}
 
 	ch := make(chan ChatEvent, 1)
 	go func() {
@@ -168,13 +180,26 @@ func (p *LlamaProvider) Chat(ctx context.Context, req ChatRequest) (<-chan ChatE
 		scanner := bufio.NewScanner(resp.Body)
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
-			if line == "" || !strings.HasPrefix(line, "data: ") { continue }
+			if line == "" || !strings.HasPrefix(line, "data: ") {
+				continue
+			}
 			data := strings.TrimPrefix(line, "data: ")
-			if data == "[DONE]" { ch <- ChatEvent{Type: "done"}; return }
-			var chunk struct{ Choices []struct{ Delta struct{ Content string `json:"content"` } `json:"delta"` } `json:"choices"` }
+			if data == "[DONE]" {
+				ch <- ChatEvent{Type: "done"}
+				return
+			}
+			var chunk struct {
+				Choices []struct {
+					Delta struct {
+						Content string `json:"content"`
+					} `json:"delta"`
+				} `json:"choices"`
+			}
 			if json.Unmarshal([]byte(data), &chunk) == nil {
 				for _, c := range chunk.Choices {
-					if c.Delta.Content != "" { ch <- ChatEvent{Type: "token", Content: c.Delta.Content} }
+					if c.Delta.Content != "" {
+						ch <- ChatEvent{Type: "token", Content: c.Delta.Content}
+					}
 				}
 			}
 		}
@@ -183,7 +208,9 @@ func (p *LlamaProvider) Chat(ctx context.Context, req ChatRequest) (<-chan ChatE
 }
 
 func (p *LlamaProvider) killManaged() {
-	if p.cmd != nil && p.cmd.Process != nil { p.cmd.Process.Kill() }
+	if p.cmd != nil && p.cmd.Process != nil {
+		p.cmd.Process.Kill()
+	}
 }
 
 func (p *LlamaProvider) PID() int { return p.pid }
@@ -196,5 +223,10 @@ Miner: %s (safe=%v) | Threads: %d/%d | RPC: %s
 Wallet: %s LBTC available | Storage: %s
 Mode: %s`, s.Network, s.Height, s.SyncState, s.PeerCount, s.GoodPeerCount, s.AgreeingPeers,
 		s.MinerState, s.MiningSafe, s.ActiveThreads, s.ConfiguredThreads, s.RPCHealth,
-		s.AvailableLBTC, func() string { if s.StorageOK { return "OK" }; return "ERROR" }(), req.Mode)
+		s.AvailableLBTC, func() string {
+			if s.StorageOK {
+				return "OK"
+			}
+			return "ERROR"
+		}(), req.Mode)
 }

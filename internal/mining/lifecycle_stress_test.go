@@ -45,7 +45,7 @@ func TestMinerLifecycleExtendedStress(t *testing.T) {
 		startHeap    uint64
 		maxHeap      uint64
 		minHeap      uint64 = 1<<64 - 1
-		startTS      = time.Now()
+		startTS             = time.Now()
 		cycleCount   int
 		maxRPC       time.Duration
 		totalRPC     time.Duration

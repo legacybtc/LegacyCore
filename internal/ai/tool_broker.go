@@ -113,7 +113,9 @@ func (tb *ToolBroker) ListAllowlist() []string {
 
 func (tb *ToolBroker) AddCommand(cmd string) error {
 	trimmed := strings.TrimSpace(cmd)
-	if trimmed == "" { return fmt.Errorf("empty command") }
+	if trimmed == "" {
+		return fmt.Errorf("empty command")
+	}
 	if strings.Contains(trimmed, ";") || strings.Contains(trimmed, "&&") || strings.Contains(trimmed, "|") {
 		return fmt.Errorf("command chaining not allowed")
 	}

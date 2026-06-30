@@ -885,7 +885,6 @@ func (c *Chain) tryActivateSideChainLocked(sideTipHash string) error {
 			if err != nil {
 				return err
 			}
-			removed = append(removed, block)
 			if err := c.disconnectTipLocked(); err != nil {
 				fmt.Printf("blockchain: reorg failed during disconnect at height %d: %v\n", c.tip.Height, err)
 				if restoreErr := c.reconnectBlocksLocked(removed); restoreErr != nil {
@@ -893,6 +892,7 @@ func (c *Chain) tryActivateSideChainLocked(sideTipHash string) error {
 				}
 				return fmt.Errorf("reorg failed during disconnect at height %d: %v", c.tip.Height, err)
 			}
+			removed = append(removed, block)
 		}
 		if c.tip == nil || c.tip.Hash != forkHash {
 			// Reorg failed - restore old chain
@@ -918,6 +918,7 @@ func (c *Chain) tryActivateSideChainLocked(sideTipHash string) error {
 				return err
 			}
 			connected = append(connected, attachRev[i].block)
+			c.acceptOrphanChildrenLocked(attachRev[i].hash)
 		}
 		for _, n := range attachRev {
 			delete(c.sideBlocks, n.hash)
@@ -937,6 +938,7 @@ func (c *Chain) tryActivateSideChainLocked(sideTipHash string) error {
 			return err
 		}
 		connected = append(connected, attachRev[i].block)
+		c.acceptOrphanChildrenLocked(attachRev[i].hash)
 	}
 	for _, n := range attachRev {
 		delete(c.sideBlocks, n.hash)
@@ -1581,6 +1583,8 @@ func (c *Chain) disconnectTipLocked() error {
 		return err
 	}
 	c.tip = prevIdx
+	delete(c.workByHash, idx.Hash)
+	delete(c.parentByHash, idx.Hash)
 	return nil
 }
 

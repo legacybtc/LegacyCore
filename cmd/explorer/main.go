@@ -100,12 +100,12 @@ func rpcCall(method string, params []any) (any, error) {
 }
 
 type pageData struct {
-	Title     string
-	Mainnet   bool
-	CoinName  string
-	Version   string
-	Content   template.HTML
-	Error     string
+	Title    string
+	Mainnet  bool
+	CoinName string
+	Version  string
+	Content  template.HTML
+	Error    string
 }
 
 var funcMap = template.FuncMap{
@@ -176,7 +176,6 @@ func renderPage(w http.ResponseWriter, title string, content template.HTML, errM
 		Version:  version.CoreVersion,
 		Content:  content,
 		Error:    errMsg,
-
 	}
 	var buf bytes.Buffer
 	if err := pageTmpl.Execute(&buf, p); err != nil {
@@ -717,10 +716,10 @@ func apiEndpoint(w http.ResponseWriter, r *http.Request) {
 		"version":  version.CoreVersion,
 		"explorer": "v1.0.9",
 		"endpoints": map[string]string{
-			"GET /api/latest": "Latest blocks summary",
-			"GET /api/block/{hash}": "Block details",
-			"GET /api/tx/{txid}":    "Transaction details",
-			"GET /api/address/{addr}":"Address details",
+			"GET /api/latest":         "Latest blocks summary",
+			"GET /api/block/{hash}":   "Block details",
+			"GET /api/tx/{txid}":      "Transaction details",
+			"GET /api/address/{addr}": "Address details",
 		},
 	})
 }
@@ -872,5 +871,3 @@ func init() {
 		rpcHost = h
 	}
 }
-
-

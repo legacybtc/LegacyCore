@@ -20,8 +20,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"legacycoin/legacy-go/internal/config"
 	"legacycoin/legacy-go/internal/ai"
+	"legacycoin/legacy-go/internal/config"
 	"legacycoin/legacy-go/internal/nodeservice"
 
 	wailsRuntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -1169,7 +1169,9 @@ func asInt(v any) int {
 
 // Legacy AI Companion methods
 func (a *App) AIHealth() map[string]any {
-	if a.aiMgr == nil { return map[string]any{"status": "disabled"} }
+	if a.aiMgr == nil {
+		return map[string]any{"status": "disabled"}
+	}
 	h, _ := a.aiMgr.Health(context.Background())
 	return map[string]any{
 		"status": string(h.Status), "pid": h.PID, "uptime": h.Uptime,
@@ -1180,14 +1182,23 @@ func (a *App) AIHealth() map[string]any {
 	}
 }
 func (a *App) AIChat(message string, mode string) map[string]any {
-	if a.aiMgr == nil || !a.aiMgr.IsRunning() { return map[string]any{"content": "AI not running", "error": "stopped"} }
-	if mode == "" { mode = "advisor" }
-	snap := a.Snapshot(); ss := ai.BuildSanitizedSnapshot(snap)
+	if a.aiMgr == nil || !a.aiMgr.IsRunning() {
+		return map[string]any{"content": "AI not running", "error": "stopped"}
+	}
+	if mode == "" {
+		mode = "advisor"
+	}
+	snap := a.Snapshot()
+	ss := ai.BuildSanitizedSnapshot(snap)
 	ch, err := a.aiMgr.Chat(context.Background(), ai.ChatRequest{Message: message, Snapshot: ss, Mode: mode})
-	if err != nil { return map[string]any{"content": "", "error": err.Error()} }
+	if err != nil {
+		return map[string]any{"content": "", "error": err.Error()}
+	}
 	var resp string
 	for evt := range ch {
-		if evt.Type == "error" { return map[string]any{"content": resp, "error": evt.Error} }
+		if evt.Type == "error" {
+			return map[string]any{"content": resp, "error": evt.Error}
+		}
 		resp += evt.Content
 	}
 	return map[string]any{"content": resp}
@@ -1199,7 +1210,9 @@ func (a *App) AIStart() map[string]any {
 	model := a.settings.AIModel
 	a.mu.Unlock()
 
-	if providerType == "" { providerType = "built-in" }
+	if providerType == "" {
+		providerType = "built-in"
+	}
 
 	provider := a.createProvider(providerType, apiKey, model)
 	a.aiMgr = ai.NewLifecycleManager(provider, nil)
@@ -1238,7 +1251,9 @@ func (a *App) createProvider(providerType string, apiKey string, model string) a
 	switch providerType {
 	case "groq":
 		g := ai.NewGroqProvider(apiKey)
-		if model != "" { g.SetModel(model) }
+		if model != "" {
+			g.SetModel(model)
+		}
 		return g
 	case "llama-server":
 		llamaPath := findLlamaBinary()
@@ -1275,8 +1290,12 @@ func gpuOffloadLayers(gpu ai.GPUInfo) int {
 	return 0
 }
 func (a *App) AIStop() map[string]any {
-	if a.aiMgr == nil { return map[string]any{"ok": true} }
-	if err := a.aiMgr.Stop(context.Background()); err != nil { return map[string]any{"ok": false, "error": err.Error()} }
+	if a.aiMgr == nil {
+		return map[string]any{"ok": true}
+	}
+	if err := a.aiMgr.Stop(context.Background()); err != nil {
+		return map[string]any{"ok": false, "error": err.Error()}
+	}
 	return map[string]any{"ok": true}
 }
 func (a *App) AIDetectGPU() map[string]any {
@@ -1290,7 +1309,9 @@ func (a *App) AIDetectGPU() map[string]any {
 }
 
 func (a *App) AIToolExecute(cmdLine string) map[string]any {
-	if a.aiMgr == nil || !a.aiMgr.IsRunning() { return map[string]any{"allowed": false, "stderr": "AI not running"} }
+	if a.aiMgr == nil || !a.aiMgr.IsRunning() {
+		return map[string]any{"allowed": false, "stderr": "AI not running"}
+	}
 	r := a.aiMgr.ExecuteTool(context.Background(), cmdLine)
 	return map[string]any{
 		"command": r.Command, "stdout": r.Stdout, "stderr": r.Stderr,
@@ -1300,7 +1321,9 @@ func (a *App) AIToolExecute(cmdLine string) map[string]any {
 }
 
 func (a *App) AIListTools() []string {
-	if a.aiMgr == nil { return []string{} }
+	if a.aiMgr == nil {
+		return []string{}
+	}
 	return a.aiMgr.ListTools()
 }
 

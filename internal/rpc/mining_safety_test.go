@@ -496,26 +496,26 @@ func TestCheckSafeToMineExpertOverrideMustBeExplicit(t *testing.T) {
 
 func graceInput() MiningSafetyInput {
 	return MiningSafetyInput{
-		RPCHealth:                       "ok",
-		StorageOK:                       true,
-		DestinationOK:                   true,
-		SafeRequired:                    true,
-		MinGoodPeers:                    3,
-		MinAgreeingPeers:                2,
-		BlocksBehindAllowed:             1,
-		LocalHeight:                     100,
-		BestPeerHeight:                  101,
-		BlocksBehind:                    1,
-		PeerCount:                       4,
-		GoodPeerCount:                   4,
-		CompatiblePeerCount:             4,
-		AgreeingPeerCount:               0,
-		SyncState:                       "current",
-		LocalBlockPropagationGraceActive: true,
+		RPCHealth:                           "ok",
+		StorageOK:                           true,
+		DestinationOK:                       true,
+		SafeRequired:                        true,
+		MinGoodPeers:                        3,
+		MinAgreeingPeers:                    2,
+		BlocksBehindAllowed:                 1,
+		LocalHeight:                         100,
+		BestPeerHeight:                      101,
+		BlocksBehind:                        1,
+		PeerCount:                           4,
+		GoodPeerCount:                       4,
+		CompatiblePeerCount:                 4,
+		AgreeingPeerCount:                   0,
+		SyncState:                           "current",
+		LocalBlockPropagationGraceActive:    true,
 		LocalBlockPropagationGraceRemaining: 90,
 		LocalBlockPropagationHeight:         100,
 		LocalBlockPropagationHash:           "abc123",
-		LastLocalBlockAnnouncementTime:     1000,
+		LastLocalBlockAnnouncementTime:      1000,
 		LocalBlockAnnouncementTargetCount:   5,
 	}
 }
@@ -1062,16 +1062,16 @@ func TestServerImmediateRiskStrongerChainworkClearsGrace(t *testing.T) {
 	s.minerMu.Unlock()
 
 	input := MiningSafetyInput{
-		PeerCount:                   4,
-		MinAgreeingPeers:            2,
-		BlocksBehindAllowed:         1,
-		BlocksBehind:                0,
-		AgreeingPeerCount:           0,
-		CompatiblePeerCount:         4,
-		SyncState:                   "current",
-		StrongerChainworkPeerCount:  1,
-		PeerGraceSeconds:            90,
-		PeerRecoverySeconds:         30,
+		PeerCount:                  4,
+		MinAgreeingPeers:           2,
+		BlocksBehindAllowed:        1,
+		BlocksBehind:               0,
+		AgreeingPeerCount:          0,
+		CompatiblePeerCount:        4,
+		SyncState:                  "current",
+		StrongerChainworkPeerCount: 1,
+		PeerGraceSeconds:           90,
+		PeerRecoverySeconds:        30,
 	}
 	s.applyMiningPeerAgreementWindow(&input)
 	if input.LocalBlockPropagationGraceActive {
@@ -1110,16 +1110,16 @@ func TestServerImmediateRiskWrongChainClearsGrace(t *testing.T) {
 	s.minerMu.Unlock()
 
 	input := MiningSafetyInput{
-		PeerCount:            4,
-		MinAgreeingPeers:     2,
-		BlocksBehindAllowed:  1,
-		BlocksBehind:         0,
-		AgreeingPeerCount:    0,
-		CompatiblePeerCount:  4,
-		SyncState:            "current",
-		WrongChainPeerCount:  1,
-		PeerGraceSeconds:     90,
-		PeerRecoverySeconds:  30,
+		PeerCount:           4,
+		MinAgreeingPeers:    2,
+		BlocksBehindAllowed: 1,
+		BlocksBehind:        0,
+		AgreeingPeerCount:   0,
+		CompatiblePeerCount: 4,
+		SyncState:           "current",
+		WrongChainPeerCount: 1,
+		PeerGraceSeconds:    90,
+		PeerRecoverySeconds: 30,
 	}
 	s.applyMiningPeerAgreementWindow(&input)
 	if input.LocalBlockPropagationGraceActive {
@@ -1283,19 +1283,19 @@ func TestCheckSafeToMinePrevHashMismatchBlocksEvenWithGrace(t *testing.T) {
 
 func TestCheckSafeToMineGraceDoesNotResetOnRepeatedEvaluation(t *testing.T) {
 	input := MiningSafetyInput{
-		PeerCount:                         4,
-		MinAgreeingPeers:                  2,
-		BlocksBehindAllowed:               1,
-		BlocksBehind:                      1,
-		AgreeingPeerCount:                 0,
-		CompatiblePeerCount:               2,
-		SyncState:                         "current",
-		PeerGraceSeconds:                  90,
-		PeerRecoverySeconds:               30,
-		ConflictingTipPeerCount:           1,
-		RPCHealth:                         "ok",
-		StorageOK:                         true,
-		DestinationOK:                     true,
+		PeerCount:               4,
+		MinAgreeingPeers:        2,
+		BlocksBehindAllowed:     1,
+		BlocksBehind:            1,
+		AgreeingPeerCount:       0,
+		CompatiblePeerCount:     2,
+		SyncState:               "current",
+		PeerGraceSeconds:        90,
+		PeerRecoverySeconds:     30,
+		ConflictingTipPeerCount: 1,
+		RPCHealth:               "ok",
+		StorageOK:               true,
+		DestinationOK:           true,
 	}
 	for i := 0; i < 5; i++ {
 		status := CheckSafeToMine(input)

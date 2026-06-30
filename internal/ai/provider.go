@@ -26,19 +26,19 @@ const (
 )
 
 type AIConfig struct {
-	Port               int    `json:"port"`
-	Backend            string `json:"backend"`
-	ModelPath          string `json:"model_path"`
-	ModelName          string `json:"model_name"`
-	GPUOffloadLayers   int    `json:"gpu_offload_layers"`
-	CPUThreads         int    `json:"cpu_threads"`
-	ContextSize        int    `json:"context_size"`
-	MaxResponseTokens  int    `json:"max_response_tokens"`
-	HistoryEnabled     bool   `json:"history_enabled"`
-	SessionToken       string `json:"session_token"`
-	Provider           string `json:"provider"` // mock, llama-server, ollama
-	LlamaBinaryPath    string `json:"llama_binary_path,omitempty"`
-	LlamaServerURL     string `json:"llama_server_url,omitempty"`
+	Port              int    `json:"port"`
+	Backend           string `json:"backend"`
+	ModelPath         string `json:"model_path"`
+	ModelName         string `json:"model_name"`
+	GPUOffloadLayers  int    `json:"gpu_offload_layers"`
+	CPUThreads        int    `json:"cpu_threads"`
+	ContextSize       int    `json:"context_size"`
+	MaxResponseTokens int    `json:"max_response_tokens"`
+	HistoryEnabled    bool   `json:"history_enabled"`
+	SessionToken      string `json:"session_token"`
+	Provider          string `json:"provider"` // mock, llama-server, ollama
+	LlamaBinaryPath   string `json:"llama_binary_path,omitempty"`
+	LlamaServerURL    string `json:"llama_server_url,omitempty"`
 }
 
 func DefaultConfig() AIConfig {
@@ -70,15 +70,15 @@ type AIHealth struct {
 }
 
 type AIModel struct {
-	Name            string `json:"name"`
-	Path            string `json:"path"`
-	FileSizeMB      int    `json:"file_size_mb"`
-	Quantization    string `json:"quantization"`
-	License         string `json:"license"`
-	SHA256          string `json:"sha256,omitempty"`
-	ContextSize     int    `json:"context_size,omitempty"`
-	EstimatedRAMMB  int    `json:"estimated_ram_mb,omitempty"`
-	EstimatedVRAMMB int    `json:"estimated_vram_mb,omitempty"`
+	Name              string `json:"name"`
+	Path              string `json:"path"`
+	FileSizeMB        int    `json:"file_size_mb"`
+	Quantization      string `json:"quantization"`
+	License           string `json:"license"`
+	SHA256            string `json:"sha256,omitempty"`
+	ContextSize       int    `json:"context_size,omitempty"`
+	EstimatedRAMMB    int    `json:"estimated_ram_mb,omitempty"`
+	EstimatedVRAMMB   int    `json:"estimated_vram_mb,omitempty"`
 	CompatibleBackend string `json:"compatible_backend,omitempty"`
 }
 
