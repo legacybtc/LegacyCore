@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/btcsuite/btcd/btcec/v2 v2.3.6
-	github.com/cloudflare/circl v1.6.3
+	github.com/cloudflare/circl v1.6.4
 	github.com/tyler-smith/go-bip39 v1.1.0
 	github.com/wailsapp/wails/v2 v2.12.0
 	golang.org/x/crypto v0.50.0
