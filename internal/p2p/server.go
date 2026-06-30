@@ -30,7 +30,7 @@ const (
 	userAgent                    = "/Legacy-GO:1.0.12/"
 	maxPeers                     = 125
 	maxOutboundPeers             = 16
-	maxGetDataItems              = 256
+	maxGetDataItems              = 1000
 	maxServeInvItems             = 256
 	peerWriteTimeout             = 60 * time.Second
 	maxAddrRelayItems            = 10
@@ -69,6 +69,14 @@ func setPeerStaleThreshold(d time.Duration) {
 }
 
 const (
+	// getdataTimeout is how long we wait for a block requested via getdata
+	// before marking it timed out and re-requesting from an alternative peer.
+	getdataTimeout = 2 * time.Minute
+
+	// getdataCleanupInterval is how often the watchdog sweeps timed-out
+	// getdata requests.
+	getdataCleanupInterval = 30 * time.Second
+
 	// missingParentTTL stops us hammering one peer for the same missing
 	// parent block over and over. missingParentEvictTTL bounds memory.
 	missingParentTTL      = 2 * time.Minute
@@ -85,6 +93,12 @@ const (
 	MaxPeers         = maxPeers
 	MaxOutboundPeers = maxOutboundPeers
 )
+
+type getdataReq struct {
+	hash       string
+	peer       string
+	requested  time.Time
+}
 
 type peer struct {
 	conn              net.Conn
@@ -234,7 +248,13 @@ type Server struct {
 	missingParentMu   sync.Mutex
 	missingParentSeen map[string]time.Time
 	missingParentReqs int64
-	wg                sync.WaitGroup
+
+	// getdataTimeout tracks blocks we have requested via getdata but not yet
+	// received. The watchdog uses this to detect unresponsive peers and
+	// re-request from alternative peers instead of stalling forever.
+	getdataMu     sync.Mutex
+	getdataReqs   map[string]*getdataReq // block hash → request info
+	wg            sync.WaitGroup
 }
 
 func New(params chaincfg.Params, chain *blockchain.Chain, pool *mempool.Pool, logger *log.Logger) *Server {
@@ -256,6 +276,7 @@ func New(params chaincfg.Params, chain *blockchain.Chain, pool *mempool.Pool, lo
 		rejectLastLog:       make(map[string]time.Time),
 		outboundLastAttempt: make(map[string]time.Time),
 		missingParentSeen:   make(map[string]time.Time),
+		getdataReqs:         make(map[string]*getdataReq),
 		chainID:             params.ChainID,
 		peerSafety:          true,
 		banThreshold:        100,
@@ -360,6 +381,46 @@ func (s *Server) SetPeerPingInterval(seconds int) {
 		return
 	}
 	s.pingInterval = time.Duration(seconds) * time.Second
+}
+
+// recordGetdataReq records that we requested a block hash via getdata from
+// a specific peer. Multiple peers may request the same hash; we keep the
+// first (earliest) request for timeout tracking.
+func (s *Server) recordGetdataReq(hash string, peerAddr string) {
+	s.getdataMu.Lock()
+	if _, exists := s.getdataReqs[hash]; !exists {
+		s.getdataReqs[hash] = &getdataReq{
+			hash:      hash,
+			peer:      peerAddr,
+			requested: time.Now(),
+		}
+	}
+	s.getdataMu.Unlock()
+}
+
+// clearGetdataReq removes a block hash from the outstanding getdata tracking
+// once it has been received.
+func (s *Server) clearGetdataReq(hash string) {
+	s.getdataMu.Lock()
+	delete(s.getdataReqs, hash)
+	s.getdataMu.Unlock()
+}
+
+// sweepGetdataTimeouts checks all outstanding getdata requests and returns
+// hashes that have exceeded getdataTimeout. Callers should increment
+// blockReqTimeouts and attempt re-request from alternative peers.
+func (s *Server) sweepGetdataTimeouts() []string {
+	s.getdataMu.Lock()
+	defer s.getdataMu.Unlock()
+	now := time.Now()
+	var timedOut []string
+	for hash, req := range s.getdataReqs {
+		if now.Sub(req.requested) > getdataTimeout {
+			timedOut = append(timedOut, hash)
+			delete(s.getdataReqs, hash)
+		}
+	}
+	return timedOut
 }
 
 func splitHost(addr string) string {
@@ -1743,11 +1804,21 @@ func (s *Server) watchdogStep(ctx context.Context) {
 			reconnected++
 		}
 	}
+	// Sweep timed-out getdata requests and re-request from alternative peers
+	timedOut := s.sweepGetdataTimeouts()
+	for _, hash := range timedOut {
+		s.addBlockReqTimeout()
+		s.log.Printf("p2p getdata timeout for block %s; will re-request", hash)
+	}
+	if len(timedOut) > 0 {
+		s.log.Printf("p2p getdata timeout: %d block(s) timed out, forcing sync request", len(timedOut))
+	}
+
 	noUsefulChainData := candidateNoUsefulData &&
 		(behind || syncingPeers > 0 || stalePeers > 0)
 
 	requested := 0
-	if behind || stalled || noUsefulChainData {
+	if behind || stalled || noUsefulChainData || len(timedOut) > 0 {
 		requested = s.requestSyncFromAheadPeers(true)
 	}
 	if stalled || noUsefulChainData || reconnected > 0 {
@@ -1950,6 +2021,12 @@ func (s *Server) addBlocksAnnounced(n int) {
 	}
 	s.healthMu.Lock()
 	s.blocksAnnounced += int64(n)
+	s.healthMu.Unlock()
+}
+
+func (s *Server) addBlockReqTimeout() {
+	s.healthMu.Lock()
+	s.blockReqTimeouts++
 	s.healthMu.Unlock()
 }
 
@@ -2416,6 +2493,10 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 			if err != nil {
 				s.log.Printf("p2p parse block from %s: %v", conn.RemoteAddr(), err)
 				return
+			}
+			// Clear any outstanding getdata tracking for this block hash
+			if blockHash, hashErr := s.chain.BlockHash(block); hashErr == nil {
+				s.clearGetdataReq(blockHash.String())
 			}
 			result, err := s.chain.ProcessBlockWithResult(block)
 			if err != nil {
@@ -3436,7 +3517,9 @@ func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error 
 		}
 		p.setAdvertisedHeight(advertised)
 	}
-	want := make([]wire.InvVect, 0, len(hashes)*2)
+	// Build the full list of wanted inv entries (all headers, no cap).
+	// Split into batches of maxGetDataItems and send one getdata per batch.
+	allWant := make([]wire.InvVect, 0, len(hashes)*2)
 	skipped := 0
 	dualHash := 0
 	for i, hash := range hashes {
@@ -3444,32 +3527,42 @@ func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error 
 			skipped++
 			continue
 		}
-		// Fix #11: request the block by BOTH the canonical Yespower hash
-		// AND the legacy double-SHA256 header hash. Older 1.0.2 / mixed
-		// seed nodes index blocks by double-SHA256; without that hash they
-		// silently skip our getdata and serve nothing. Requesting both is
-		// cheap and safe (a peer that knows only one will skip the other).
-		want = append(want, wire.InvVect{Type: wire.InvTypeBlock, Hash: hash})
+		allWant = append(allWant, wire.InvVect{Type: wire.InvTypeBlock, Hash: hash})
 		if legacy, lerr := s.chain.LegacyHeaderHash(headers[i]); lerr == nil && legacy != hash {
-			want = append(want, wire.InvVect{Type: wire.InvTypeBlock, Hash: legacy})
+			allWant = append(allWant, wire.InvVect{Type: wire.InvTypeBlock, Hash: legacy})
 			dualHash++
 		}
-		if len(want) >= maxGetDataItems {
-			break
-		}
 	}
-	if len(want) == 0 {
+	if len(allWant) == 0 {
 		s.log.Printf("p2p validated %d headers from %s but all %d block bodies already present (want=0, skipped=%d)",
-			len(hashes), p.remote, skipped, skipped)
+			len(hashes), p.remote, len(hashes), skipped)
 		return nil
 	}
-	payload, err := wire.InvPayload(want)
-	if err != nil {
-		return err
+	totalRequested := 0
+	for batchStart := 0; batchStart < len(allWant); batchStart += maxGetDataItems {
+		batchEnd := batchStart + maxGetDataItems
+		if batchEnd > len(allWant) {
+			batchEnd = len(allWant)
+		}
+		batch := allWant[batchStart:batchEnd]
+		payload, err := wire.InvPayload(batch)
+		if err != nil {
+			return err
+		}
+		p.markBlocksRequested(len(batch))
+		s.addBlocksRequested(len(batch))
+		// Record each canonical hash for timeout tracking
+		for _, inv := range batch {
+			if inv.Type == wire.InvTypeBlock {
+				s.recordGetdataReq(inv.Hash.String(), p.remote)
+			}
+		}
+		if err := s.writePeerMessage(p, wire.CommandGetData, payload); err != nil {
+			return err
+		}
+		totalRequested += len(batch)
 	}
-	p.markBlocksRequested(len(want))
-	s.addBlocksRequested(len(want))
-	s.log.Printf("p2p validated %d headers from %s; requesting %d block bodies via getdata (tip=%d, skipped=%d, dual_hash=%d)",
-		len(hashes), p.remote, len(want), tipHeight, skipped, dualHash)
-	return s.writePeerMessage(p, wire.CommandGetData, payload)
+	s.log.Printf("p2p validated %d headers from %s; requested %d block bodies via getdata in %d batch(es) (tip=%d, skipped=%d, dual_hash=%d)",
+		len(hashes), p.remote, totalRequested, (len(allWant)+maxGetDataItems-1)/maxGetDataItems, tipHeight, skipped, dualHash)
+	return nil
 }
