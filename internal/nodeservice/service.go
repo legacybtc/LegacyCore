@@ -1873,7 +1873,33 @@ func (s *Service) CheckStorage() (map[string]any, error) {
 }
 
 func (s *Service) GetMinerStatus() (map[string]any, error) {
-	result, err := s.callRPC("getminerstatus", []any{}, 1800*time.Millisecond)
+	// Prefer in-process path: direct Go call, no HTTP RPC overhead
+	if s.node != nil {
+		if rpcSrv := s.node.RPCServer(); rpcSrv != nil {
+			out := rpcSrv.MinerStatus()
+			if out != nil {
+				addRPCHealthFields(out, s.rpcHealthSnapshot(), true)
+				nh, source, nhErr := s.resolveNetworkHashPS()
+				if nhErr != nil {
+					nh = map[string]any{"status": "unavailable", "note": nhErr.Error(), "hps": 0.0, "khps": 0.0, "mhps": 0.0}
+					source = "unavailable"
+				}
+				out["network_hashps"] = nh
+				out["network_hashps_source"] = source
+				out["status_source"] = "in_process"
+				normalizeMinerStatusForDashboard(out)
+				s.recordMinerStatusSuccess(out)
+				s.addMinerStatusDiagnostics(out, true)
+				if strings.TrimSpace(fmt.Sprint(out["miner_state"])) == "" || strings.TrimSpace(fmt.Sprint(out["miner_state"])) == "<nil>" {
+					out["miner_state"] = deriveMinerState(out, false)
+				}
+				out["status_text"] = friendlyMinerStateLabel(fmt.Sprint(out["miner_state"]))
+				return out, nil
+			}
+		}
+	}
+	// Fallback: HTTP RPC path
+	result, err := s.callRPC("getminerstatus", []any{}, 3000*time.Millisecond)
 	if err == nil {
 		if out, ok := result.(map[string]any); ok {
 			addRPCHealthFields(out, s.rpcHealthSnapshot(), true)

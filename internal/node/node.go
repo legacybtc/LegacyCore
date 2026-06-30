@@ -182,7 +182,10 @@ type Node struct {
 	paths       config.RuntimePaths
 	stratum     *stratum.Server
 	stratumAddr string
+	rpcServer   *rpc.Server
 }
+
+func (n *Node) RPCServer() *rpc.Server { return n.rpcServer }
 
 func New() (*Node, error) {
 	return NewWithOptions(Options{Paths: config.DefaultRuntimePaths()})
@@ -414,8 +417,10 @@ func (n *Node) Run(ctx context.Context, cancel context.CancelFunc) error {
 		errc <- n.p2p.Start(ctx)
 	}()
 	fmt.Printf("Legacy Coin Go node listening on RPC port %d\n", n.chain.Params().RPCPort)
+	server := rpc.New(n.chain, n.pool, n.wallet, n.p2p, cancel, n.auth, n.rpcBind, n.policy, n.paths.ConfigPath)
+	n.rpcServer = server
 	go func() {
-		errc <- rpc.New(n.chain, n.pool, n.wallet, n.p2p, cancel, n.auth, n.rpcBind, n.policy, n.paths.ConfigPath).ListenAndServe(ctx)
+		errc <- server.ListenAndServe(ctx)
 	}()
 	if n.stratum != nil && n.stratumAddr != "" {
 		go func() {

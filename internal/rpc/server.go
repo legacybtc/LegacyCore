@@ -4797,6 +4797,15 @@ func timingTrend(avg float64) string {
 	return "near_target"
 }
 
+func (s *Server) MinerStatus() map[string]any {
+	cfg, _ := config.LoadMiningConfig(s.miningConfigPath())
+	storage := s.chain.StorageHealth()
+	peerOK := !cfg.PeerRequired || (s.p2p != nil && s.p2p.PeerCount() > 0)
+	dest := s.miningDestinationStatus(cfg)
+	miningReady := storage.OK && peerOK && (dest.Owned || dest.External)
+	return s.minerStatus(cfg, storage, miningReady)
+}
+
 func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady bool) map[string]any {
 	cur := s.minerStatusDiagActive.Add(1)
 	s.minerStatusDiagTotal.Add(1)
