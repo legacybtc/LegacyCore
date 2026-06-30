@@ -242,6 +242,27 @@ jobs:
           mkdir -p release-assets
           find dist -type f \( -name "*.zip" -o -name "*.tar.gz" -o -name "SHA256SUMS.txt" \) -exec cp {} release-assets/ \;
 
+      - name: Import GPG key
+        uses: crazy-max/ghaction-import-gpg@cb9fde77c6582f7e15cd5b9328ee1cb8b6454b67 # v6.3.2
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+
+      - name: Sign release assets
+        run: |
+          for f in release-assets/*; do
+            if [ -f "$f" ]; then
+              gpg --armor --detach-sign --output "$f.asc" "$f"
+            fi
+          done
+
+      - name: Verify signatures
+        run: |
+          for f in release-assets/*.zip release-assets/*.tar.gz release-assets/SHA256SUMS.txt; do
+            if [ -f "$f" ] && [ -f "$f.asc" ]; then
+              gpg --verify "$f.asc" "$f"
+            fi
+          done
+
       - name: Create Release
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         with:
