@@ -11,8 +11,7 @@ on:
     tags:
       - "v*"
 
-permissions:
-  contents: write
+permissions: read-all
 
 env:
   RELEASE_VERSION: ${{ github.event.inputs.version || github.ref_name }}
@@ -23,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Scan tracked source
         shell: pwsh
@@ -34,7 +33,7 @@ jobs:
         run: ./scripts/release-source-archive.ps1 -Version $env:RELEASE_VERSION -OutputDir dist
 
       - name: Upload source archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: source-clean
           path: |
@@ -47,22 +46,22 @@ jobs:
     needs: source-clean
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "20"
           cache: npm
           cache-dependency-path: cmd/legacywallet/frontend/package-lock.json
 
       - name: Install Windows GCC (MSYS2 UCRT64)
-        uses: msys2/setup-msys2@v2
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
         with:
           msystem: UCRT64
           update: true
@@ -92,7 +91,7 @@ jobs:
       # (legacycoind.exe params | grep yespower backend). The package's binary is the same one
       # that passed CI. Skipping verify here avoids a DLL-path lookup quirk on the runner.
       - name: Upload windows artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows-amd64
           path: dist/LegacyWallet-LBTC-mainnet-windows-amd64-${{ env.RELEASE_VERSION }}.zip
@@ -103,10 +102,10 @@ jobs:
     needs: source-clean
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
 
@@ -122,7 +121,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload linux artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: linux-amd64
           path: dist/LegacyCore-LBTC-mainnet-linux-amd64-${{ env.RELEASE_VERSION }}.tar.gz
@@ -134,10 +133,10 @@ jobs:
     continue-on-error: true
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
 
@@ -153,7 +152,7 @@ jobs:
         run: bash scripts/verify-release-assets.sh "./dist/LegacyCore-LBTC-mainnet-linux-arm64-$RELEASE_VERSION.tar.gz"
 
       - name: Upload linux arm64 artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: linux-arm64
           path: dist/LegacyCore-LBTC-mainnet-linux-arm64-${{ env.RELEASE_VERSION }}.tar.gz
@@ -170,15 +169,15 @@ jobs:
         arch: [amd64, arm64]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "20"
           cache: npm
@@ -194,7 +193,7 @@ jobs:
         run: bash scripts/verify-release-assets.sh "./dist/LegacyCore-LBTC-mainnet-macos-${{ matrix.arch }}-$RELEASE_VERSION.tar.gz"
 
       - name: Upload macOS artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: macos-${{ matrix.arch }}
           path: dist/LegacyCore-LBTC-mainnet-macos-${{ matrix.arch }}-${{ env.RELEASE_VERSION }}.tar.gz
@@ -205,10 +204,10 @@ jobs:
     needs: [windows-amd64, linux-amd64]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
 
@@ -221,7 +220,7 @@ jobs:
         run: bash scripts/generate-sha256s.sh release-assets SHA256SUMS.txt
 
       - name: Upload top-level SHA256
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-sha256s
           path: release-assets/SHA256SUMS.txt
@@ -230,9 +229,11 @@ jobs:
     name: Create GitHub Release
     runs-on: ubuntu-latest
     needs: [release-sha256s]
+    permissions:
+      contents: write
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
 
@@ -242,7 +243,7 @@ jobs:
           find dist -type f \( -name "*.zip" -o -name "*.tar.gz" -o -name "SHA256SUMS.txt" \) -exec cp {} release-assets/ \;
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ env.RELEASE_VERSION }}
           name: Legacy Core ${{ env.RELEASE_VERSION }}
