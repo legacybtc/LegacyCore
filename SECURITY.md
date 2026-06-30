@@ -29,7 +29,11 @@ Cookie auth and `rpcuser`/`rpcpassword` auth are implemented. Public unauthentic
 
 ## Reporting Vulnerabilities
 
-Please report security issues privately to project maintainers before public disclosure. Include:
+Please report security issues privately to project maintainers before public disclosure.
+
+**Report via GitHub:** [Submit a security advisory](https://github.com/legacybtc/LegacyCore/security/advisories/new)
+
+Include:
 
 - affected version or commit
 - operating system
