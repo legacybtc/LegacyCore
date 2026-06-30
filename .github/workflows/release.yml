@@ -33,7 +33,7 @@ jobs:
         run: ./scripts/release-source-archive.ps1 -Version $env:RELEASE_VERSION -OutputDir dist
 
       - name: Upload source archive
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: source-clean
           path: |
@@ -91,7 +91,7 @@ jobs:
       # (legacycoind.exe params | grep yespower backend). The package's binary is the same one
       # that passed CI. Skipping verify here avoids a DLL-path lookup quirk on the runner.
       - name: Upload windows artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: windows-amd64
           path: dist/LegacyWallet-LBTC-mainnet-windows-amd64-${{ env.RELEASE_VERSION }}.zip
@@ -121,7 +121,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload linux artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: linux-amd64
           path: dist/LegacyCore-LBTC-mainnet-linux-amd64-${{ env.RELEASE_VERSION }}.tar.gz
@@ -152,7 +152,7 @@ jobs:
         run: bash scripts/verify-release-assets.sh "./dist/LegacyCore-LBTC-mainnet-linux-arm64-$RELEASE_VERSION.tar.gz"
 
       - name: Upload linux arm64 artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: linux-arm64
           path: dist/LegacyCore-LBTC-mainnet-linux-arm64-${{ env.RELEASE_VERSION }}.tar.gz
@@ -193,7 +193,7 @@ jobs:
         run: bash scripts/verify-release-assets.sh "./dist/LegacyCore-LBTC-mainnet-macos-${{ matrix.arch }}-$RELEASE_VERSION.tar.gz"
 
       - name: Upload macOS artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: macos-${{ matrix.arch }}
           path: dist/LegacyCore-LBTC-mainnet-macos-${{ matrix.arch }}-${{ env.RELEASE_VERSION }}.tar.gz
@@ -220,7 +220,7 @@ jobs:
         run: bash scripts/generate-sha256s.sh release-assets SHA256SUMS.txt
 
       - name: Upload top-level SHA256
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-sha256s
           path: release-assets/SHA256SUMS.txt
