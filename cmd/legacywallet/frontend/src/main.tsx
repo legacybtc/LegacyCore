@@ -2499,7 +2499,7 @@ function SettingsPage({ snap, run }: PageProps) {
         </div>
         <div className="row">
           <button onClick={() => addNodes(["legacycoinseed.space:19555", "legacycoinseed2.space:19555"])}>Add Default Seeds</button>
-          <button onClick={() => addNodes(["91.219.63.20:19555", "176.229.49.108:19555", "legacycoinseed.space:19555", "legacycoinseed2.space:19555"])}>Add Known Nodes</button>
+          <button onClick={() => addNodes(["176.229.91.92:19555", "91.219.63.20:19555", "176.229.49.108:19555", "legacycoinseed.space:19555", "legacycoinseed2.space:19555"])}>Add Known Nodes</button>
           <button onClick={() => setNetwork({ mode: "automatic", nodes: [] })}>Reset to Automatic</button>
         </div>
         <div className="nodeList">

@@ -9,7 +9,7 @@ Set-Location $repoRoot
 Write-Host ""
 Write-Host "======================================================"
 Write-Host "  Legacy Core Wallet - Windows Build Script"
-  Write-Host "  Version 1.0.20"
+  Write-Host "  Version 1.0.21"
 Write-Host "======================================================"
 Write-Host ""
 
@@ -67,8 +67,8 @@ function Test-Compiler([string]$gccPath) {
         $tmp = Join-Path $env:TEMP "lc-probe"
         New-Item -ItemType Directory -Force -Path $tmp | Out-Null
         $out = Join-Path $tmp "probe.exe"
-        $proc = Start-Process -FilePath "go.exe" -ArgumentList "build","-trimpath","-o","`"$out`"",".\cmd\legacycoind" -NoNewWindow -Wait -PassThru
-        $ok = ($proc.ExitCode -eq 0) -and (Test-Path $out)
+        & go.exe build -trimpath -o $out .\cmd\legacycoind *> $null
+        $ok = ($LASTEXITCODE -eq 0) -and (Test-Path $out)
         Remove-Item $out, $tmp -Recurse -Force -ErrorAction SilentlyContinue
         return $ok
     } catch { return $false }
@@ -102,12 +102,17 @@ if (-not $gccPath) {
 }
 
 $env:GOTELEMETRY = "off"
-go mod tidy 2>$null
-go mod download 2>$null
+if ($env:LEGACY_SKIP_GO_MOD_DOWNLOAD -eq "1") {
+    Write-Host "  Skipping go mod tidy/download (LEGACY_SKIP_GO_MOD_DOWNLOAD=1)"
+} else {
+    go mod tidy
+    if ($LASTEXITCODE -ne 0) { Write-Host "go mod tidy failed"; exit 1 }
+    go mod download
+    if ($LASTEXITCODE -ne 0) { Write-Host "go mod download failed"; exit 1 }
+}
 if (-not (Test-Compiler $gccPath)) {
-    Write-Host "  Compiler found at $gccPath but probe build failed."
-    Write-Host "  Try reinstalling MSYS2 with UCRT64 GCC."
-    exit 1
+    Write-Host "  WARNING: compiler probe did not complete cleanly; continuing to the real build."
+    Write-Host "  The daemon/CLI build step below will fail if MSYS2 GCC is unusable."
 }
 
 $compilerDir = Split-Path $gccPath -Parent

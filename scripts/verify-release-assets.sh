@@ -14,9 +14,28 @@ SENSITIVE_RE="$(
 check_windows_zip() {
   local archive="$1"
   local listing
-  listing="$(unzip -Z -1 "$archive")"
+  if command -v unzip >/dev/null 2>&1; then
+    listing="$(unzip -Z -1 "$archive")"
+  elif command -v zipinfo >/dev/null 2>&1; then
+    listing="$(zipinfo -1 "$archive")"
+  elif command -v bsdtar >/dev/null 2>&1; then
+    listing="$(bsdtar -tf "$archive")"
+  else
+    echo "[verify-release-assets] need unzip, zipinfo, or bsdtar to inspect zip archives" >&2
+    return 1
+  fi
 
-  for required in LegacyWallet.exe legacycoind.exe legacycoin-cli.exe README_FIRST.txt README_WALLET.txt LICENSE NOTICE SHA256SUMS.txt START_HERE.bat; do
+  local base
+  base="$(basename "$archive")"
+  local required_items=()
+  if [[ "$base" == *source-clean.zip ]]; then
+    required_items=()
+  elif [[ "$base" == LegacyCore-*-windows-*.zip ]]; then
+    required_items=(legacycoind.exe legacycoin-cli.exe README_FIRST.txt LICENSE NOTICE SHA256SUMS.txt legacycoin.conf.example)
+  else
+    required_items=(LegacyWallet.exe legacycoind.exe legacycoin-cli.exe README_FIRST.txt README_WALLET.txt LICENSE NOTICE SHA256SUMS.txt START_HERE.bat)
+  fi
+  for required in "${required_items[@]}"; do
     if ! grep -Fxq "$required" <<<"$listing"; then
       echo "[verify-release-assets] missing $required in $archive" >&2
       return 1

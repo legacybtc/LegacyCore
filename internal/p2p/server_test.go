@@ -156,6 +156,35 @@ func TestKnownAddressCacheCapAndPublicFiltering(t *testing.T) {
 	}
 }
 
+func TestInboundHandshakeDoesNotCacheEphemeralPeerAddress(t *testing.T) {
+	s := New(chaincfg.MainNet, nil, nil, log.New(io.Discard, "", 0))
+
+	s.markKnownPeerConnected("203.0.113.9:36420", false)
+	if got := s.KnownAddresses(); len(got) != 0 {
+		t.Fatalf("inbound ephemeral address was cached: %v", got)
+	}
+
+	const known = "203.0.113.9:19555"
+	if !s.rememberPeerAddress(known, "seed") {
+		t.Fatalf("expected %s to be remembered", known)
+	}
+	s.markKnownPeerConnected(known, false)
+
+	s.knownMu.Lock()
+	info, ok := s.knownAddresses[known]
+	_, ephemeral := s.knownAddresses["203.0.113.9:36420"]
+	s.knownMu.Unlock()
+	if ephemeral {
+		t.Fatal("inbound ephemeral address was cached after known-peer update")
+	}
+	if !ok {
+		t.Fatalf("known peer %s disappeared", known)
+	}
+	if info.LastDirection != "inbound" || info.Successes != 1 || info.LastConnected.IsZero() {
+		t.Fatalf("known inbound peer metadata not updated: %+v", info)
+	}
+}
+
 func TestPostHandshakeIdlePeerIsDisconnected(t *testing.T) {
 	oldHandshake := peerHandshakeTimeout
 	oldIdle := peerIdleTimeout
@@ -278,6 +307,13 @@ func TestRequestUnknownBlockInvSendsGetData(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("requestUnknownBlocks did not return")
 	}
+
+	s.getdataMu.Lock()
+	_, tracked := s.getdataReqs[unknown.String()]
+	s.getdataMu.Unlock()
+	if !tracked {
+		t.Fatalf("unknown INV block request was not tracked for timeout recovery")
+	}
 }
 
 func TestRequestMissingParentSendsGetDataForOrphanPrev(t *testing.T) {
@@ -332,6 +368,272 @@ func TestRequestMissingParentSendsGetDataForOrphanPrev(t *testing.T) {
 	_ = clientConn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
 	if _, err := wire.ReadMessage(clientConn, chaincfg.MainNet.MessageStart); err == nil {
 		t.Fatal("duplicate missing-parent request was re-sent within TTL")
+	}
+}
+
+func TestDuplicateOrphanResultRetriesMissingParentAfterTTL(t *testing.T) {
+	chain, err := blockchain.New(chaincfg.MainNet, p2pTestHasher{}, storage.NewFileStore(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New(chaincfg.MainNet, chain, nil, log.New(io.Discard, "", 0))
+
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	p := &peer{conn: serverConn, remote: "pipe-duplicate-orphan", lastSeen: time.Now(), lastPong: time.Now()}
+
+	parent := chainhash.DoubleHashB([]byte("missing parent of a duplicate orphan"))
+	parentHash := parent.String()
+	s.missingParentMu.Lock()
+	s.missingParentSeen = map[string]time.Time{
+		parentHash: time.Now().Add(-missingParentTTL - time.Second),
+	}
+	s.missingParentMu.Unlock()
+
+	result := blockchain.BlockProcessResult{
+		Hash:        chainhash.DoubleHashB([]byte("duplicate orphan")).String(),
+		PrevHash:    parentHash,
+		Orphan:      true,
+		ParentKnown: false,
+		Status:      blockchain.BlockStatusDuplicate,
+		Reason:      "orphan already stored",
+	}
+
+	done := make(chan bool, 1)
+	go func() {
+		done <- s.requestMissingParentForResult(p, result)
+	}()
+
+	_ = clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	msg, err := wire.ReadMessage(clientConn, chaincfg.MainNet.MessageStart)
+	if err != nil {
+		t.Fatalf("read getdata: %v", err)
+	}
+	if msg.Command != wire.CommandGetData {
+		t.Fatalf("command=%s want %s", msg.Command, wire.CommandGetData)
+	}
+	inv, err := wire.ReadInvPayload(bytes.NewReader(msg.Payload))
+	if err != nil {
+		t.Fatalf("parse getdata payload: %v", err)
+	}
+	if len(inv) != 1 || inv[0].Type != wire.InvTypeBlock || inv[0].Hash != parent {
+		t.Fatalf("getdata inv=%+v want block %s", inv, parentHash)
+	}
+
+	select {
+	case requested := <-done:
+		if !requested {
+			t.Fatal("duplicate orphan did not refresh missing-parent request after TTL")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("requestMissingParentForResult did not return")
+	}
+}
+
+type legacyAliasTestHasher struct{}
+
+func (legacyAliasTestHasher) HashHeader(header wire.BlockHeader) (chainhash.Hash, error) {
+	var out chainhash.Hash
+	out[0] = 0x01
+	out[1] = byte(header.Nonce)
+	out[2] = byte(header.Nonce >> 8)
+	out[3] = byte(header.Nonce >> 16)
+	out[4] = byte(header.Nonce >> 24)
+	return out, nil
+}
+
+func TestServeInventoryAcceptsLegacyWireHash(t *testing.T) {
+	params := chaincfg.MainNet
+	genesisBlock, err := genesis.NewBlock(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := legacyAliasTestHasher{}.HashHeader(genesisBlock.Header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params.GenesisHash = canonical.String()
+	chain, err := blockchain.New(params, legacyAliasTestHasher{}, storage.NewFileStore(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.EnsureGenesis(); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := chain.LegacyHeaderHash(genesisBlock.Header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy == canonical {
+		t.Fatal("test setup expected legacy and canonical hashes to differ")
+	}
+
+	s := New(params, chain, nil, log.New(io.Discard, "", 0))
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	p := &peer{conn: serverConn, remote: "legacy-wire-peer", lastSeen: time.Now(), lastPong: time.Now()}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- s.serveInventory(p, []wire.InvVect{{Type: wire.InvTypeBlock, Hash: legacy}})
+	}()
+
+	_ = clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	msg, err := wire.ReadMessage(clientConn, params.MessageStart)
+	if err != nil {
+		t.Fatalf("read served block: %v", err)
+	}
+	if msg.Command != wire.CommandBlock {
+		t.Fatalf("command=%s want %s", msg.Command, wire.CommandBlock)
+	}
+	served, err := wire.ReadBlock(bytes.NewReader(msg.Payload))
+	if err != nil {
+		t.Fatalf("parse served block: %v", err)
+	}
+	servedHash, err := chain.BlockHash(served)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if servedHash != canonical {
+		t.Fatalf("served hash=%s want %s", servedHash, canonical)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("serveInventory: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("serveInventory did not return")
+	}
+}
+
+func TestClearGetdataForBlockClearsCanonicalAndLegacyHashes(t *testing.T) {
+	params := chaincfg.MainNet
+	genesisBlock, err := genesis.NewBlock(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := legacyAliasTestHasher{}.HashHeader(genesisBlock.Header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params.GenesisHash = canonical.String()
+	chain, err := blockchain.New(params, legacyAliasTestHasher{}, storage.NewFileStore(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.EnsureGenesis(); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := chain.LegacyHeaderHash(genesisBlock.Header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New(params, chain, nil, log.New(io.Discard, "", 0))
+	s.recordGetdataReq(canonical.String(), "peer-a")
+	s.recordGetdataReq(legacy.String(), "peer-a")
+
+	s.clearGetdataForBlock(genesisBlock)
+
+	s.getdataMu.Lock()
+	remaining := len(s.getdataReqs)
+	s.getdataMu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("remaining getdata requests=%d want 0", remaining)
+	}
+}
+
+func TestRequestUnknownBlocksTreatsKnownLegacyWireHashAsKnown(t *testing.T) {
+	params := chaincfg.MainNet
+	genesisBlock, err := genesis.NewBlock(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := legacyAliasTestHasher{}.HashHeader(genesisBlock.Header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	params.GenesisHash = canonical.String()
+	chain, err := blockchain.New(params, legacyAliasTestHasher{}, storage.NewFileStore(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.EnsureGenesis(); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := chain.LegacyHeaderHash(genesisBlock.Header)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(params, chain, nil, log.New(io.Discard, "", 0))
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	p := &peer{conn: serverConn, remote: "legacy-inv-peer", lastSeen: time.Now(), lastPong: time.Now()}
+
+	if err := s.requestUnknownBlocks(p, []wire.InvVect{{Type: wire.InvTypeBlock, Hash: legacy}}); err != nil {
+		t.Fatalf("requestUnknownBlocks: %v", err)
+	}
+	s.getdataMu.Lock()
+	remaining := len(s.getdataReqs)
+	s.getdataMu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("known legacy hash was tracked as unknown; requests=%d", remaining)
+	}
+	_ = clientConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	if msg, err := wire.ReadMessage(clientConn, params.MessageStart); err == nil {
+		t.Fatalf("unexpected message for known legacy INV: %s", msg.Command)
+	}
+}
+
+func TestRequestBlockHashFromCandidatesSendsExactGetData(t *testing.T) {
+	s, params, cleanup := newP2PTestServerWithGenesis(t)
+	defer cleanup()
+
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	p := &peer{
+		conn:             serverConn,
+		remote:           "127.0.0.1:19555",
+		height:           3,
+		lastSeen:         time.Now(),
+		lastPong:         time.Now(),
+		lastHeightUpdate: time.Now(),
+	}
+	s.registerPeer(p)
+
+	hash := chainhash.DoubleHashB([]byte("timed out body"))
+	done := make(chan int, 1)
+	go func() {
+		done <- s.requestBlockHashFromCandidates(hash.String(), 1)
+	}()
+
+	_ = clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	msg, err := wire.ReadMessage(clientConn, params.MessageStart)
+	if err != nil {
+		t.Fatalf("read getdata: %v", err)
+	}
+	if msg.Command != wire.CommandGetData {
+		t.Fatalf("command=%s want %s", msg.Command, wire.CommandGetData)
+	}
+	inv, err := wire.ReadInvPayload(bytes.NewReader(msg.Payload))
+	if err != nil {
+		t.Fatalf("parse getdata payload: %v", err)
+	}
+	if len(inv) != 1 || inv[0].Type != wire.InvTypeBlock || inv[0].Hash != hash {
+		t.Fatalf("getdata inv=%+v want block %s", inv, hash.String())
+	}
+	select {
+	case requested := <-done:
+		if requested != 1 {
+			t.Fatalf("requested=%d want 1", requested)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("requestBlockHashFromCandidates did not return")
 	}
 }
 

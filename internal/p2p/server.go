@@ -27,7 +27,7 @@ import (
 const (
 	protocolVersion       int32  = 70015
 	nodeNetwork           uint64 = 1
-userAgent = "/Legacy-GO:1.0.20/"
+	userAgent                    = "/Legacy-GO:1.0.21/"
 	maxPeers                     = 125
 	maxOutboundPeers             = 16
 	maxGetDataItems              = 1000
@@ -95,9 +95,9 @@ const (
 )
 
 type getdataReq struct {
-	hash       string
-	peer       string
-	requested  time.Time
+	hash      string
+	peer      string
+	requested time.Time
 }
 
 type peer struct {
@@ -252,9 +252,9 @@ type Server struct {
 	// getdataTimeout tracks blocks we have requested via getdata but not yet
 	// received. The watchdog uses this to detect unresponsive peers and
 	// re-request from alternative peers instead of stalling forever.
-	getdataMu     sync.Mutex
-	getdataReqs   map[string]*getdataReq // block hash → request info
-	wg            sync.WaitGroup
+	getdataMu   sync.Mutex
+	getdataReqs map[string]*getdataReq // block hash → request info
+	wg          sync.WaitGroup
 }
 
 func New(params chaincfg.Params, chain *blockchain.Chain, pool *mempool.Pool, logger *log.Logger) *Server {
@@ -406,6 +406,18 @@ func (s *Server) clearGetdataReq(hash string) {
 	s.getdataMu.Unlock()
 }
 
+func (s *Server) clearGetdataForBlock(block *wire.MsgBlock) {
+	if block == nil || s.chain == nil {
+		return
+	}
+	if blockHash, err := s.chain.BlockHash(block); err == nil {
+		s.clearGetdataReq(blockHash.String())
+	}
+	if legacyHash, err := s.chain.LegacyHeaderHash(block.Header); err == nil {
+		s.clearGetdataReq(legacyHash.String())
+	}
+}
+
 // sweepGetdataTimeouts checks all outstanding getdata requests and returns
 // hashes that have exceeded getdataTimeout. Callers should increment
 // blockReqTimeouts and attempt re-request from alternative peers.
@@ -421,6 +433,47 @@ func (s *Server) sweepGetdataTimeouts() []string {
 		}
 	}
 	return timedOut
+}
+
+func blockGetdataPayload(hash string) ([]byte, bool) {
+	h, err := chainhash.FromString(hash)
+	if err != nil {
+		return nil, false
+	}
+	payload, err := wire.InvPayload([]wire.InvVect{{Type: wire.InvTypeBlock, Hash: h}})
+	if err != nil {
+		return nil, false
+	}
+	return payload, true
+}
+
+func (s *Server) requestBlockHashFromCandidates(hash string, limit int) int {
+	if limit <= 0 {
+		limit = maxMissingParentPeers
+	}
+	payload, ok := blockGetdataPayload(hash)
+	if !ok {
+		s.log.Printf("p2p getdata timeout hash %s is invalid; cannot re-request", hash)
+		return 0
+	}
+	requested := 0
+	for _, p := range s.syncCandidates() {
+		if requested >= limit {
+			break
+		}
+		if p == nil {
+			continue
+		}
+		if err := s.writePeerMessage(p, wire.CommandGetData, payload); err != nil {
+			continue
+		}
+		requested++
+		p.markBlocksRequested(1)
+		s.addBlocksRequested(1)
+		s.recordGetdataReq(hash, p.remote)
+		s.log.Printf("p2p re-requested timed-out block %s from %s", hash, p.remote)
+	}
+	return requested
 }
 
 func splitHost(addr string) string {
@@ -613,9 +666,15 @@ func (s *Server) markKnownPeerConnected(addr string, outbound bool) {
 	s.knownMu.Lock()
 	defer s.knownMu.Unlock()
 	if s.knownAddresses == nil {
+		if !outbound {
+			return
+		}
 		s.knownAddresses = make(map[string]knownPeerAddress)
 	}
-	info := s.knownAddresses[normalized]
+	info, known := s.knownAddresses[normalized]
+	if !known && !outbound {
+		return
+	}
 	if info.Addr == "" {
 		info.Addr = normalized
 		info.Source = direction + "-handshake"
@@ -1236,7 +1295,7 @@ func (s *Server) syncDiagnostic(localHeight, bestPeerHeight int32, behind bool, 
 	case hdrBatches > 0 && hdrRejected == hdrBatches && blocksReqd == 0:
 		return fmt.Sprintf("all %d header batch(es) REJECTED by ValidateHeaderSequence; no getdata sent. Likely a consensus/protocol mismatch with the peer (difficulty, bits, pow, or parent linkage). Check daemon log for 'header batch ... REJECTED'.", hdrBatches)
 	case blocksReqd > 0 && blockMsgs == 0:
-		return fmt.Sprintf("requested %d block bodies via getdata but received 0 block messages; the peer is silently NOT serving blocks (header_batches_recv=%d, rejected=%d). If even the %d blocks the peer itself announced in inv are being requested with the peer's own hashes and still not served, the peer node itself is broken - it must be upgraded to 1.0.9 (which has the orphan fix and proper block serving). 1.0.2 seed nodes must be retired. Run: legacycoin-cli getpeerinfo and check subver/chain_id to confirm the peer version.", blocksReqd, hdrBatches, hdrRejected, blockInvs)
+		return fmt.Sprintf("requested %d block bodies via getdata but received 0 block messages; the peer is silently NOT serving blocks (header_batches_recv=%d, rejected=%d). If even the %d blocks the peer itself announced in inv are being requested with the peer's own hashes and still not served, the peer node itself is broken - it must be upgraded to 1.0.21 (sync/orphan recovery and legacy wire-hash compatibility). 1.0.2 seed nodes must be retired. Run: legacycoin-cli getpeerinfo and check subver/chain_id to confirm the peer version.", blocksReqd, hdrBatches, hdrRejected, blockInvs)
 	case blockMsgs > 0 && lastBlockHash == "":
 		return fmt.Sprintf("received %d block message(s) but none were processed as connected; all orphaned or rejected. Check 'Block processed | status=orphan' lines and last_block_reason.", blockMsgs)
 	case missingReqs > 0:
@@ -1806,12 +1865,14 @@ func (s *Server) watchdogStep(ctx context.Context) {
 	}
 	// Sweep timed-out getdata requests and re-request from alternative peers
 	timedOut := s.sweepGetdataTimeouts()
+	rerequested := 0
 	for _, hash := range timedOut {
 		s.addBlockReqTimeout()
 		s.log.Printf("p2p getdata timeout for block %s; will re-request", hash)
+		rerequested += s.requestBlockHashFromCandidates(hash, maxMissingParentPeers)
 	}
 	if len(timedOut) > 0 {
-		s.log.Printf("p2p getdata timeout: %d block(s) timed out, forcing sync request", len(timedOut))
+		s.log.Printf("p2p getdata timeout: %d block(s) timed out, re-requested from %d peer(s), forcing sync request", len(timedOut), rerequested)
 	}
 
 	noUsefulChainData := candidateNoUsefulData &&
@@ -2494,10 +2555,9 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 				s.log.Printf("p2p parse block from %s: %v", conn.RemoteAddr(), err)
 				return
 			}
-			// Clear any outstanding getdata tracking for this block hash
-			if blockHash, hashErr := s.chain.BlockHash(block); hashErr == nil {
-				s.clearGetdataReq(blockHash.String())
-			}
+			// Clear outstanding getdata tracking for both canonical and
+			// legacy wire hashes. Mixed-version peers can serve either form.
+			s.clearGetdataForBlock(block)
 			result, err := s.chain.ProcessBlockWithResult(block)
 			if err != nil {
 				p.setLastBlockReject(err.Error())
@@ -2520,16 +2580,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 				s.log.Printf("p2p processed block from %s status=%s hash=%s height=%d best_changed=%v reason=%s", conn.RemoteAddr(), result.Status, result.Hash, result.CalculatedHeight, result.BestChanged, result.Reason)
 			}
 			if !result.Connected || !result.BestChanged {
-				// The block's parent is unknown: store it as an orphan and
-				// proactively request the missing parent by hash. Without
-				// this the node only ever asks for blocks "after its tip"
-				// (via getheaders/getblocks), so an orphan whose parent is
-				// not on the active chain leaves sync stuck forever.
-				if result.Status == blockchain.BlockStatusOrphan && !result.ParentKnown && result.PrevHash != "" {
-					if payload, ok := s.tryClaimMissingParent(result.PrevHash); ok {
-						s.sendMissingParentRequest(p, result.PrevHash, payload)
-					}
-				}
+				s.requestMissingParentForResult(p, result)
 				continue
 			}
 			s.noteBlockConnected()
@@ -2797,7 +2848,7 @@ func (p *peer) setLastBlockResult(result blockchain.BlockProcessResult) {
 	if result.Status == blockchain.BlockStatusSideChain && result.OldBestHeight < p.height {
 		p.lastSyncError = fmt.Sprintf("peer advertised height %d but sent non-connecting side-chain block %s at height %d", p.height, result.Hash, result.CalculatedHeight)
 	}
-	if result.Status == blockchain.BlockStatusOrphan && result.OldBestHeight < p.height {
+	if result.Orphan && !result.ParentKnown && result.OldBestHeight < p.height {
 		p.lastSyncError = fmt.Sprintf("peer advertised height %d but sent block %s with unknown parent %s after local tip %s", p.height, result.Hash, result.PrevHash, result.OldBestHash)
 	}
 	if result.Connected && result.BestChanged {
@@ -3192,7 +3243,7 @@ func (s *Server) requestUnknownBlocks(p *peer, inv []wire.InvVect) error {
 	for _, v := range inv {
 		switch v.Type {
 		case wire.InvTypeBlock:
-			if s.chain.HasBlock(v.Hash.String()) {
+			if s.chain.HasBlockByWireHash(v.Hash.String()) {
 				s.log.Printf("p2p received inv block %s from %s: already known", v.Hash.String(), p.remote)
 				continue
 			}
@@ -3234,6 +3285,7 @@ func (s *Server) requestUnknownBlocks(p *peer, inv []wire.InvVect) error {
 	for _, item := range want {
 		if item.Type == wire.InvTypeBlock {
 			requestedBlocks++
+			s.recordGetdataReq(item.Hash.String(), p.remote)
 		}
 	}
 	p.markBlocksRequested(requestedBlocks)
@@ -3293,6 +3345,7 @@ func (s *Server) sendMissingParentRequest(p *peer, parentHash string, payload []
 			atomic.AddInt64(&s.missingParentReqs, 1)
 			p.markBlocksRequested(1)
 			s.addBlocksRequested(1)
+			s.recordGetdataReq(parentHash, p.remote)
 			if s.pretty {
 				s.log.Printf("рџ“¦ Orphan parent %s unknown; requested getdata from %s", parentHash, s.peerLabel(p))
 			} else {
@@ -3309,6 +3362,22 @@ func (s *Server) sendMissingParentRequest(p *peer, parentHash string, payload []
 		defer s.wg.Done()
 		s.requestMissingParentFromOthers(parentHash, payload, p)
 	}()
+}
+
+func (s *Server) requestMissingParentForResult(p *peer, result blockchain.BlockProcessResult) bool {
+	// The block's parent is unknown: proactively request that exact parent
+	// by hash. This must also happen for duplicate orphan blocks; otherwise
+	// a peer repeatedly serving an already-stored orphan can leave sync stuck
+	// without refreshing the missing-parent request after the dedupe window.
+	if !result.Orphan || result.ParentKnown || result.PrevHash == "" {
+		return false
+	}
+	payload, ok := s.tryClaimMissingParent(result.PrevHash)
+	if !ok {
+		return false
+	}
+	s.sendMissingParentRequest(p, result.PrevHash, payload)
+	return true
 }
 
 // requestMissingParentFromOthers asks up to maxMissingParentPeers ahead peers
@@ -3346,6 +3415,7 @@ func (s *Server) requestMissingParentFromOthers(parentHash string, payload []byt
 		atomic.AddInt64(&s.missingParentReqs, 1)
 		other.markBlocksRequested(1)
 		s.addBlocksRequested(1)
+		s.recordGetdataReq(parentHash, other.remote)
 		s.log.Printf("p2p orphan block parent %s unknown; also requested getdata from %s", parentHash, other.remote)
 	}
 }
@@ -3357,7 +3427,7 @@ func (s *Server) serveInventory(p *peer, inv []wire.InvVect) error {
 		switch v.Type {
 		case wire.InvTypeBlock:
 			s.log.Printf("p2p received getdata block %s from %s", v.Hash.String(), p.remote)
-			block, _, err := s.chain.BlockByHash(v.Hash.String())
+			block, _, err := s.chain.BlockByWireHash(v.Hash.String())
 			if err != nil {
 				s.log.Printf("p2p getdata block %s from %s: not found", v.Hash.String(), p.remote)
 				continue
@@ -3492,6 +3562,10 @@ func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error 
 		tipHash = tip.Hash
 	}
 	firstPrev := headers[0].PrevBlock.String()
+	startHeight := tipHeight
+	if h, ok := s.chain.ActiveHeight(firstPrev); ok {
+		startHeight = h
+	}
 	s.log.Printf("p2p received %d headers from %s (first_prev=%s, our_tip=%d:%s)", len(headers), p.remote, firstPrev, tipHeight, tipHash)
 	hashes, err := s.chain.ValidateHeaderSequence(headers)
 	if err != nil {
@@ -3508,10 +3582,10 @@ func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error 
 		}
 		return err
 	}
-	if tipHeight >= 0 {
+	if startHeight >= 0 {
 		// Cap at int32 max to satisfy gosec G115 (len is bounded by
 		// MaxHeadersPerMessage=2000 so this never overflows in practice).
-		advertised := tipHeight + int32(len(hashes))
+		advertised := startHeight + int32(len(hashes))
 		if advertised < 0 {
 			advertised = 0
 		}

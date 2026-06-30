@@ -1,12 +1,12 @@
-# Legacy Core v1.0.20 — Full Security Audit & Hardening
+# Legacy Core v1.0.21 — Full Security Audit & Hardening
 
 **Date:** 2026-06-30
-**Version:** v1.0.20
+**Version:** v1.0.21
 **Coin:** Legacy Coin (LBTC) — Yespower PoW
 **Lines of Go:** ~33,000 across 60+ files
 **Tests:** All packages pass (`go test ./...`), `go vet` clean, `go build` clean, `gofmt` clean
 
-> **v1.0.20 is a wallet display + P2P hardening release.** Wallet About dialog now reads core_version dynamically from the Go backend (was hardcoded to v1.0.8). P2P getdata timeout tracking added — peers that don't respond within 2 minutes are banned. All validated headers are now batched (removed 2000-header cap). maxGetDataItems raised 256→1000 for higher dual-hash throughput (500 blocks per batch vs 128). All 19 v1.0.12 findings remain fixed and verified. P2P sync confirmed working at ~16 blocks/sec. CI pipeline updated with TypeScript 6 compatibility fixes and GPG-signed release artifacts. All version references synchronized to v1.0.20.
+> **v1.0.21 is a P2P sync recovery release.** Duplicate orphan blocks now refresh missing-parent requests after the dedupe window, getdata timeouts re-request exact block hashes from alternate peers, legacy wire-header hashes are accepted for mixed-version peers, active-chain locators include ancestors, and inbound ephemeral ports are no longer cached as reusable seed peers. All previous hardening remains in place and all version references are synchronized to v1.0.21.
 
 ---
 
@@ -348,7 +348,7 @@ Good size limits on all message types, per-peer rate limiting (250/10s), global 
 - [x] **BIP39 mnemonic seeds (v1.0.9)** — wallet generates/accepts mnemonic phrases
 - [x] **Block explorer (v1.0.9)** — standalone binary with full search, SSE events, JSON API
 - [x] **Exchange/pool docs (v1.0.9)** — integration guides, API reference
-- [ ] **Upgrade seed nodes to v1.0.9** — currently on 1.0.6, block sync stalls until upgraded
+- [ ] **Upgrade seed nodes to v1.0.21** — old seed nodes can keep clients stuck on duplicate orphan/missing-parent sync loops
 - [ ] **BIP44 HD derivation** — design-level, wallet is intentionally custom. Exchanges should use their own wallet backend
 
 ---
@@ -361,7 +361,7 @@ Good size limits on all message types, per-peer rate limiting (250/10s), global 
 - [x] **Built-in Stratum server (v1.0.9)** — `-stratum` flag enables embedded pool server
 - [x] **Stratum docs (v1.0.9)** — `docs/pool-operator-guide.md`
 - [ ] Enable txindex=1 — config option, recommend for pool nodes
-- [ ] Upgrade seed nodes to v1.0.9 — currently block sync stalls on 1.0.6
+- [ ] Upgrade seed nodes to v1.0.21 — required for current sync/orphan recovery behavior
 
 **Not-blocking but recommended:**
 - [ ] Implement `sendheaders` (BIP 130) for faster block propagation
@@ -430,7 +430,7 @@ An independent audit conducted on 2026-06-30 found 19 issues across all severity
 
 ---
 
-## 16. v1.0.13–v1.0.20 Changes (June 2026)
+## 16. v1.0.13–v1.0.21 Changes (June 2026)
 
 | # | Area | Change | Impact |
 |---|---|---|---|
@@ -440,16 +440,17 @@ An independent audit conducted on 2026-06-30 found 19 issues across all severity
 | V4 | **P2P** | Batch ALL validated headers (removed 2000-header cap in `handleGetHeaders`) | Faster initial sync — no artificial limit on header batch |
 | V5 | **P2P** | `maxGetDataItems` raised 256→1000 (500 blocks dual-hash) | Higher throughput during sync (~4→16 blocks/sec) |
 | V6 | **Build** | `lifecycleBuildMarker` updated v1.0.9→v1.0.12 | Lifecycle metadata now reflects actual version |
-| V7 | **Build** | `CoreVersion`/`WalletVersion` bumped 1.0.13→1.0.20; user-agent `/Legacy-GO:1.0.20/` | Consistent version identity across all components |
+| V7 | **Build** | `CoreVersion`/`WalletVersion` bumped 1.0.13→1.0.21; user-agent `/Legacy-GO:1.0.21/` | Consistent version identity across all components |
 | V8 | **Docs** | AUDIT.md, SECURITY.md, README.md, scripts — all stale version refs updated | Documentation matches release |
+| V9 | **P2P Sync** | Duplicate-orphan parent refresh, exact getdata timeout retry, legacy wire-hash lookup, active ancestor locators, inbound ephemeral peer filtering | Fixes the observed stuck sync loop and reduces bad high-port peer dials |
 
 ## Final Verdict
 
-**PASS — v1.0.20 is ready for release.**
+**PASS — v1.0.21 is ready for release.**
 
-The codebase is stable, all tests pass (`go test ./...` exit 0), all builds succeed on Windows/Linux/macOS, `go vet` clean, `gofmt` clean, and no regressions were introduced. The independent audit verified all 19 findings are fixed in v1.0.12. v1.0.13–v1.0.20 adds P2P getdata timeout tracking (2-min ban), unlimited header batching (was capped at 2000), maxGetDataItems raised 256→1000, TypeScript 6 compatibility fixes, GPG-signed release artifacts, and full version consistency across all components. P2P sync confirmed working: node syncs from genesis to tip at ~16 blocks/sec.
+The codebase is stable, all tests pass (`go test ./...` exit 0), all builds succeed on Windows/Linux/macOS, `go vet` clean, `gofmt` clean, and no regressions were introduced. The independent audit verified all 19 findings are fixed in v1.0.12. v1.0.21 adds duplicate-orphan missing-parent recovery, exact getdata timeout retry, mixed-version wire-hash compatibility, active-chain locator hardening, inbound ephemeral peer filtering, TypeScript 6 compatibility fixes, GPG-signed release artifacts, and full version consistency across all components.
 
 **Recommended actions for next release:**
-1. Upgrade seed nodes from v1.0.6 to v1.0.12+ (blocking for mainnet sync)
+1. Upgrade seed nodes to v1.0.21 (required for the current sync/orphan recovery fixes)
 2. Arrange external audit (Certik/Hacken) for CEX listing
 3. Submit to OpenSSF CII Best Practices badge for passing-level certification

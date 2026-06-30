@@ -73,7 +73,7 @@ type NodeTestResult struct {
 	Message string `json:"message"`
 }
 
-const lifecycleBuildMarker = "v1.0.20"
+const lifecycleBuildMarker = "v1.0.21"
 
 func NewApp() *App {
 	s := defaultSettings()
@@ -480,7 +480,7 @@ func (a *App) GetNodeConfig() map[string]any {
 		"mode":          a.settings.Network.Mode,
 		"nodes":         a.settings.Network.Nodes,
 		"default_seeds": []string{"legacycoinseed.space:19555", "legacycoinseed2.space:19555"},
-		"known_nodes":   []string{"91.219.63.20:19555", "176.229.49.108:19555", "legacycoinseed.space:19555", "legacycoinseed2.space:19555"},
+		"known_nodes":   []string{"176.229.91.92:19555", "91.219.63.20:19555", "176.229.49.108:19555", "legacycoinseed.space:19555", "legacycoinseed2.space:19555"},
 		"p2p_port":      19555,
 		"chain_id":      "legacy-mainnet-1.0.0-rc2-5b4c78e4",
 	}

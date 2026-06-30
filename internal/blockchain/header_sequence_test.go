@@ -136,3 +136,119 @@ func TestHeadersAfterGenesisLocatorReturnsPostGenesisHeaders(t *testing.T) {
 		t.Fatalf("header did not connect to genesis locator")
 	}
 }
+
+func TestLocatorIncludesActiveAncestors(t *testing.T) {
+	chain, err := blockchain.New(chaincfg.MainNet, fakeHasher{}, storage.NewFileStore(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var zeroHash chainhash.Hash
+	genesisLike, err := buildBlock(zeroHash, 0, 100, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.ProcessBlock(genesisLike); err != nil {
+		t.Fatal(err)
+	}
+	genesisHash, _ := fakeHasher{}.HashHeader(genesisLike.Header)
+	prev := genesisHash
+	for height := int32(1); height <= 12; height++ {
+		block, err := buildBlock(prev, height, uint32(100+height), false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := chain.ProcessBlock(block); err != nil {
+			t.Fatal(err)
+		}
+		prev, _ = fakeHasher{}.HashHeader(block.Header)
+	}
+
+	locator := chain.Locator()
+	if len(locator) < 3 {
+		t.Fatalf("locator len=%d want multiple active ancestors", len(locator))
+	}
+	if locator[0] != prev {
+		t.Fatalf("locator tip=%s want %s", locator[0], prev)
+	}
+	foundGenesis := false
+	for _, hash := range locator {
+		if hash == genesisHash {
+			foundGenesis = true
+			break
+		}
+	}
+	if !foundGenesis {
+		t.Fatalf("locator did not include genesis ancestor: %v", locator)
+	}
+}
+
+func TestValidateHeaderSequenceAcceptsActiveAncestor(t *testing.T) {
+	chain, err := blockchain.New(chaincfg.MainNet, fakeHasher{}, storage.NewFileStore(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var zeroHash chainhash.Hash
+	genesisLike, err := buildBlock(zeroHash, 0, 200, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.ProcessBlock(genesisLike); err != nil {
+		t.Fatal(err)
+	}
+	genesisHash, _ := fakeHasher{}.HashHeader(genesisLike.Header)
+	main1, err := buildBlock(genesisHash, 1, 201, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.ProcessBlock(main1); err != nil {
+		t.Fatal(err)
+	}
+	main1Hash, _ := fakeHasher{}.HashHeader(main1.Header)
+	main2, err := buildBlock(main1Hash, 2, 202, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.ProcessBlock(main2); err != nil {
+		t.Fatal(err)
+	}
+
+	side1, err := buildBlock(genesisHash, 1, 211, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, _ := fakeHasher{}.HashHeader(side1.Header)
+	got, err := chain.ValidateHeaderSequence([]wire.BlockHeader{side1.Header})
+	if err != nil {
+		t.Fatalf("ValidateHeaderSequence from active ancestor: %v", err)
+	}
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("unexpected hashes: got %v want %s", got, want.String())
+	}
+}
+
+func TestBlockByWireHashAcceptsLegacyHeaderHash(t *testing.T) {
+	chain, err := blockchain.New(chaincfg.MainNet, fakeHasher{}, storage.NewFileStore(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var zeroHash chainhash.Hash
+	genesisLike, err := buildBlock(zeroHash, 0, 300, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chain.ProcessBlock(genesisLike); err != nil {
+		t.Fatal(err)
+	}
+	canonical, _ := fakeHasher{}.HashHeader(genesisLike.Header)
+	legacy, err := chain.LegacyHeaderHash(genesisLike.Header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, idx, err := chain.BlockByWireHash(legacy.String())
+	if err != nil {
+		t.Fatalf("BlockByWireHash legacy lookup: %v", err)
+	}
+	if block == nil || idx == nil || idx.Hash != canonical.String() {
+		t.Fatalf("legacy lookup returned block=%v idx=%+v want canonical %s", block != nil, idx, canonical)
+	}
+}

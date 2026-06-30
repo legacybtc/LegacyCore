@@ -26,7 +26,7 @@ var MainNet = Params{
 	DefaultPort:      19555,
 	RPCPort:          19556,
 	DNSSeeds:         []string{"legacycoinseed.space", "legacycoinseed2.space"},
-	FixedSeeds:       []string{"77.127.37.157:19555", "199.19.72.89:19555", "91.219.63.20:19555"},
+	FixedSeeds:       []string{"176.229.91.92:19555", "77.127.37.157:19555", "199.19.72.89:19555", "91.219.63.20:19555"},
 	YespowerPers:     "LegacyCoinPoW",
 	GenesisTimestamp: "onecpuonevote Legacy Coin Public Mainnet 20/May/2026",
 	GenesisTime:      1779235200,

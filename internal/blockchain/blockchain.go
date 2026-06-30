@@ -154,6 +154,7 @@ type Chain struct {
 	sideBlocks   map[string]*sideBlockNode
 	workByHash   map[string]*big.Int
 	parentByHash map[string]string
+	legacyByHash map[string]string
 }
 
 type sideBlockNode struct {
@@ -244,6 +245,7 @@ func New(params chaincfg.Params, hasher pow.Hasher, store Store) (*Chain, error)
 		sideBlocks:   make(map[string]*sideBlockNode),
 		workByHash:   make(map[string]*big.Int),
 		parentByHash: make(map[string]string),
+		legacyByHash: make(map[string]string),
 	}
 	tip, err := store.LoadTip()
 	if err != nil {
@@ -294,6 +296,7 @@ func parseChainwork(v string) (*big.Int, bool) {
 func (c *Chain) rebuildActiveChainworkLocked() error {
 	c.workByHash = make(map[string]*big.Int)
 	c.parentByHash = make(map[string]string)
+	c.legacyByHash = make(map[string]string)
 	if c.tip == nil || c.tip.Hash == "" || c.tip.Height < 0 {
 		return nil
 	}
@@ -306,11 +309,12 @@ func (c *Chain) rebuildActiveChainworkLocked() error {
 			continue
 		}
 		parent := idx.Parent
+		block, _, err := c.store.LoadBlock(idx.Hash)
+		if err != nil {
+			return err
+		}
+		c.rememberLegacyHashLocked(block, idx.Hash)
 		if parent == "" && idx.Height > 0 {
-			block, _, err := c.store.LoadBlock(idx.Hash)
-			if err != nil {
-				return err
-			}
 			parent = block.Header.PrevBlock.String()
 		}
 		var cw *big.Int
@@ -464,6 +468,7 @@ func (c *Chain) EnsureGenesis() error {
 	}
 	c.workByHash[idx.Hash] = cloneBig(genesisWork)
 	c.parentByHash[idx.Hash] = ""
+	c.rememberLegacyHashLocked(block, idx.Hash)
 	c.tip = &idx
 	return nil
 }
@@ -484,6 +489,7 @@ func (c *Chain) connectBlockLocked(block *wire.MsgBlock) error {
 	}
 	c.workByHash[idx.Hash] = cloneBig(chainwork)
 	c.parentByHash[idx.Hash] = idx.Parent
+	c.rememberLegacyHashLocked(block, idx.Hash)
 	c.tip = &idx
 	return nil
 }
@@ -1193,8 +1199,26 @@ func (c *Chain) LegacyHeaderHash(header wire.BlockHeader) (chainhash.Hash, error
 	return chainhash.DoubleHashB(buf.Bytes()), nil
 }
 
+func (c *Chain) rememberLegacyHashLocked(block *wire.MsgBlock, canonicalHash string) {
+	if block == nil || canonicalHash == "" {
+		return
+	}
+	if c.legacyByHash == nil {
+		c.legacyByHash = make(map[string]string)
+	}
+	legacy, err := c.LegacyHeaderHash(block.Header)
+	if err != nil {
+		return
+	}
+	legacyHash := legacy.String()
+	if legacyHash == "" || legacyHash == canonicalHash {
+		return
+	}
+	c.legacyByHash[legacyHash] = canonicalHash
+}
+
 // ValidateHeaderSequence validates an announced header batch against the active
-// chain before P2P asks for corresponding block bodies.  It uses the canonical
+// chain before P2P asks for corresponding block bodies. It uses the canonical
 // Legacy Coin Yespower header hash and a rolling active-chain view so every
 // header in the batch is checked for parent linkage, DGWv3 difficulty, median
 // time past, future-time drift, and proof of work before getdata is sent.
@@ -1214,26 +1238,24 @@ func (c *Chain) ValidateHeaderSequence(headers []wire.BlockHeader) ([]chainhash.
 		return nil, errors.New("cannot validate headers before local tip is initialized")
 	}
 	tipHashString := c.tip.Hash
-	tipHeight := c.tip.Height
+	startHashString := headers[0].PrevBlock.String()
+	startHeight, startKnown := c.activeHeight(startHashString)
 	genesisBits := c.params.GenesisBits
 	postGenesisBits := c.params.PostGenesisBits
-	recent, err := c.recentEntriesLocked(tipHeight, consensus.DGWv3PastBlocks)
+	if !startKnown {
+		c.mu.RUnlock()
+		return nil, fmt.Errorf("header batch does not connect to active chain: got prev %s, active tip %s", startHashString, tipHashString)
+	}
+	recent, err := c.recentEntriesLocked(startHeight, consensus.DGWv3PastBlocks)
 	c.mu.RUnlock()
 	if err != nil {
 		return nil, err
 	}
 
-	prevHash, err := chainhash.FromString(tipHashString)
-	if err != nil {
-		return nil, err
-	}
-	if headers[0].PrevBlock != prevHash {
-		return nil, fmt.Errorf("header batch does not connect to active tip: got prev %s, want %s", headers[0].PrevBlock.String(), tipHashString)
-	}
-
 	maxFuture := nowUnix() + uint32(chaincfg.MaxFutureDrift.Seconds())
 	hashes := make([]chainhash.Hash, 0, len(headers))
-	nextHeight := tipHeight + 1
+	prevHash := headers[0].PrevBlock
+	nextHeight := startHeight + 1
 
 	for i, header := range headers {
 		if header.PrevBlock != prevHash {
@@ -1263,13 +1285,13 @@ func (c *Chain) ValidateHeaderSequence(headers []wire.BlockHeader) ([]chainhash.
 		nextHeight++
 	}
 
-	// If the active tip changed while the expensive validation was running, the
-	// caller must discard/retry against the new context instead of requesting
+	// If the active ancestor changed while the expensive validation was running,
+	// the caller must discard/retry against the new context instead of requesting
 	// bodies for a stale view.
 	c.mu.RLock()
-	tipUnchanged := c.tip != nil && c.tip.Hash == tipHashString && c.tip.Height == tipHeight
+	currentStartHeight, startStillActive := c.activeHeight(startHashString)
 	c.mu.RUnlock()
-	if !tipUnchanged {
+	if !startStillActive || currentStartHeight != startHeight {
 		return nil, errors.New("active tip changed during header validation")
 	}
 	return hashes, nil
@@ -1367,9 +1389,86 @@ func (c *Chain) BlockByHash(hash string) (*wire.MsgBlock, *BlockIndex, error) {
 	return c.store.LoadBlock(hash)
 }
 
+func (c *Chain) BlockByWireHash(hash string) (*wire.MsgBlock, *BlockIndex, error) {
+	hash = strings.ToLower(strings.TrimSpace(hash))
+	if hash == "" {
+		return nil, nil, os.ErrNotExist
+	}
+	if block, idx, err := c.store.LoadBlock(hash); err == nil {
+		return block, idx, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, nil, err
+	}
+
+	c.mu.RLock()
+	canonical := c.legacyByHash[hash]
+	tip := c.tip
+	c.mu.RUnlock()
+	if canonical != "" {
+		if block, idx, err := c.store.LoadBlock(canonical); err == nil {
+			return block, idx, nil
+		}
+	}
+	if tip == nil || tip.Hash == "" || tip.Height < 0 {
+		return nil, nil, os.ErrNotExist
+	}
+
+	for height := tip.Height; height >= 0; height-- {
+		idx, err := c.store.LoadIndexByHeight(height)
+		if err != nil {
+			return nil, nil, err
+		}
+		block, _, err := c.store.LoadBlock(idx.Hash)
+		if err != nil {
+			return nil, nil, err
+		}
+		legacy, err := c.LegacyHeaderHash(block.Header)
+		if err != nil {
+			return nil, nil, err
+		}
+		legacyHash := legacy.String()
+		if legacyHash == hash {
+			c.mu.Lock()
+			c.rememberLegacyHashLocked(block, idx.Hash)
+			c.mu.Unlock()
+			return block, idx, nil
+		}
+		c.mu.Lock()
+		c.rememberLegacyHashLocked(block, idx.Hash)
+		c.mu.Unlock()
+		if height == 0 {
+			break
+		}
+	}
+	return nil, nil, os.ErrNotExist
+}
+
 func (c *Chain) HasBlock(hash string) bool {
 	_, _, err := c.store.LoadBlock(hash)
 	return err == nil
+}
+
+func (c *Chain) HasBlockByWireHash(hash string) bool {
+	hash = strings.ToLower(strings.TrimSpace(hash))
+	if hash == "" {
+		return false
+	}
+	if c.HasBlock(hash) {
+		return true
+	}
+	c.mu.RLock()
+	canonical := c.legacyByHash[hash]
+	c.mu.RUnlock()
+	if canonical == "" {
+		return false
+	}
+	return c.HasBlock(canonical)
+}
+
+func (c *Chain) ActiveHeight(hash string) (int32, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.activeHeight(hash)
 }
 
 func (c *Chain) HeadersAfter(locator []chainhash.Hash, stop chainhash.Hash, max int) ([]wire.BlockHeader, error) {
@@ -1389,9 +1488,8 @@ func (c *Chain) HeadersAfter(locator []chainhash.Hash, stop chainhash.Hash, max 
 	startHeight := int32(-1)
 	matchedLocator := len(locator) == 0
 	for _, hash := range locator {
-		_, idx, err := c.store.LoadBlock(hash.String())
-		if err == nil {
-			startHeight = idx.Height
+		if height, ok := c.activeHeight(hash.String()); ok {
+			startHeight = height
 			matchedLocator = true
 			break
 		}
@@ -1444,15 +1542,41 @@ func (c *Chain) ListUTXO() ([]UTXOEntry, error) {
 func (c *Chain) Locator() []chainhash.Hash {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
+	tip := c.tip
 
-	if c.tip == nil || c.tip.Hash == "" {
+	if tip == nil || tip.Hash == "" {
 		return nil
 	}
-	hash, err := chainhash.FromString(c.tip.Hash)
-	if err != nil {
-		return nil
+	locator := make([]chainhash.Hash, 0, 32)
+	step := int32(1)
+	height := tip.Height
+	for height >= 0 {
+		idx, err := c.store.LoadIndexByHeight(height)
+		hashString := ""
+		if err == nil && idx != nil {
+			hashString = idx.Hash
+		} else if height == tip.Height {
+			hashString = tip.Hash
+		}
+		if hashString != "" {
+			hash, err := chainhash.FromString(hashString)
+			if err == nil {
+				locator = append(locator, hash)
+			}
+		}
+		if height == 0 {
+			break
+		}
+		if len(locator) >= 10 && step < 1<<29 {
+			step *= 2
+		}
+		if height > step {
+			height -= step
+		} else {
+			height = 0
+		}
 	}
-	return []chainhash.Hash{hash}
+	return locator
 }
 
 func (c *Chain) Tip() *BlockIndex {
