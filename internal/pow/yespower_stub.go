@@ -26,3 +26,22 @@ func (h YespowerHasher) HashHeader(header wire.BlockHeader) (chainhash.Hash, err
 func BackendName() string {
 	return "pure-go-experimental"
 }
+
+func RecordChainContextInit() {}
+func RecordChainContextFree() {}
+func RecordWorkerContextInit() {}
+func RecordWorkerContextFree() {}
+
+func YespowerCounters() map[string]int64 {
+	return map[string]int64{
+		"worker_contexts_initialized": 0,
+		"worker_contexts_freed":       0,
+		"worker_contexts_active":      0,
+		"chain_contexts_initialized":  0,
+		"chain_contexts_freed":        0,
+		"chain_contexts_active":       0,
+		"total_contexts_active":       0,
+		"cgo_calls_active":            0,
+		"cgo_calls_max_concurrent":    0,
+	}
+}
