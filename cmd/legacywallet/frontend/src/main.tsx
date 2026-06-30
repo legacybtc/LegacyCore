@@ -2912,8 +2912,8 @@ function RPCConsolePage({ snap }: { snap: Dict }) {
 }
 
 function resolveBuildInfo(snap: Dict | null) {
-const markerRaw = String(snap?.lifecycle?.marker || "v1.0.13").trim();
-const marker = markerRaw.toLowerCase().includes("debug") ? "v1.0.13" : (markerRaw || "v1.0.13");
+const markerRaw = String(snap?.lifecycle?.marker || "v1.0.20").trim();
+const marker = markerRaw.toLowerCase().includes("debug") ? "v1.0.20" : (markerRaw || "v1.0.20");
   const commitRaw = String(snap?.lifecycle?.commit_short || snap?.lifecycle?.commit || "").trim();
   const commit = !commitRaw || commitRaw.toLowerCase() === "unknown" ? "local build" : commitRaw;
   const buildTimeRaw = String(snap?.lifecycle?.build_time || "").trim();
@@ -2927,7 +2927,7 @@ function AboutPage({ snap }: { snap: Dict }) {
     <div className="page aboutPage">
       <InfoPanel title="About Legacy Wallet" rows={[
         ["Product", "Legacy Wallet"],
-        ["Core", `${snap.coin?.node_software || "Legacy Core"} v${snap.coin?.core_version || "1.0.13"}`],
+        ["Core", `${snap.coin?.node_software || "Legacy Core"} v${snap.coin?.core_version || "1.0.20"}`],
         ["Build", build.marker],
         ["Commit", build.commit],
         ["Build time", build.buildTimeLabel],
