@@ -4,7 +4,7 @@ import "strings"
 
 const (
 	defaultMiningMinGoodPeers           = 3
-	defaultMiningMinAgreeingPeers       = 2
+	defaultMiningMinAgreeingPeers       = 1
 	defaultMiningPeerGraceSeconds       = 90
 	defaultMiningPeerRecoverySeconds    = 30
 	defaultMiningBlocksBehindLimit      = 1
