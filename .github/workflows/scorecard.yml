@@ -23,6 +23,8 @@ jobs:
           persist-credentials: false
 
       - name: Run analysis
+        # For Branch-Protection check, set SCORECARD_TOKEN secret to a
+        # classic PAT (repo scope) in repo settings → secrets and variables
         uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a # v2.4.3
         with:
           results_file: results.sarif
