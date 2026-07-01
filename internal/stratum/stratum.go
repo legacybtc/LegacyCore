@@ -58,7 +58,6 @@ type Miner struct {
 	worker      string
 	difficulty  float64
 	ip          string
-	sharesInWin int
 	windowStart time.Time
 }
 

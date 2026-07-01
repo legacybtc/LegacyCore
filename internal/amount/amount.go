@@ -16,9 +16,7 @@ func ParseLBTC(s string) (int64, error) {
 	if s == "" {
 		return 0, fmt.Errorf("empty amount")
 	}
-	if strings.HasPrefix(s, "+") {
-		s = strings.TrimPrefix(s, "+")
-	}
+	s = strings.TrimPrefix(s, "+")
 	if strings.HasPrefix(s, "-") {
 		return 0, fmt.Errorf("amount must be positive")
 	}

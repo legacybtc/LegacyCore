@@ -385,14 +385,6 @@ func miningTemplateHardStaleAge() time.Duration {
 	return mining.DefaultHardTemplateStaleAge
 }
 
-func miningTemplateMaxAge() time.Duration {
-	return miningTemplateHardStaleAge()
-}
-
-func miningTemplateMaxAgeSeconds() float64 {
-	return miningTemplateHardStaleAgeSeconds()
-}
-
 func miningTemplateHardStaleAgeSeconds() float64 {
 	return miningTemplateHardStaleAge().Seconds()
 }
@@ -403,10 +395,6 @@ func miningTemplateRecoveryTimeout() time.Duration {
 
 func miningTemplateRecoveryTimeoutSeconds() float64 {
 	return miningTemplateRecoveryTimeout().Seconds()
-}
-
-func goodMiningPeerCount(peers []p2p.PeerInfo, localHeight int32) int {
-	return assessMiningPeers(peers, localHeight).Compatible
 }
 
 func miningPeerSetSplit(peers []p2p.PeerInfo) bool {

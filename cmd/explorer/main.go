@@ -34,7 +34,6 @@ var (
 
 	nodeClient *http.Client
 	cache      = &lruCache{data: make(map[string]*cacheEntry)}
-	cacheMu    sync.RWMutex
 )
 
 type cacheEntry struct {
