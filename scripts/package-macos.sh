@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_ROOT="$ROOT_DIR/dist"
-VERSION="${1:-v1.0.21}"
+VERSION="${1:-v1.0.25}"
 ARCH="${2:-amd64}"
 
 case "$ARCH" in
