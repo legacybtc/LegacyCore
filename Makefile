@@ -55,7 +55,7 @@ macos-arm64:
 windows-amd64:
 	powershell.exe -ExecutionPolicy Bypass -File scripts/build-windows.ps1
 
-VERSION := v1.0.26
+VERSION := v1.0.27
 
 package-linux:
 	bash scripts/package-linux.sh $(VERSION) amd64
