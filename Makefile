@@ -55,23 +55,25 @@ macos-arm64:
 windows-amd64:
 	powershell.exe -ExecutionPolicy Bypass -File scripts/build-windows.ps1
 
+VERSION := v1.0.25
+
 package-linux:
-	bash scripts/package-linux.sh v1.0.21 amd64
+	bash scripts/package-linux.sh $(VERSION) amd64
 
 package-linux-arm64:
-	bash scripts/package-linux.sh v1.0.21 arm64
+	bash scripts/package-linux.sh $(VERSION) arm64
 
 package-macos-amd64:
-	bash scripts/package-macos.sh v1.0.21 amd64
+	bash scripts/package-macos.sh $(VERSION) amd64
 
 package-macos-arm64:
-	bash scripts/package-macos.sh v1.0.21 arm64
+	bash scripts/package-macos.sh $(VERSION) arm64
 
 package-windows:
-	powershell.exe -ExecutionPolicy Bypass -File scripts/package-windows.ps1 -Version v1.0.21
+	powershell.exe -ExecutionPolicy Bypass -File scripts/package-windows.ps1 -Version $(VERSION)
 
 release-source:
-	powershell.exe -ExecutionPolicy Bypass -File scripts/release-source-archive.ps1 -Version v1.0.21 -OutputDir dist
+	powershell.exe -ExecutionPolicy Bypass -File scripts/release-source-archive.ps1 -Version $(VERSION) -OutputDir dist
 
 release-verify:
 	powershell.exe -ExecutionPolicy Bypass -File scripts/verify-release-assets.ps1 dist/*.zip dist/*.tar.gz
