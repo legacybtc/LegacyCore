@@ -44,7 +44,7 @@ type SanitizedSnapshot struct {
 }
 
 func BuildSanitizedSnapshot(raw map[string]any) SanitizedSnapshot {
-	s := SanitizedSnapshot{Network: str(raw, "network", "LBTC mainnet"), Version: str(raw, "version", "1.0.25")}
+	s := SanitizedSnapshot{Network: str(raw, "network", "LBTC mainnet"), Version: str(raw, "version", "1.0.26")}
 	if m, ok := raw["mining"].(map[string]any); ok {
 		s.MinerState = str(m, "miner_state", "unknown")
 		s.MiningSafe = boo(m, "mining_safe")
