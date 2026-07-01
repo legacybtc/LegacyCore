@@ -527,7 +527,7 @@ func LoadMiningConfig(path string) (MiningConfig, error) {
 	if err != nil {
 		return MiningConfig{}, err
 	}
-	cfg := MiningConfig{Threads: 1, MaxThreads: runtime.NumCPU(), PeerRequired: false, SafeRequired: true, MinGoodPeers: 3, MinAgreeingPeers: 2, PeerGraceSeconds: 90, PeerRecoverySeconds: 30, BlocksBehindOK: 1, RejectUnsafeGBT: true, RejectZeroHash: true}
+	cfg := MiningConfig{Threads: 1, MaxThreads: runtime.NumCPU(), PeerRequired: false, SafeRequired: true, MinGoodPeers: 3, MinAgreeingPeers: 1, PeerGraceSeconds: 90, PeerRecoverySeconds: 30, BlocksBehindOK: 1, RejectUnsafeGBT: true, RejectZeroHash: true}
 	if vals := kv["mining_enabled"]; len(vals) > 0 {
 		v := strings.ToLower(strings.TrimSpace(vals[len(vals)-1]))
 		cfg.Enabled = v == "1" || v == "true" || v == "yes" || v == "on"

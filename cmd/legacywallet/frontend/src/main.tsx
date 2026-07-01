@@ -2048,7 +2048,7 @@ function MiningPage({ snap, run, refresh, notify }: PageProps) {
           ["Stronger-chainwork peers", mining.stronger_chainwork_peer_count ?? "-"],
           ["Wrong-chain peers", mining.wrong_chain_peer_count ?? "-"],
           ["Protocol-error peers", mining.protocol_error_peer_count ?? "-"],
-          ["Mining peer threshold", `${mining.min_agreeing_peers ?? 2} agreeing peer(s)`],
+          ["Mining peer threshold", `${mining.min_agreeing_peers ?? 1} agreeing peer(s)`],
           ["Peer pause grace", mining.peer_agreement_grace_active ? `${mining.peer_agreement_grace_remaining_seconds ?? 0}s before pause` : `${mining.peer_safety_grace_seconds ?? 90}s`],
           ["Peer resume hysteresis", mining.peer_agreement_recovery_active ? `${mining.peer_agreement_recovery_remaining_seconds ?? 0}s before resume` : `${mining.peer_safety_recovery_seconds ?? 30}s`],
           ["Mining loop", minerView.miningLoopLabel],
