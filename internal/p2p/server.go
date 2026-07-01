@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	mathrand "math/rand/v2"
 	"net"
 	"sort"
 	"strconv"
@@ -27,7 +28,7 @@ import (
 const (
 	protocolVersion       int32  = 70015
 	nodeNetwork           uint64 = 1
-	userAgent                    = "/Legacy-GO:1.0.25/"
+	userAgent                    = "/Legacy-GO:1.0.26/"
 	maxPeers                     = 125
 	maxOutboundPeers             = 16
 	maxGetDataItems              = 1000
@@ -71,7 +72,7 @@ func setPeerStaleThreshold(d time.Duration) {
 const (
 	// getdataTimeout is how long we wait for a block requested via getdata
 	// before marking it timed out and re-requesting from an alternative peer.
-	getdataTimeout = 2 * time.Minute
+	getdataTimeout = 30 * time.Second
 
 	// missingParentTTL stops us hammering one peer for the same missing
 	// parent block over and over. missingParentEvictTTL bounds memory.
@@ -1877,6 +1878,17 @@ func (s *Server) watchdogStep(ctx context.Context) {
 	if stalled || noUsefulChainData || reconnected > 0 {
 		s.connectSeeds(ctx)
 	}
+	if behind && requested == 0 {
+		s.clearOutboundThrottle()
+		for _, p := range s.snapshotPeers() {
+			p.lastMu.Lock()
+			missed := p.missedPongs
+			p.lastMu.Unlock()
+			if p.conn != nil && missed < 3 {
+				_ = s.requestKnownAddresses(p)
+			}
+		}
+	}
 	s.addWatchdogReconnects(reconnected)
 
 	switch {
@@ -1940,10 +1952,12 @@ func (s *Server) requestSyncFromPeerIfBehind(p *peer, force bool) error {
 	s.noteSyncPeer(p.remote)
 	if err := s.requestHeaders(p); err != nil {
 		p.setSyncResult(err)
+		p.conn.Close()
 		return err
 	}
 	if err := s.requestBlocks(p); err != nil {
 		p.setSyncResult(err)
+		p.conn.Close()
 		return err
 	}
 	p.setSyncResult(nil)
@@ -2095,7 +2109,11 @@ func (s *Server) connectSeeds(ctx context.Context) {
 			s.log.Printf("p2p add bootstrap peer %s: %v", peer, err)
 		}
 	}
-	for _, peer := range s.KnownAddresses() {
+	knownAddrs := s.KnownAddresses()
+	mathrand.Shuffle(len(knownAddrs), func(i, j int) {
+		knownAddrs[i], knownAddrs[j] = knownAddrs[j], knownAddrs[i]
+	})
+	for _, peer := range knownAddrs {
 		if s.outbound.Load() >= maxOutboundPeers || s.peers.Load() >= maxPeers {
 			return
 		}
