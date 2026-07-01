@@ -125,9 +125,10 @@ type peer struct {
 	lastBlockPrev     string
 	lastBlockHeight   int32
 	lastBestUpdate    string
-	lastBlockReason   string
-	lastHeaderRecv    time.Time
-	lastBlockRecv     time.Time
+	lastBlockReason    string
+	lastConnectedBlock time.Time
+	lastHeaderRecv     time.Time
+	lastBlockRecv      time.Time
 	blocksRequested   int
 	blocksServed      int
 	syncFailures      int
@@ -2836,15 +2837,17 @@ func (p *peer) setLastBlockResult(result blockchain.BlockProcessResult) {
 		p.height = result.NewBestHeight
 		p.lastHeightUpdate = time.Now()
 	}
-	if result.Status == blockchain.BlockStatusSideChain && result.OldBestHeight < p.height {
-		p.lastSyncError = fmt.Sprintf("peer advertised height %d but sent non-connecting side-chain block %s at height %d", p.height, result.Hash, result.CalculatedHeight)
-	}
-	if result.Orphan && !result.ParentKnown && result.OldBestHeight < p.height {
-		p.lastSyncError = fmt.Sprintf("peer advertised height %d but sent block %s with unknown parent %s after local tip %s", p.height, result.Hash, result.PrevHash, result.OldBestHash)
-	}
 	if result.Connected && result.BestChanged {
+		p.lastConnectedBlock = time.Now()
 		p.lastSyncError = ""
 		p.syncSuccesses++
+	} else if time.Since(p.lastConnectedBlock) > 30*time.Second {
+		switch {
+		case result.Status == blockchain.BlockStatusSideChain && result.OldBestHeight < p.height:
+			p.lastSyncError = fmt.Sprintf("peer advertised height %d but sent non-connecting side-chain block %s at height %d", p.height, result.Hash, result.CalculatedHeight)
+		case result.Orphan && !result.ParentKnown && result.OldBestHeight < p.height:
+			p.lastSyncError = fmt.Sprintf("peer advertised height %d but sent block %s with unknown parent %s after local tip %s", p.height, result.Hash, result.PrevHash, result.OldBestHash)
+		}
 	}
 	p.lastMu.Unlock()
 }
