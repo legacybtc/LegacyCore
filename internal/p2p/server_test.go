@@ -230,7 +230,7 @@ func TestPostHandshakeIdlePeerIsDisconnected(t *testing.T) {
 	if err := wire.WriteMessage(clientConn, chaincfg.MainNet.MessageStart, wire.CommandVerAck, nil); err != nil {
 		t.Fatalf("write client verack: %v", err)
 	}
-	for i := 0; i < 4; i++ {
+	for {
 		_ = clientConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 		msg, err := wire.ReadMessage(clientConn, chaincfg.MainNet.MessageStart)
 		if err != nil {
@@ -285,10 +285,19 @@ func TestRequestUnknownBlockInvSendsGetData(t *testing.T) {
 	_ = clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	msg, err := wire.ReadMessage(clientConn, chaincfg.MainNet.MessageStart)
 	if err != nil {
+		t.Fatalf("read getheaders: %v", err)
+	}
+	if msg.Command != wire.CommandGetHeaders {
+		t.Fatalf("first command=%s want %s", msg.Command, wire.CommandGetHeaders)
+	}
+
+	_ = clientConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	msg, err = wire.ReadMessage(clientConn, chaincfg.MainNet.MessageStart)
+	if err != nil {
 		t.Fatalf("read getdata: %v", err)
 	}
 	if msg.Command != wire.CommandGetData {
-		t.Fatalf("first command=%s want %s", msg.Command, wire.CommandGetData)
+		t.Fatalf("second command=%s want %s", msg.Command, wire.CommandGetData)
 	}
 
 	inv, err := wire.ReadInvPayload(bytes.NewReader(msg.Payload))

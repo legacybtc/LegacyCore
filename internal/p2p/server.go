@@ -3219,33 +3219,35 @@ func randomUint64() (uint64, error) {
 
 func (s *Server) requestHeaders(p *peer) error {
 	locator := s.chain.Locator()
-	if len(locator) == 0 {
-		return nil
-	}
 	payload, err := (wire.GetBlocks{Version: protocolVersion, Locator: locator}).Bytes()
 	if err != nil {
 		return err
 	}
-	s.log.Printf("p2p send getheaders to %s locator_tip=%s", p.remote, locator[0].String())
+	tip := "empty"
+	if len(locator) > 0 {
+		tip = locator[0].String()
+	}
+	s.log.Printf("p2p send getheaders to %s locator_tip=%s", p.remote, tip)
 	s.noteSyncRequest()
 	s.noteGetHeadersSent()
-	p.setLastLocatorTip(locator[0].String())
+	p.setLastLocatorTip(tip)
 	return s.writePeerMessage(p, wire.CommandGetHeaders, payload)
 }
 
 func (s *Server) requestBlocks(p *peer) error {
 	locator := s.chain.Locator()
-	if len(locator) == 0 {
-		return nil
-	}
 	payload, err := (wire.GetBlocks{Version: protocolVersion, Locator: locator}).Bytes()
 	if err != nil {
 		return err
 	}
-	s.log.Printf("p2p send getblocks to %s locator_tip=%s", p.remote, locator[0].String())
+	tip := "empty"
+	if len(locator) > 0 {
+		tip = locator[0].String()
+	}
+	s.log.Printf("p2p send getblocks to %s locator_tip=%s", p.remote, tip)
 	s.noteSyncRequest()
 	s.noteGetBlocksSent()
-	p.setLastLocatorTip(locator[0].String())
+	p.setLastLocatorTip(tip)
 	return s.writePeerMessage(p, wire.CommandGetBlocks, payload)
 }
 
