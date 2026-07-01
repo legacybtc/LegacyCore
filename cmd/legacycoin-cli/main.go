@@ -73,7 +73,7 @@ func runCLI(argv []string, stdout io.Writer, stderr io.Writer) error {
 	defer resp.Body.Close()
 	out, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode == http.StatusUnauthorized {
-		return fmt.Errorf("RPC unauthorized. Check rpcuser/rpcpassword or .cookie file.")
+		return fmt.Errorf("rpc unauthorized: check rpcuser/rpcpassword or .cookie file")
 	}
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("RPC HTTP error %s: %s", resp.Status, strings.TrimSpace(string(out)))
@@ -160,7 +160,7 @@ func rpcURL(opts cliOptions) string {
 func applyRPCAuth(req *http.Request, opts cliOptions) error {
 	if opts.RPCUser != "" || opts.RPCPassword != "" {
 		if opts.RPCUser == "" || opts.RPCPassword == "" {
-			return fmt.Errorf("RPC auth requires both -rpcuser and -rpcpassword.")
+			return fmt.Errorf("rpc auth requires both -rpcuser and -rpcpassword")
 		}
 		req.SetBasicAuth(opts.RPCUser, opts.RPCPassword)
 		return nil

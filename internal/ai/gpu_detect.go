@@ -132,8 +132,5 @@ func binaryExists(name string) bool {
 
 func hasDLL(name string) bool {
 	_, err := exec.LookPath(name)
-	if err == nil {
-		return true
-	}
-	return false
+	return err == nil
 }

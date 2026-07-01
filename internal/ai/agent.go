@@ -180,7 +180,6 @@ type GroqProvider struct {
 	model   string
 	baseURL string
 	client  *http.Client
-	started int32
 }
 
 func NewGroqProvider(apiKey string) *GroqProvider {
@@ -200,7 +199,7 @@ func (g *GroqProvider) SetModel(model string) { g.model = model }
 
 func (g *GroqProvider) Start(_ context.Context, _ AIConfig) error {
 	if g.apiKey == "" {
-		return fmt.Errorf("Groq API key required — get one free at https://console.groq.com")
+		return fmt.Errorf("groq API key required — get one free at https://console.groq.com")
 	}
 	return nil
 }

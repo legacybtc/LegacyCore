@@ -1,5 +1,7 @@
 package script
 
+//lint:file-ignore SA1019 required for Bitcoin P2PKH address compatibility
+
 import (
 	"bytes"
 	"crypto/sha256"

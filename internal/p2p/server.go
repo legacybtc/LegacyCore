@@ -48,7 +48,7 @@ var (
 	peerPongTimeout      = 90 * time.Second
 	peerReconnectEvery   = 8 * time.Second
 	syncWatchdogEvery    = 20 * time.Second
-	syncStaleThreshold   = 10 * time.Minute
+
 )
 
 var (
@@ -72,10 +72,6 @@ const (
 	// getdataTimeout is how long we wait for a block requested via getdata
 	// before marking it timed out and re-requesting from an alternative peer.
 	getdataTimeout = 2 * time.Minute
-
-	// getdataCleanupInterval is how often the watchdog sweeps timed-out
-	// getdata requests.
-	getdataCleanupInterval = 30 * time.Second
 
 	// missingParentTTL stops us hammering one peer for the same missing
 	// parent block over and over. missingParentEvictTTL bounds memory.
@@ -1014,11 +1010,6 @@ func (s *Server) PeerInfos() []PeerInfo {
 		})
 	}
 	return out
-}
-
-func classifyGoodPeer(localHeight, peerHeight int32, stale bool, missedPongs int, quality, chainID, expectedChainID, lastSyncError, lastBlockReject string, rtt time.Duration) (bool, string) {
-	_, good, reason := classifyPeerSafety(localHeight, peerHeight, stale, missedPongs, quality, chainID, expectedChainID, lastSyncError, lastBlockReject, rtt)
-	return good, reason
 }
 
 func classifyPeerSafety(localHeight, peerHeight int32, stale bool, missedPongs int, quality, chainID, expectedChainID, lastSyncError, lastBlockReject string, rtt time.Duration) (string, bool, string) {
@@ -3492,23 +3483,6 @@ func minInt(a int, b int) int {
 		return a
 	}
 	return b
-}
-
-func (s *Server) announceTip(p *peer) error {
-	tip := s.chain.Tip()
-	if tip == nil || tip.Hash == "" {
-		return nil
-	}
-	blockHash, err := chainhash.FromString(tip.Hash)
-	if err != nil {
-		return err
-	}
-	payload, err := wire.InvPayload([]wire.InvVect{{Type: wire.InvTypeBlock, Hash: blockHash}})
-	if err != nil {
-		return err
-	}
-	s.addBlocksAnnounced(1)
-	return s.writePeerMessage(p, wire.CommandInv, payload)
 }
 
 func (s *Server) serveBlockInventory(p *peer, req wire.GetBlocks) error {

@@ -28,9 +28,7 @@ import (
 	"legacycoin/legacy-go/internal/config"
 	"legacycoin/legacy-go/internal/consensus"
 	"legacycoin/legacy-go/internal/mempool"
-	"legacycoin/legacy-go/internal/mining"
 	"legacycoin/legacy-go/internal/node"
-	"legacycoin/legacy-go/internal/pow"
 	"legacycoin/legacy-go/internal/script"
 	"legacycoin/legacy-go/internal/tokens"
 	"legacycoin/legacy-go/internal/version"
@@ -66,11 +64,6 @@ type Service struct {
 	minerLoopRunning        bool
 	minerEnabled            bool
 	minerPausedReason       string
-	minerLastTemplate       time.Time
-	minerLastTemplateHeight int32
-	minerLastRecovery       string
-	minerStaleBlocks        int64
-	minerRejectBlocks       int64
 	minerRewardHashHex      string
 	minerRewardAddress      string
 	minerSessionHashes      uint64
@@ -508,21 +501,21 @@ func requiredPortsAvailable(dataDir string, walletOwns bool) error {
 				}
 				switch rpcProbe.State {
 				case "external_legacy_compatible":
-					return fmt.Errorf("RPC 127.0.0.1:%d is already in use by a compatible Legacy Core node (%s)%s. Use that node in headless mode or stop it before starting the wallet-managed internal node", chaincfg.MainNet.RPCPort, rpcProbe.ChainID, ownerInfo)
+					return fmt.Errorf("rpc 127.0.0.1:%d is already in use by a compatible legacy core node (%s)%s; use that node in headless mode or stop it before starting the wallet-managed internal node", chaincfg.MainNet.RPCPort, rpcProbe.ChainID, ownerInfo)
 				case "external_legacy_incompatible":
-					return fmt.Errorf("RPC 127.0.0.1:%d is already in use by an incompatible Legacy node (%s)%s. Stop that node or change RPC bind settings", chaincfg.MainNet.RPCPort, rpcProbe.ChainID, ownerInfo)
+					return fmt.Errorf("rpc 127.0.0.1:%d is already in use by an incompatible legacy node (%s)%s; stop that node or change rpc bind settings", chaincfg.MainNet.RPCPort, rpcProbe.ChainID, ownerInfo)
 				case "external_auth_required":
-					return fmt.Errorf("RPC 127.0.0.1:%d is already in use by a node that requires different RPC credentials%s. Stop the existing node or use matching credentials", chaincfg.MainNet.RPCPort, ownerInfo)
+					return fmt.Errorf("rpc 127.0.0.1:%d is already in use by a node that requires different rpc credentials%s; stop the existing node or use matching credentials", chaincfg.MainNet.RPCPort, ownerInfo)
 				case "wallet_internal":
 					return fmt.Errorf("wallet-managed internal node is already using RPC 127.0.0.1:%d%s", chaincfg.MainNet.RPCPort, ownerInfo)
 				default:
-					return fmt.Errorf("Legacy Core or another process is already using the required port (%s %s)%s", check.label, check.addr, ownerInfo)
+					return fmt.Errorf("legacy core or another process is already using the required port (%s %s)%s", check.label, check.addr, ownerInfo)
 				}
 			}
 		}
 		ln, err := net.Listen(check.network, check.addr)
 		if err != nil {
-			return fmt.Errorf("Legacy Core or another process is already using the required port (%s %s)", check.label, check.addr)
+			return fmt.Errorf("legacy core or another process is already using the required port (%s %s)", check.label, check.addr)
 		}
 		_ = ln.Close()
 	}
@@ -817,7 +810,7 @@ func (s *Service) cachedRPCProbe(dataDir string, walletOwns bool) rpcPortProbe {
 		ttl = 2 * time.Second
 	}
 	s.mu.Lock()
-	if s.lastRPCProbeAt.IsZero() == false &&
+	if !s.lastRPCProbeAt.IsZero() &&
 		now.Sub(s.lastRPCProbeAt) < ttl &&
 		s.lastRPCProbeDataDir == dataDir &&
 		s.lastRPCProbeOwned == walletOwns {
@@ -1172,17 +1165,17 @@ func (s *Service) SendToAddress(to, amt, fee, memo string) (map[string]any, erro
 		return nil, friendlySendError(err)
 	}
 	if feeValue <= 0 {
-		return nil, fmt.Errorf("Fee must be greater than 0.")
+		return nil, fmt.Errorf("fee must be greater than 0")
 	}
 	if value < mempool.DustThreshold {
-		return nil, fmt.Errorf("Amount is too small to send.")
+		return nil, fmt.Errorf("amount is too small to send")
 	}
 	spendable, err := s.spendableBalance(n)
 	if err != nil {
 		return nil, err
 	}
 	if spendable < value+feeValue {
-		return nil, fmt.Errorf("Not enough available LBTC. Some coins are already used by pending transactions. Wait for confirmation or use another address/UTXO.")
+		return nil, fmt.Errorf("not enough available LBTC; some coins are already used by pending transactions; wait for confirmation or use another address/UTXO")
 	}
 	txid, err := n.Wallet().SendToAddress(n.Chain(), n.Mempool(), to, value, feeValue)
 	if err != nil {
@@ -1264,7 +1257,7 @@ func (s *Service) SendTokenOperation(opName string, payload map[string]any, fee 
 		source = op.From
 	}
 	if op.Op == "SELL" {
-		return nil, fmt.Errorf("SELL is disabled in this v0.3 test build because automatic LBTC payout is not enforceable without a reviewed reserve signer or protocol support")
+		return nil, fmt.Errorf("sell is disabled in this v0.3 test build because automatic LBTC payout is not enforceable without a reviewed reserve signer or protocol support")
 	}
 	if err := validateLegacyAddress(source); err != nil {
 		return nil, friendlySendError(err)
@@ -1277,7 +1270,7 @@ func (s *Service) SendTokenOperation(opName string, payload map[string]any, fee 
 		}
 	}
 	if feeValue <= 0 {
-		return nil, fmt.Errorf("Fee must be greater than 0.")
+		return nil, fmt.Errorf("fee must be greater than 0")
 	}
 	scriptHexes, raw, err := tokens.MarkerScriptHexes(op)
 	if err != nil {
@@ -1385,17 +1378,17 @@ func (s *Service) SplitCoins(from, total, outputs, fee string) (map[string]any, 
 	}
 	totalValue, err := amount.ParseLBTC(strings.TrimSpace(total))
 	if err != nil || totalValue <= 0 {
-		return nil, fmt.Errorf("Enter a valid LBTC amount.")
+		return nil, fmt.Errorf("enter a valid LBTC amount")
 	}
 	outputCount, err := strconv.Atoi(strings.TrimSpace(outputs))
 	if err != nil || outputCount < 2 || outputCount > 100 {
-		return nil, fmt.Errorf("Split output count must be between 2 and 100.")
+		return nil, fmt.Errorf("split output count must be between 2 and 100")
 	}
 	feeValue := int64(1_000)
 	if strings.TrimSpace(fee) != "" {
 		feeValue, err = amount.ParseLBTC(strings.TrimSpace(fee))
 		if err != nil || feeValue <= 0 {
-			return nil, fmt.Errorf("Enter a valid LBTC fee.")
+			return nil, fmt.Errorf("enter a valid LBTC fee")
 		}
 	}
 	txid, err := n.Wallet().SplitCoins(n.Chain(), n.Mempool(), from, totalValue, outputCount, feeValue)
@@ -1435,7 +1428,7 @@ func (s *Service) RebroadcastTransaction(txid string) (map[string]any, error) {
 			rec.Direction = "sent"
 		}
 		if rec.RawTxHex == "" {
-			return nil, fmt.Errorf("Transaction is not in the local mempool. It may already be confirmed or rejected.")
+			return nil, fmt.Errorf("transaction is not in the local mempool; it may already be confirmed or rejected")
 		}
 		raw, derr := hex.DecodeString(rec.RawTxHex)
 		if derr != nil {
@@ -2308,16 +2301,6 @@ func deriveMinerState(status map[string]any, rpcOffline bool) string {
 	return "stopped"
 }
 
-func friendlyFallbackMinerState(active bool, pausedReason string) string {
-	if active {
-		return "running"
-	}
-	if strings.TrimSpace(pausedReason) != "" {
-		return "paused"
-	}
-	return "stopped"
-}
-
 func friendlyMinerStateLabel(state string) string {
 	switch strings.ToLower(strings.TrimSpace(state)) {
 	case "running":
@@ -2506,44 +2489,6 @@ func (s *Service) miningDestinationStatus() map[string]any {
 	}
 }
 
-func (s *Service) resolveMiningAddress(n *node.Node) (wallet.MiningAddressInfo, error) {
-	s.minerMu.Lock()
-	preferredAddress := strings.TrimSpace(s.minerRewardAddress)
-	preferredHash := strings.TrimSpace(s.minerRewardHashHex)
-	s.minerMu.Unlock()
-	if preferredAddress != "" {
-		pubHash := []byte(nil)
-		if preferredHash != "" {
-			decoded, err := hex.DecodeString(preferredHash)
-			if err == nil && len(decoded) == 20 {
-				pubHash = decoded
-			}
-		}
-		if pubHash == nil {
-			decoded, err := decodeMiningAddressHash(preferredAddress)
-			if err == nil {
-				pubHash = decoded
-			}
-		}
-		if pubHash != nil && s.walletOwnsAddress(n, preferredAddress) {
-			return wallet.MiningAddressInfo{Address: preferredAddress, PubKeyHashHex: hex.EncodeToString(pubHash)}, nil
-		}
-	}
-	addrs := n.Wallet().ListAddresses()
-	for i := len(addrs) - 1; i >= 0; i-- {
-		addr := strings.TrimSpace(addrs[i])
-		if addr == "" {
-			continue
-		}
-		pubHash, err := decodeMiningAddressHash(addr)
-		if err != nil {
-			continue
-		}
-		return wallet.MiningAddressInfo{Address: addr, PubKeyHashHex: hex.EncodeToString(pubHash)}, nil
-	}
-	return n.Wallet().NewMiningAddress()
-}
-
 func (s *Service) StartMiner(threads int) (map[string]any, error) {
 	if threads <= 0 {
 		threads = 1
@@ -2668,18 +2613,6 @@ func (s *Service) ForceStopMiner() (map[string]any, error) {
 		"local_loop_was_active":    active,
 		"local_loop_force_stopped": true,
 	}, nil
-}
-
-func (s *Service) setMinerStartBlocked(reason, message string) {
-	s.minerMu.Lock()
-	defer s.minerMu.Unlock()
-	s.minerEnabled = false
-	s.minerLoopRunning = false
-	s.minerPausedReason = strings.TrimSpace(reason)
-	s.minerLastError = strings.TrimSpace(message)
-	if s.minerStopReason == "" {
-		s.minerStopReason = strings.TrimSpace(reason)
-	}
 }
 
 func (s *Service) AddNode(addr string) error {
@@ -3059,19 +2992,19 @@ func friendlySendError(err error) error {
 	msg := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(msg, "wallet locked"):
-		return fmt.Errorf("Unlock your wallet before sending.")
+		return fmt.Errorf("unlock your wallet before sending")
 	case strings.Contains(msg, "insufficient available") || strings.Contains(msg, "pending transactions already lock") || strings.Contains(msg, "input already spent by mempool transaction"):
-		return fmt.Errorf("Not enough available LBTC. Some coins are already used by pending transactions. Wait for confirmation or use another address/UTXO.")
+		return fmt.Errorf("not enough available LBTC; some coins are already used by pending transactions; wait for confirmation or use another address/UTXO")
 	case strings.Contains(msg, "insufficient funds"):
-		return fmt.Errorf("Not enough available LBTC. Some coins are already used by pending transactions. Wait for confirmation or use another address/UTXO.")
+		return fmt.Errorf("not enough available LBTC; some coins are already used by pending transactions; wait for confirmation or use another address/UTXO")
 	case strings.Contains(msg, "bad destination") || strings.Contains(msg, "bad address") || strings.Contains(msg, "empty address"):
-		return fmt.Errorf("This is not a valid Legacy Coin address.")
+		return fmt.Errorf("this is not a valid legacy coin address")
 	case strings.Contains(msg, "dust"):
-		return fmt.Errorf("Amount is too small to send.")
+		return fmt.Errorf("amount is too small to send")
 	case strings.Contains(msg, "insufficient fee") || strings.Contains(msg, "min_relay_fee"):
-		return fmt.Errorf("Fee is too low for relay policy.")
+		return fmt.Errorf("fee is too low for relay policy")
 	case strings.Contains(msg, "amount"):
-		return fmt.Errorf("Enter a valid LBTC amount.")
+		return fmt.Errorf("enter a valid LBTC amount")
 	default:
 		return fmt.Errorf("%s", err.Error())
 	}
@@ -4060,137 +3993,6 @@ func ensureConfigKV(path, key, value string) error {
 	}
 	next := strings.TrimRight(strings.Join(lines, "\n"), "\n") + "\n"
 	return os.WriteFile(path, []byte(next), 0600)
-}
-
-func (s *Service) minerLoop(ctx context.Context, n *node.Node, pubHash []byte, threads int) {
-	defer func() {
-		s.minerMu.Lock()
-		s.minerActive = false
-		s.minerLoopRunning = false
-		s.minerCancel = nil
-		if s.minerStopReason == "" {
-			s.minerStopReason = "worker_exit_unexpected"
-		}
-		s.minerMu.Unlock()
-	}()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-		if health := n.Chain().StorageHealth(); !health.OK {
-			s.minerMu.Lock()
-			s.minerLastError = "storage health failed: " + health.Error
-			s.minerStopReason = "internal_error"
-			s.minerRejectBlocks++
-			s.minerMu.Unlock()
-			return
-		}
-		if reason := s.miningPauseReason(n); reason != "" {
-			s.minerMu.Lock()
-			s.minerPausedReason = reason
-			s.minerLastRecovery = "paused mining: " + reason
-			s.minerLoopRunning = false
-			s.minerLocalHashPS = 0
-			s.minerMu.Unlock()
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(10 * time.Second):
-				continue
-			}
-		}
-		s.minerMu.Lock()
-		s.minerPausedReason = ""
-		s.minerLastTemplate = time.Now()
-		if tip := n.Chain().Tip(); tip != nil {
-			s.minerLastTemplateHeight = tip.Height + 1
-		}
-		s.minerLoopRunning = true
-		s.minerMu.Unlock()
-		epochCtx, cancelEpoch := context.WithTimeout(ctx, 30*time.Second)
-		result, err := mining.MineBlock(epochCtx, n.Chain(), n.Mempool(), pow.YespowerHasher{Personalization: chaincfg.MainNet.YespowerPers}, pubHash, threads, func(p mining.Progress) {
-			s.minerMu.Lock()
-			s.minerLocalHashPS = p.Rate
-			s.minerSessionHashes = p.Attempts
-			s.minerLastNonce = p.Nonce
-			if p.TemplateHeight > 0 {
-				s.minerLastTemplateHeight = p.TemplateHeight
-			}
-			s.minerMu.Unlock()
-		})
-		cancelEpoch()
-		if err != nil {
-			if ctx.Err() != nil {
-				s.minerMu.Lock()
-				if s.minerStopReason == "" {
-					s.minerStopReason = "node_shutdown"
-				}
-				s.minerMu.Unlock()
-				return
-			}
-			if errors.Is(err, context.DeadlineExceeded) {
-				s.minerMu.Lock()
-				s.minerLastRecovery = "refreshed mining template after watchdog interval"
-				s.minerLoopRunning = false
-				s.minerLocalHashPS = 0
-				s.minerMu.Unlock()
-				continue
-			}
-			if errors.Is(err, mining.ErrTemplateRefreshRequired) {
-				s.minerMu.Lock()
-				s.minerPausedReason = ""
-				s.minerLastError = ""
-				s.minerLastRecovery = "refreshed mining template after soft template age"
-				s.minerLoopRunning = true
-				s.minerMu.Unlock()
-				continue
-			}
-			if errors.Is(err, mining.ErrStaleTemplate) {
-				s.minerMu.Lock()
-				s.minerPausedReason = "Mining paused: template is stale; waiting for fresh block template."
-				s.minerLastRecovery = "refreshed mining template after stale-template guard"
-				s.minerLoopRunning = false
-				s.minerLocalHashPS = 0
-				s.minerMu.Unlock()
-				continue
-			}
-			s.minerMu.Lock()
-			s.minerLastError = err.Error()
-			s.minerStopReason = "worker_exit_unexpected"
-			s.minerRejectBlocks++
-			s.minerLoopRunning = false
-			s.minerLocalHashPS = 0
-			s.minerMu.Unlock()
-			time.Sleep(1500 * time.Millisecond)
-			continue
-		}
-		s.minerMu.Lock()
-		s.minerLoopRunning = false
-		s.minerLocalHashPS = 0
-		s.minerMu.Unlock()
-		n.P2P().AnnounceBlock(result.Hash)
-		s.minerMu.Lock()
-		s.minerBlocks++
-		s.minerLastHash = result.Hash.String()
-		s.minerLastError = ""
-		s.minerMu.Unlock()
-	}
-}
-
-func (s *Service) miningPauseReason(n *node.Node) string {
-	if n.P2P().PeerCount() == 0 {
-		return "no peers"
-	}
-	status := n.P2P().SyncStatus()
-	if behind, _ := status["behind"].(bool); behind {
-		return "syncing"
-	}
-	if stalled, _ := status["sync_stalled"].(bool); stalled {
-		return "node stale"
-	}
-	return ""
 }
 
 func unixOrZero(t time.Time) int64 {

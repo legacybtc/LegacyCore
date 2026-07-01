@@ -57,7 +57,7 @@ func TestRunCLIUnauthorizedMessage(t *testing.T) {
 	}))
 	defer srv.Close()
 	err := runCLI([]string{"-rpcurl=" + srv.URL, "-datadir=" + dir, "getnetworkinfo"}, &bytes.Buffer{}, &bytes.Buffer{})
-	if err == nil || !strings.Contains(err.Error(), "RPC unauthorized") {
+	if err == nil || !strings.Contains(err.Error(), "rpc unauthorized") {
 		t.Fatalf("unauthorized err=%v", err)
 	}
 }

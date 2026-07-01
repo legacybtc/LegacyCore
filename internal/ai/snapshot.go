@@ -101,7 +101,7 @@ func str(m map[string]any, k, fallback string) string {
 }
 func boo(m map[string]any, k string) bool { v, _ := m[k].(bool); return v }
 func numInt(m map[string]any, k string) int {
-	v, _ := m[k]
+	v := m[k]
 	switch n := v.(type) {
 	case float64:
 		return int(n)

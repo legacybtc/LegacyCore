@@ -1,5 +1,7 @@
 package rpc
 
+//lint:file-ignore SA1019 required for Bitcoin P2PKH address compatibility
+
 import (
 	"bytes"
 	"context"
@@ -4162,7 +4164,7 @@ func validateMiningPubKeyHash(pubHashHex string) error {
 	return nil
 }
 
-const unownedMiningDestinationMessage = "Configured mining reward address is not owned by this wallet. Choose a wallet receive address or explicitly enable external payout mode."
+const unownedMiningDestinationMessage = "configured mining reward address is not owned by this wallet; choose a wallet receive address or explicitly enable external payout mode"
 
 type miningDestination struct {
 	Address       string
