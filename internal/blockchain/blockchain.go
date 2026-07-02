@@ -828,7 +828,7 @@ func (c *Chain) activeHeight(hash string) (int32, bool) {
 	if err != nil {
 		return 0, false
 	}
-	if activeIdx.Hash != hash {
+	if activeIdx.Hash != idx.Hash {
 		return 0, false
 	}
 	return idx.Height, true
@@ -1488,10 +1488,21 @@ func (c *Chain) HeadersAfter(locator []chainhash.Hash, stop chainhash.Hash, max 
 	startHeight := int32(-1)
 	matchedLocator := len(locator) == 0
 	for _, hash := range locator {
-		if height, ok := c.activeHeight(hash.String()); ok {
+		hashStr := hash.String()
+		if height, ok := c.activeHeight(hashStr); ok {
 			startHeight = height
 			matchedLocator = true
 			break
+		}
+		c.mu.RLock()
+		canonical := c.legacyByHash[hashStr]
+		c.mu.RUnlock()
+		if canonical != "" {
+			if height, ok := c.activeHeight(canonical); ok {
+				startHeight = height
+				matchedLocator = true
+				break
+			}
 		}
 	}
 	if !matchedLocator {

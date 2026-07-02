@@ -31,7 +31,7 @@ const (
 	userAgent                    = "/Legacy-GO:1.0.27/"
 	maxPeers                     = 125
 	maxOutboundPeers             = 16
-	maxGetDataItems              = 1000
+	maxGetDataItems              = 256
 	maxServeInvItems             = 256
 	peerWriteTimeout             = 60 * time.Second
 	maxAddrRelayItems            = 10
@@ -1652,6 +1652,14 @@ func (s *Server) Start(ctx context.Context) error {
 	s.setP2PRunning(true)
 	defer s.setP2PRunning(false)
 	s.log.Printf("Legacy Coin P2P listening on %s", ln.Addr())
+	// Log both hash forms of the genesis block for wire-compat diagnostics
+	if tip := s.chain.Tip(); tip != nil {
+		if b, _, err := s.chain.BlockByHash(tip.Hash); err == nil {
+			if lh, lerr := s.chain.LegacyHeaderHash(b.Header); lerr == nil {
+				s.log.Printf("p2p genesis hashes: yespower=%s sha256d=%s", tip.Hash, lh.String())
+			}
+		}
+	}
 
 	s.wg.Add(1)
 	go func() {
@@ -2726,13 +2734,20 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 				break
 			}
 			s.log.Printf("p2p reject from %s: %s %s", p.remote, reject.Cmd, reject.Reason)
+		default:
+			s.log.Printf("p2p unknown message from %s: cmd=%q payload_len=%d", conn.RemoteAddr(), msg.Command, len(msg.Payload))
 		}
 		if gotVersion && gotVerAck && !didSyncRequest {
 			didSyncRequest = true
 			if s.pretty {
 				s.log.Printf("СЂСџРЉС’ Connected peer | %s | outbound=%v | height %d | chain_id=%s", s.peerLabel(p), outbound, p.height, p.chainID)
 			} else {
-				s.log.Printf("p2p handshake complete with %s outbound=%v", conn.RemoteAddr(), outbound)
+				p.lastMu.Lock()
+				pver := p.version
+				psub := p.subver
+				pheight := p.height
+				p.lastMu.Unlock()
+				s.log.Printf("p2p handshake complete with %s outbound=%v version=%d subver=%s height=%d", conn.RemoteAddr(), outbound, pver, psub, pheight)
 			}
 			_ = conn.SetReadDeadline(time.Now().Add(peerIdleTimeout))
 			if err := s.requestHeaders(p); err != nil {
@@ -3219,6 +3234,15 @@ func randomUint64() (uint64, error) {
 
 func (s *Server) requestHeaders(p *peer) error {
 	locator := s.chain.Locator()
+	// Also append the legacy SHA256d hash so older peers that index blocks
+	// by SHA256d (rather than yespower) can locate our chain tip.
+	if tip := s.chain.Tip(); tip != nil && tip.Hash != "" {
+		if b, _, err := s.chain.BlockByHash(tip.Hash); err == nil {
+			if lh, lerr := s.chain.LegacyHeaderHash(b.Header); lerr == nil && lh.String() != tip.Hash {
+				locator = append(locator, lh)
+			}
+		}
+	}
 	payload, err := (wire.GetBlocks{Version: protocolVersion, Locator: locator}).Bytes()
 	if err != nil {
 		return err
@@ -3227,7 +3251,7 @@ func (s *Server) requestHeaders(p *peer) error {
 	if len(locator) > 0 {
 		tip = locator[0].String()
 	}
-	s.log.Printf("p2p send getheaders to %s locator_tip=%s", p.remote, tip)
+	s.log.Printf("p2p send getheaders to %s locator_tip=%s locator_len=%d", p.remote, tip, len(locator))
 	s.noteSyncRequest()
 	s.noteGetHeadersSent()
 	p.setLastLocatorTip(tip)
@@ -3236,6 +3260,15 @@ func (s *Server) requestHeaders(p *peer) error {
 
 func (s *Server) requestBlocks(p *peer) error {
 	locator := s.chain.Locator()
+	// Also append the legacy SHA256d hash so older peers that index blocks
+	// by SHA256d (rather than yespower) can locate our chain tip.
+	if tip := s.chain.Tip(); tip != nil && tip.Hash != "" {
+		if b, _, err := s.chain.BlockByHash(tip.Hash); err == nil {
+			if lh, lerr := s.chain.LegacyHeaderHash(b.Header); lerr == nil && lh.String() != tip.Hash {
+				locator = append(locator, lh)
+			}
+		}
+	}
 	payload, err := (wire.GetBlocks{Version: protocolVersion, Locator: locator}).Bytes()
 	if err != nil {
 		return err
@@ -3244,7 +3277,7 @@ func (s *Server) requestBlocks(p *peer) error {
 	if len(locator) > 0 {
 		tip = locator[0].String()
 	}
-	s.log.Printf("p2p send getblocks to %s locator_tip=%s", p.remote, tip)
+	s.log.Printf("p2p send getblocks to %s locator_tip=%s locator_len=%d", p.remote, tip, len(locator))
 	s.noteSyncRequest()
 	s.noteGetBlocksSent()
 	p.setLastLocatorTip(tip)
@@ -3550,6 +3583,7 @@ func (s *Server) serveHeaders(p *peer, req wire.GetBlocks) error {
 func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error {
 	if len(headers) == 0 {
 		p.markHeightMetadataSeen()
+		s.log.Printf("p2p received 0 headers from %s (empty headers response)", p.remote)
 		return nil
 	}
 	tipHeight := int32(-1)
@@ -3590,19 +3624,16 @@ func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error 
 	}
 	// Build the full list of wanted inv entries (all headers, no cap).
 	// Split into batches of maxGetDataItems and send one getdata per batch.
-	allWant := make([]wire.InvVect, 0, len(hashes)*2)
+	// Use the canonical yespower hash — peers index stored blocks by
+	// yespower, not SHA256d, from their HashHeader function.
+	allWant := make([]wire.InvVect, 0, len(hashes))
 	skipped := 0
-	dualHash := 0
-	for i, hash := range hashes {
+	for _, hash := range hashes {
 		if s.chain.HasBlock(hash.String()) {
 			skipped++
 			continue
 		}
 		allWant = append(allWant, wire.InvVect{Type: wire.InvTypeBlock, Hash: hash})
-		if legacy, lerr := s.chain.LegacyHeaderHash(headers[i]); lerr == nil && legacy != hash {
-			allWant = append(allWant, wire.InvVect{Type: wire.InvTypeBlock, Hash: legacy})
-			dualHash++
-		}
 	}
 	if len(allWant) == 0 {
 		s.log.Printf("p2p validated %d headers from %s but all %d block bodies already present (want=0, skipped=%d)",
@@ -3616,6 +3647,10 @@ func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error 
 			batchEnd = len(allWant)
 		}
 		batch := allWant[batchStart:batchEnd]
+		if len(batch) > 0 {
+			s.log.Printf("p2p getdata batch %d-%d/%d: first=%s last=%s",
+				batchStart, batchEnd, len(allWant), batch[0].Hash.String(), batch[len(batch)-1].Hash.String())
+		}
 		payload, err := wire.InvPayload(batch)
 		if err != nil {
 			return err
@@ -3633,7 +3668,7 @@ func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error 
 		}
 		totalRequested += len(batch)
 	}
-	s.log.Printf("p2p validated %d headers from %s; requested %d block bodies via getdata in %d batch(es) (tip=%d, skipped=%d, dual_hash=%d)",
-		len(hashes), p.remote, totalRequested, (len(allWant)+maxGetDataItems-1)/maxGetDataItems, tipHeight, skipped, dualHash)
+	s.log.Printf("p2p validated %d headers from %s; requested %d block bodies via getdata in %d batch(es) (tip=%d, skipped=%d)",
+		len(hashes), p.remote, totalRequested, (len(allWant)+maxGetDataItems-1)/maxGetDataItems, tipHeight, skipped)
 	return nil
 }
