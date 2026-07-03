@@ -28,7 +28,7 @@ import (
 const (
 	protocolVersion       int32  = 70015
 	nodeNetwork           uint64 = 1
-	userAgent                    = "/Legacy-GO:1.0.27/"
+	userAgent                    = "/Legacy-GO:1.0.28/"
 	maxPeers                     = 125
 	maxOutboundPeers             = 16
 	maxGetDataItems              = 256
@@ -1793,6 +1793,10 @@ func (s *Server) syncLoop(ctx context.Context) {
 			s.noteSyncBeat()
 			s.logSyncHeartbeat()
 			s.requestSyncFromAheadPeers(false)
+			// Re-request timed-out blocks from alternative peers
+			for _, hash := range s.sweepGetdataTimeouts() {
+				s.requestBlockHashFromCandidates(hash, 2)
+			}
 		}
 	}
 }
@@ -3626,15 +3630,25 @@ func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error 
 	// Split into batches of maxGetDataItems and send one getdata per batch.
 	// Use the canonical yespower hash — peers index stored blocks by
 	// yespower, not SHA256d, from their HashHeader function.
+	// Skip blocks that are already pending (previously requested but not yet
+	// received) to avoid flooding peers with duplicate getdata requests.
 	allWant := make([]wire.InvVect, 0, len(hashes))
 	skipped := 0
+	pending := 0
+	s.getdataMu.Lock()
 	for _, hash := range hashes {
-		if s.chain.HasBlock(hash.String()) {
+		hashStr := hash.String()
+		if s.chain.HasBlock(hashStr) {
 			skipped++
+			continue
+		}
+		if _, alreadyPending := s.getdataReqs[hashStr]; alreadyPending {
+			pending++
 			continue
 		}
 		allWant = append(allWant, wire.InvVect{Type: wire.InvTypeBlock, Hash: hash})
 	}
+	s.getdataMu.Unlock()
 	if len(allWant) == 0 {
 		s.log.Printf("p2p validated %d headers from %s but all %d block bodies already present (want=0, skipped=%d)",
 			len(hashes), p.remote, len(hashes), skipped)
@@ -3668,7 +3682,7 @@ func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error 
 		}
 		totalRequested += len(batch)
 	}
-	s.log.Printf("p2p validated %d headers from %s; requested %d block bodies via getdata in %d batch(es) (tip=%d, skipped=%d)",
-		len(hashes), p.remote, totalRequested, (len(allWant)+maxGetDataItems-1)/maxGetDataItems, tipHeight, skipped)
+	s.log.Printf("p2p validated %d headers from %s; requested %d new block bodies via getdata in %d batch(es) (tip=%d, skipped=%d, pending=%d)",
+		len(hashes), p.remote, totalRequested, (len(allWant)+maxGetDataItems-1)/maxGetDataItems, tipHeight, skipped, pending)
 	return nil
 }
