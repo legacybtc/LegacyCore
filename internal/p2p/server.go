@@ -1968,9 +1968,7 @@ func (s *Server) requestSyncFromPeerIfBehind(p *peer, force bool) error {
 		return err
 	}
 	if err := s.requestBlocks(p); err != nil {
-		p.setSyncResult(err)
-		p.conn.Close()
-		return err
+		s.log.Printf("p2p send getblocks to %s failed (non-fatal): %v", p.remote, err)
 	}
 	p.setSyncResult(nil)
 	return nil
@@ -3626,17 +3624,22 @@ func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error 
 		}
 		p.setAdvertisedHeight(advertised)
 	}
-	// Build the full list of wanted inv entries (all headers, no cap).
-	// Split into batches of maxGetDataItems and send one getdata per batch.
-	// Use the canonical yespower hash — peers index stored blocks by
-	// yespower, not SHA256d, from their HashHeader function.
-	// Skip blocks that are already pending (previously requested but not yet
-	// received) to avoid flooding peers with duplicate getdata requests.
-	allWant := make([]wire.InvVect, 0, len(hashes))
+	// Build the list of wanted blocks (skip already known or pending).
+	// Each block contributes up to 2 inv entries in getdata:
+	//  1. canonical yespower hash (used by v1.0.20+ CGO-built peers)
+	//  2. legacy SHA256d hash (used by v0.1.0 / rc2 peers and mixed-build
+	//     seed nodes that index stored blocks by SHA256d, not yespower).
+	// Dual-hash ensures any peer version can locate and serve the block body.
+	type wantedBlock struct {
+		header wire.BlockHeader
+		hash   chainhash.Hash
+	}
+	wanted := make([]wantedBlock, 0, len(hashes))
 	skipped := 0
 	pending := 0
 	s.getdataMu.Lock()
-	for _, hash := range hashes {
+	for i := range hashes {
+		hash := hashes[i]
 		hashStr := hash.String()
 		if s.chain.HasBlock(hashStr) {
 			skipped++
@@ -3646,32 +3649,43 @@ func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error 
 			pending++
 			continue
 		}
-		allWant = append(allWant, wire.InvVect{Type: wire.InvTypeBlock, Hash: hash})
+		wanted = append(wanted, wantedBlock{header: headers[i], hash: hash})
 	}
 	s.getdataMu.Unlock()
-	if len(allWant) == 0 {
+	if len(wanted) == 0 {
 		s.log.Printf("p2p validated %d headers from %s but all %d block bodies already present (want=0, skipped=%d)",
 			len(hashes), p.remote, len(hashes), skipped)
 		return nil
 	}
-	totalRequested := 0
-	for batchStart := 0; batchStart < len(allWant); batchStart += maxGetDataItems {
-		batchEnd := batchStart + maxGetDataItems
-		if batchEnd > len(allWant) {
-			batchEnd = len(allWant)
+	dualHash := 0
+	totalBlocks := 0
+	batches := 0
+	for batchStart := 0; batchStart < len(wanted); {
+		batches++
+		batch := make([]wire.InvVect, 0, maxGetDataItems)
+		batchBlocks := 0
+		for batchStart < len(wanted) && len(batch) < maxGetDataItems {
+			w := wanted[batchStart]
+			batch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: w.hash})
+			batchBlocks++
+			batchStart++
+			if len(batch) < maxGetDataItems {
+				if legacy, lerr := s.chain.LegacyHeaderHash(w.header); lerr == nil && legacy != w.hash {
+					batch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: legacy})
+					dualHash++
+				}
+			}
 		}
-		batch := allWant[batchStart:batchEnd]
 		if len(batch) > 0 {
-			s.log.Printf("p2p getdata batch %d-%d/%d: first=%s last=%s",
-				batchStart, batchEnd, len(allWant), batch[0].Hash.String(), batch[len(batch)-1].Hash.String())
+			s.log.Printf("p2p getdata batch %d blocks %d entries first=%s last=%s",
+				batchBlocks, len(batch), batch[0].Hash.String(), batch[len(batch)-1].Hash.String())
 		}
 		payload, err := wire.InvPayload(batch)
 		if err != nil {
 			return err
 		}
-		p.markBlocksRequested(len(batch))
-		s.addBlocksRequested(len(batch))
-		// Record each canonical hash for timeout tracking
+		p.markBlocksRequested(batchBlocks)
+		s.addBlocksRequested(batchBlocks)
 		for _, inv := range batch {
 			if inv.Type == wire.InvTypeBlock {
 				s.recordGetdataReq(inv.Hash.String(), p.remote)
@@ -3680,9 +3694,9 @@ func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error 
 		if err := s.writePeerMessage(p, wire.CommandGetData, payload); err != nil {
 			return err
 		}
-		totalRequested += len(batch)
+		totalBlocks += batchBlocks
 	}
-	s.log.Printf("p2p validated %d headers from %s; requested %d new block bodies via getdata in %d batch(es) (tip=%d, skipped=%d, pending=%d)",
-		len(hashes), p.remote, totalRequested, (len(allWant)+maxGetDataItems-1)/maxGetDataItems, tipHeight, skipped, pending)
+	s.log.Printf("p2p validated %d headers from %s; requested %d new block bodies via getdata in %d batch(es) (tip=%d, skipped=%d, pending=%d, dual_hash=%d)",
+		len(hashes), p.remote, totalBlocks, batches, tipHeight, skipped, pending, dualHash)
 	return nil
 }
