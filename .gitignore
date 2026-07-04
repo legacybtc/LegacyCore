@@ -40,3 +40,4 @@ data/
 
 # Test logs
 sync_test.log
+sync_*.log

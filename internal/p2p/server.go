@@ -28,7 +28,7 @@ import (
 const (
 	protocolVersion       int32  = 70015
 	nodeNetwork           uint64 = 1
-	userAgent                    = "/Legacy-GO:1.0.28/"
+	userAgent                    = "/Legacy-GO:1.0.30/"
 	maxPeers                     = 125
 	maxOutboundPeers             = 16
 	maxGetDataItems              = 256
@@ -1288,7 +1288,7 @@ func (s *Server) syncDiagnostic(localHeight, bestPeerHeight int32, behind bool, 
 	case hdrBatches > 0 && hdrRejected == hdrBatches && blocksReqd == 0:
 		return fmt.Sprintf("all %d header batch(es) REJECTED by ValidateHeaderSequence; no getdata sent. Likely a consensus/protocol mismatch with the peer (difficulty, bits, pow, or parent linkage). Check daemon log for 'header batch ... REJECTED'.", hdrBatches)
 	case blocksReqd > 0 && blockMsgs == 0:
-		return fmt.Sprintf("requested %d block bodies via getdata but received 0 block messages; the peer is silently NOT serving blocks (header_batches_recv=%d, rejected=%d). If even the %d blocks the peer itself announced in inv are being requested with the peer's own hashes and still not served, the peer node itself is broken - it must be upgraded to 1.0.21 (sync/orphan recovery and legacy wire-hash compatibility). 1.0.2 seed nodes must be retired. Run: legacycoin-cli getpeerinfo and check subver/chain_id to confirm the peer version.", blocksReqd, hdrBatches, hdrRejected, blockInvs)
+		return fmt.Sprintf("requested %d block bodies via getdata but received 0 block messages; the peer is silently NOT serving blocks (header_batches_recv=%d, rejected=%d). If even the %d blocks the peer itself announced in inv are being requested with the peer's own hashes and still not served, the peer node itself is broken - it must be upgraded to v1.0.30+ (serveBlockInventory uses stored hashes). v1.0.21/1.0.2 seed nodes must be retired. Run: legacycoin-cli getpeerinfo and check subver/chain_id to confirm the peer version.", blocksReqd, hdrBatches, hdrRejected, blockInvs)
 	case blockMsgs > 0 && lastBlockHash == "":
 		return fmt.Sprintf("received %d block message(s) but none were processed as connected; all orphaned or rejected. Check 'Block processed | status=orphan' lines and last_block_reason.", blockMsgs)
 	case missingReqs > 0:
@@ -2575,6 +2575,9 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 				s.log.Printf("p2p parse block from %s: %v", conn.RemoteAddr(), err)
 				return
 			}
+			if bh, bhErr := s.chain.BlockHash(block); bhErr == nil {
+				s.log.Printf("p2p RECEIVED BLOCK from %s: hash=%s prev=%s", conn.RemoteAddr(), bh.String(), block.Header.PrevBlock.String())
+			}
 			// Clear outstanding getdata tracking for both canonical and
 			// legacy wire hashes. Mixed-version peers can serve either form.
 			s.clearGetdataForBlock(block)
@@ -2657,6 +2660,9 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 				}
 			}
 			s.addBlockInvsReceived(blockInvs)
+			if blockInvs > 0 {
+				s.log.Printf("p2p RECEIVED INV block hashes from %s: first=%s count=%d", conn.RemoteAddr(), inv[0].Hash.String(), blockInvs)
+			}
 			if err := s.requestUnknownBlocks(p, inv); err != nil {
 				s.log.Printf("p2p request blocks from %s: %v", conn.RemoteAddr(), err)
 				return
@@ -3236,8 +3242,6 @@ func randomUint64() (uint64, error) {
 
 func (s *Server) requestHeaders(p *peer) error {
 	locator := s.chain.Locator()
-	// Also append the legacy SHA256d hash so older peers that index blocks
-	// by SHA256d (rather than yespower) can locate our chain tip.
 	if tip := s.chain.Tip(); tip != nil && tip.Hash != "" {
 		if b, _, err := s.chain.BlockByHash(tip.Hash); err == nil {
 			if lh, lerr := s.chain.LegacyHeaderHash(b.Header); lerr == nil && lh.String() != tip.Hash {
@@ -3261,13 +3265,23 @@ func (s *Server) requestHeaders(p *peer) error {
 }
 
 func (s *Server) requestBlocks(p *peer) error {
-	locator := s.chain.Locator()
-	// Also append the legacy SHA256d hash so older peers that index blocks
-	// by SHA256d (rather than yespower) can locate our chain tip.
-	if tip := s.chain.Tip(); tip != nil && tip.Hash != "" {
-		if b, _, err := s.chain.BlockByHash(tip.Hash); err == nil {
-			if lh, lerr := s.chain.LegacyHeaderHash(b.Header); lerr == nil && lh.String() != tip.Hash {
-				locator = append(locator, lh)
+	canonical := s.chain.Locator()
+	locator := make([]chainhash.Hash, 0, len(canonical)*2)
+	seen := make(map[string]bool)
+	for _, h := range canonical {
+		hs := h.String()
+		if seen[hs] {
+			continue
+		}
+		seen[hs] = true
+		locator = append(locator, h)
+		if b, _, err := s.chain.BlockByHash(hs); err == nil {
+			if lh, lerr := s.chain.LegacyHeaderHash(b.Header); lerr == nil {
+				lhs := lh.String()
+				if lhs != hs && !seen[lhs] {
+					seen[lhs] = true
+					locator = append(locator, lh)
+				}
 			}
 		}
 	}
@@ -3296,12 +3310,11 @@ func (s *Server) requestUnknownBlocks(p *peer, inv []wire.InvVect) error {
 				s.log.Printf("p2p received inv block %s from %s: already known", v.Hash.String(), p.remote)
 				continue
 			}
-			s.log.Printf("p2p received inv block %s from %s: unknown, requesting getdata", v.Hash.String(), p.remote)
-			// Ask for headers once per inv batch so a node that is behind can
-			// recover any missing ancestors, but do not wait for headers before
-			// requesting the announced block body. The common case is a peer
-			// announcing the next block after our tip; waiting for a header round
-			// trip can leave followers stuck even though they received the INV.
+			s.log.Printf("p2p received inv block %s from %s: unknown, requesting getdata + headers", v.Hash.String(), p.remote)
+			// Request headers for validation even though we send getdata
+			// immediately with the peer's own INV hash. Older peers (v0.1.0)
+			// serve blocks by their own hashes; headers-based SHA256d getdata
+			// is a fallback for peers that store by SHA256d.
 			if !requestedHeaders {
 				requestedHeaders = true
 				if err := s.requestHeaders(p); err != nil {
@@ -3544,21 +3557,31 @@ func minInt(a int, b int) int {
 }
 
 func (s *Server) serveBlockInventory(p *peer, req wire.GetBlocks) error {
-	headers, err := s.chain.HeadersAfter(req.Locator, req.Stop, maxServeInvItems)
-	if err != nil {
-		return err
-	}
-	if len(headers) == 0 {
-		s.log.Printf("p2p no block inventory after locator for %s", p.remote)
+	startHeight, ok := s.chain.LocatorHeight(req.Locator)
+	if !ok {
+		s.log.Printf("p2p no common locator for %s", p.remote)
 		return nil
 	}
-	inv := make([]wire.InvVect, 0, len(headers))
-	for _, header := range headers {
-		hash, err := s.chain.HashHeader(header)
+	tip := s.chain.Tip()
+	if tip == nil || tip.Hash == "" {
+		s.log.Printf("p2p no tip for %s", p.remote)
+		return nil
+	}
+
+	inv := make([]wire.InvVect, 0, maxServeInvItems)
+	for height := startHeight + 1; height <= tip.Height && len(inv) < maxServeInvItems; height++ {
+		idx, err := s.chain.IndexByHeight(height)
 		if err != nil {
 			return err
 		}
-		inv = append(inv, wire.InvVect{Type: wire.InvTypeBlock, Hash: hash})
+		h, err := chainhash.FromString(idx.Hash)
+		if err != nil {
+			return err
+		}
+		inv = append(inv, wire.InvVect{Type: wire.InvTypeBlock, Hash: h})
+		if !req.Stop.IsZero() && idx.Hash == req.Stop.String() {
+			break
+		}
 	}
 	payload, err := wire.InvPayload(inv)
 	if err != nil {
@@ -3626,9 +3649,11 @@ func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error 
 	}
 	// Build the list of wanted blocks (skip already known or pending).
 	// Each block contributes up to 2 inv entries in getdata:
-	//  1. canonical yespower hash (used by v1.0.20+ CGO-built peers)
-	//  2. legacy SHA256d hash (used by v0.1.0 / rc2 peers and mixed-build
-	//     seed nodes that index stored blocks by SHA256d, not yespower).
+	//  1. legacy SHA256d hash FIRST — older v0.1.0 / rc2 peers that use
+	//     BlockByHash (not BlockByWireHash) may abort on the first "not
+	//     found" hash and close the connection, so the first hash MUST be
+	//     one the oldest peer can resolve.
+	//  2. canonical yespower hash second (used by v1.0.20+ peers).
 	// Dual-hash ensures any peer version can locate and serve the block body.
 	type wantedBlock struct {
 		header wire.BlockHeader
@@ -3653,11 +3678,14 @@ func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error 
 	}
 	s.getdataMu.Unlock()
 	if len(wanted) == 0 {
-		s.log.Printf("p2p validated %d headers from %s but all %d block bodies already present (want=0, skipped=%d)",
-			len(hashes), p.remote, len(hashes), skipped)
+		s.log.Printf("p2p validated %d headers from %s but all %d block bodies already present or pending (want=0, skipped=%d, pending=%d)",
+			len(hashes), p.remote, len(hashes), skipped, pending)
 		return nil
 	}
-	dualHash := 0
+	// Send getdata with the canonical yespower hash (pure-Go for build tag
+	// legacycoin_experimental_pure_yespower, CGO yespower otherwise). The
+	// INV-based path also sends getdata with the peer's INV hashes as a
+	// fallback for peers that use a different hash for storage vs HashHeader.
 	totalBlocks := 0
 	batches := 0
 	for batchStart := 0; batchStart < len(wanted); {
@@ -3666,22 +3694,18 @@ func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error 
 		batchBlocks := 0
 		for batchStart < len(wanted) && len(batch) < maxGetDataItems {
 			w := wanted[batchStart]
+			batchStart++
 			batch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: w.hash})
 			batchBlocks++
-			batchStart++
-			if len(batch) < maxGetDataItems {
-				if legacy, lerr := s.chain.LegacyHeaderHash(w.header); lerr == nil && legacy != w.hash {
-					batch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: legacy})
-					dualHash++
-				}
-			}
 		}
-		if len(batch) > 0 {
-			s.log.Printf("p2p getdata batch %d blocks %d entries first=%s last=%s",
-				batchBlocks, len(batch), batch[0].Hash.String(), batch[len(batch)-1].Hash.String())
+		if len(batch) == 0 {
+			continue
 		}
 		payload, err := wire.InvPayload(batch)
 		if err != nil {
+			return err
+		}
+		if err := s.writePeerMessage(p, wire.CommandGetData, payload); err != nil {
 			return err
 		}
 		p.markBlocksRequested(batchBlocks)
@@ -3691,12 +3715,9 @@ func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error 
 				s.recordGetdataReq(inv.Hash.String(), p.remote)
 			}
 		}
-		if err := s.writePeerMessage(p, wire.CommandGetData, payload); err != nil {
-			return err
-		}
 		totalBlocks += batchBlocks
 	}
-	s.log.Printf("p2p validated %d headers from %s; requested %d new block bodies via getdata in %d batch(es) (tip=%d, skipped=%d, pending=%d, dual_hash=%d)",
-		len(hashes), p.remote, totalBlocks, batches, tipHeight, skipped, pending, dualHash)
+	s.log.Printf("p2p validated %d headers from %s; requested %d new block bodies via getdata in %d batch(es) (tip=%d, skipped=%d, pending=%d)",
+		len(hashes), p.remote, totalBlocks, batches, tipHeight, skipped, pending)
 	return nil
 }

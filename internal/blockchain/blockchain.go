@@ -1471,6 +1471,24 @@ func (c *Chain) ActiveHeight(hash string) (int32, bool) {
 	return c.activeHeight(hash)
 }
 
+func (c *Chain) LocatorHeight(locator []chainhash.Hash) (height int32, ok bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	for _, hash := range locator {
+		hashStr := hash.String()
+		if h, found := c.activeHeight(hashStr); found {
+			return h, true
+		}
+		canonical := c.legacyByHash[hashStr]
+		if canonical != "" {
+			if h, found := c.activeHeight(canonical); found {
+				return h, true
+			}
+		}
+	}
+	return 0, false
+}
+
 func (c *Chain) HeadersAfter(locator []chainhash.Hash, stop chainhash.Hash, max int) ([]wire.BlockHeader, error) {
 	if max <= 0 {
 		return nil, nil
