@@ -2663,6 +2663,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 			if blockInvs > 0 {
 				s.log.Printf("p2p RECEIVED INV block hashes from %s: first=%s count=%d", conn.RemoteAddr(), inv[0].Hash.String(), blockInvs)
 			}
+			s.log.Printf("p2p DEBUG about to call requestUnknownBlocks for %d inv items (%d blocks)", len(inv), blockInvs)
 			if err := s.requestUnknownBlocks(p, inv); err != nil {
 				s.log.Printf("p2p request blocks from %s: %v", conn.RemoteAddr(), err)
 				return
@@ -3301,6 +3302,7 @@ func (s *Server) requestBlocks(p *peer) error {
 }
 
 func (s *Server) requestUnknownBlocks(p *peer, inv []wire.InvVect) error {
+	s.log.Printf("p2p DEBUG requestUnknownBlocks called with %d inv items", len(inv))
 	want := make([]wire.InvVect, 0, len(inv))
 	requestedHeaders := false
 	for _, v := range inv {
@@ -3682,10 +3684,12 @@ func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error 
 			len(hashes), p.remote, len(hashes), skipped, pending)
 		return nil
 	}
-	// Send getdata with the canonical yespower hash (pure-Go for build tag
-	// legacycoin_experimental_pure_yespower, CGO yespower otherwise). The
-	// INV-based path also sends getdata with the peer's INV hashes as a
-	// fallback for peers that use a different hash for storage vs HashHeader.
+	// Send getdata with the legacy SHA256d hash (double-SHA256 of the serialized
+	// header). SHA256d is computed identically by all peer implementations (old C,
+	// pure-Go, CGO) because the header bytes do not depend on the yespower variant.
+	// The peer always resolves SHA256d via BlockByWireHash → legacyByHash map → canonical
+	// yespower hash → direct storage lookup. This is the only hash that works
+	// across all peer versions regardless of their yespower hashing implementation.
 	totalBlocks := 0
 	batches := 0
 	for batchStart := 0; batchStart < len(wanted); {
@@ -3695,7 +3699,12 @@ func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error 
 		for batchStart < len(wanted) && len(batch) < maxGetDataItems {
 			w := wanted[batchStart]
 			batchStart++
-			batch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: w.hash})
+			legacyHash, err := s.chain.LegacyHeaderHash(w.header)
+			if err != nil {
+				s.log.Printf("p2p getdata legacy hash error for block from %s: %v", p.remote, err)
+				continue
+			}
+			batch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: legacyHash})
 			batchBlocks++
 		}
 		if len(batch) == 0 {
