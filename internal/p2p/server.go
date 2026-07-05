@@ -3647,51 +3647,38 @@ func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error 
 		}
 		p.setAdvertisedHeight(advertised)
 	}
-	// Build the list of wanted blocks (skip already known or pending).
-	// Each block contributes up to 2 inv entries in getdata:
-	//  1. legacy SHA256d hash FIRST — older v0.1.0 / rc2 peers that use
-	//     BlockByHash (not BlockByWireHash) may abort on the first "not
-	//     found" hash and close the connection, so the first hash MUST be
-	//     one the oldest peer can resolve.
-	//  2. canonical yespower hash second (used by v1.0.20+ peers).
-	// Dual-hash ensures any peer version can locate and serve the block body.
+	// Build the list of wanted blocks (skip already known).
 	type wantedBlock struct {
 		header wire.BlockHeader
 		hash   chainhash.Hash
+		legacy chainhash.Hash
 	}
-	wanted := make([]wantedBlock, 0, len(hashes))
 	skipped := 0
-	pending := 0
-	s.getdataMu.Lock()
+	wanted := make([]wantedBlock, 0, len(hashes))
 	for i := range hashes {
 		hash := hashes[i]
-		hashStr := hash.String()
-		if s.chain.HasBlock(hashStr) {
+		if s.chain.HasBlock(hash.String()) {
 			skipped++
 			continue
 		}
-		if _, alreadyPending := s.getdataReqs[hashStr]; alreadyPending {
-			pending++
-			continue
+		legacy, err := s.chain.LegacyHeaderHash(headers[i])
+		if err != nil {
+			return fmt.Errorf("legacy hash for header %d: %w", i, err)
 		}
-		wanted = append(wanted, wantedBlock{header: headers[i], hash: hash})
+		wanted = append(wanted, wantedBlock{header: headers[i], hash: hash, legacy: legacy})
 	}
-	s.getdataMu.Unlock()
 	if len(wanted) == 0 {
-		s.log.Printf("p2p validated %d headers from %s but all %d block bodies already present or pending (want=0, skipped=%d, pending=%d)",
-			len(hashes), p.remote, len(hashes), skipped, pending)
+		s.log.Printf("p2p validated %d headers from %s but all %d block bodies already present (want=0, skipped=%d)",
+			len(hashes), p.remote, len(hashes), skipped)
 		return nil
 	}
-	// Send getdata with the canonical yespower hash (CGO yespower). Old C peers
-	// (v0.1.0, 91.219.63.20) store blocks indexed by this hash so getdata works
-	// immediately. Pure-Go peers (176.229.91.92) use a different hash family and
-	// are handled by the INV-based path which sends the peer's own INV hash.
 	totalBlocks := 0
 	batches := 0
 	for batchStart := 0; batchStart < len(wanted); {
 		batches++
 		batch := make([]wire.InvVect, 0, maxGetDataItems)
 		batchBlocks := 0
+		startIdx := batchStart
 		for batchStart < len(wanted) && len(batch) < maxGetDataItems {
 			w := wanted[batchStart]
 			batchStart++
@@ -3715,9 +3702,29 @@ func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error 
 				s.recordGetdataReq(inv.Hash.String(), p.remote)
 			}
 		}
+		// Also send a legacy (SHA256d) getdata alongside so that
+		// mixed-version peers (e.g. BIP152 pure-Go) can serve either form.
+		legacyBatch := make([]wire.InvVect, 0, batchBlocks)
+		for j := startIdx; j < batchStart; j++ {
+			legacyBatch = append(legacyBatch, wire.InvVect{Type: wire.InvTypeBlock, Hash: wanted[j].legacy})
+		}
+		legacyPayload, err := wire.InvPayload(legacyBatch)
+		if err != nil {
+			return err
+		}
+		if err := s.writePeerMessage(p, wire.CommandGetData, legacyPayload); err != nil {
+			return err
+		}
+		p.markBlocksRequested(batchBlocks)
+		s.addBlocksRequested(batchBlocks)
+		for _, inv := range legacyBatch {
+			if inv.Type == wire.InvTypeBlock {
+				s.recordGetdataReq(inv.Hash.String(), p.remote)
+			}
+		}
 		totalBlocks += batchBlocks
 	}
-	s.log.Printf("p2p validated %d headers from %s; requested %d new block bodies via getdata in %d batch(es) (tip=%d, skipped=%d, pending=%d)",
-		len(hashes), p.remote, totalBlocks, batches, tipHeight, skipped, pending)
+	s.log.Printf("p2p validated %d headers from %s; requested %d new block bodies via getdata in %d batch(es) (tip=%d, skipped=%d)",
+		len(hashes), p.remote, totalBlocks, batches, tipHeight, skipped)
 	return nil
 }
