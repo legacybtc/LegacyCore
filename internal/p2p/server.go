@@ -1960,6 +1960,7 @@ func (s *Server) requestSyncFromPeerIfBehind(p *peer, force bool) error {
 	default:
 		return nil
 	}
+	s.log.Printf("p2p HANDLER requestSyncFromPeerIfBehind calling requestHeaders for %s", p.remote)
 	s.noteSyncRequest()
 	s.noteSyncPeer(p.remote)
 	if err := s.requestHeaders(p); err != nil {
@@ -2525,6 +2526,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 				return
 			}
 			p.setVersionMeta(meta)
+			s.log.Printf("p2p HANDLER version from %s: version=%d subver=%s height=%d chain_id=%q", conn.RemoteAddr(), meta.Version, meta.SubVer, meta.Height, meta.ChainID)
 			if s.enforceChainID && s.chainID != "" && meta.ChainID != s.chainID {
 				s.scorePeer(p, 100, "wrong or empty chain id")
 				if s.pretty {
@@ -2747,6 +2749,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 		}
 		if gotVersion && gotVerAck && !didSyncRequest {
 			didSyncRequest = true
+			s.log.Printf("p2p HANDLER handshake complete for %s, didSyncRequest=%v outbound=%v", conn.RemoteAddr(), didSyncRequest, outbound)
 			if s.pretty {
 				s.log.Printf("СЂСџРЉС’ Connected peer | %s | outbound=%v | height %d | chain_id=%s", s.peerLabel(p), outbound, p.height, p.chainID)
 			} else {
@@ -3241,6 +3244,7 @@ func randomUint64() (uint64, error) {
 }
 
 func (s *Server) requestHeaders(p *peer) error {
+	s.log.Printf("p2p HANDLER requestHeaders called for %s", p.remote)
 	locator := s.chain.Locator()
 	if tip := s.chain.Tip(); tip != nil && tip.Hash != "" {
 		if b, _, err := s.chain.BlockByHash(tip.Hash); err == nil {
@@ -3593,6 +3597,7 @@ func (s *Server) serveBlockInventory(p *peer, req wire.GetBlocks) error {
 }
 
 func (s *Server) serveHeaders(p *peer, req wire.GetBlocks) error {
+	s.log.Printf("p2p HANDLER serveHeaders called for %s (locator_len=%d)", p.remote, len(req.Locator))
 	headers, err := s.chain.HeadersAfter(req.Locator, req.Stop, wire.MaxHeadersPerMessage)
 	if err != nil {
 		return err
