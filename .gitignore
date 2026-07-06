@@ -8,6 +8,8 @@ dist/
 *.so
 *.syso
 *.dylib
+legacycoind_linux
+legacycoind_linux_debug
 
 # Frontend generated output
 cmd/legacywallet/frontend/node_modules/
@@ -41,3 +43,6 @@ data/
 # Test logs
 sync_test.log
 sync_*.log
+
+# Test data
+test_data_win/
