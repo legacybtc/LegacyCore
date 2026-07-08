@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.0.32 (2026-07-08)
+
+### P2P Sync Stability
+- **HashHeader dedup**: `validateActiveBlockLocked` accepts precomputed hash so `connectBlockLocked` skips the second yespower call — halves the dominant per-block CPU cost
+- **Async reader goroutine**: dedicated goroutine reads TCP messages into a buffered channel (cap 64) during `handleConn`; server send buffer stays drained during slow block processing, eliminating write-timeout / reconnect cycles
+
+### Binaries
+- Windows amd64: legacycoind, legacycoin-cli, LegacyWallet
+- Linux amd64: legacycoind, legacycoin-cli
+
+---
+
 ## v1.0.31 (2026-07-06)
 
 ### P2P Sync Recovery

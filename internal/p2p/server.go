@@ -28,7 +28,7 @@ import (
 const (
 	protocolVersion       int32  = 70015
 	nodeNetwork           uint64 = 1
-	userAgent                    = "/Legacy-GO:1.0.30/"
+	userAgent                    = "/Legacy-GO:1.0.32/"
 	maxPeers                     = 125
 	maxOutboundPeers             = 16
 	maxGetDataItems              = 256
@@ -2482,14 +2482,35 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 	gotVersion := false
 	gotVerAck := false
 	didSyncRequest := false
+
+	type msgResult struct {
+		msg wire.Message
+		err error
+	}
+	msgChan := make(chan msgResult, 64)
+	readerDone := make(chan struct{})
+	go func() {
+		for {
+			m, e := wire.ReadMessage(conn, s.params.MessageStart)
+			select {
+			case msgChan <- msgResult{m, e}:
+			case <-readerDone:
+				return
+			}
+		}
+	}()
+	defer close(readerDone)
+
 	for {
+		var msg wire.Message
+		var err error
 		select {
 		case <-ctx.Done():
 			return
-		default:
+		case mr := <-msgChan:
+			msg = mr.msg
+			err = mr.err
 		}
-
-		msg, err := wire.ReadMessage(conn, s.params.MessageStart)
 		if err != nil {
 			if !errors.Is(err, io.EOF) {
 				s.log.Printf("p2p read from %s: %v (got_version=%v got_verack=%v)", conn.RemoteAddr(), err, gotVersion, gotVerAck)

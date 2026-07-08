@@ -419,7 +419,7 @@ func (c *Chain) ValidateBlockProposal(block *wire.MsgBlock) (BlockProcessResult,
 	if err != nil || result.Status != "" {
 		return result, err
 	}
-	idx, _, _, _, _, err := c.validateActiveBlockLocked(block)
+	idx, _, _, _, _, err := c.validateActiveBlockLocked(block, result.Hash)
 	if err != nil {
 		result.Status = BlockStatusRejected
 		result.Reason = err.Error()
@@ -476,11 +476,15 @@ func (c *Chain) EnsureGenesis() error {
 func (c *Chain) ConnectBlock(block *wire.MsgBlock) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.connectBlockLocked(block)
+	hash, err := c.HashHeader(block.Header)
+	if err != nil {
+		return err
+	}
+	return c.connectBlockLocked(block, hash.String())
 }
 
-func (c *Chain) connectBlockLocked(block *wire.MsgBlock) error {
-	idx, chainwork, adds, spendKeys, spentEntries, err := c.validateActiveBlockLocked(block)
+func (c *Chain) connectBlockLocked(block *wire.MsgBlock, precomputedHash string) error {
+	idx, chainwork, adds, spendKeys, spentEntries, err := c.validateActiveBlockLocked(block, precomputedHash)
 	if err != nil {
 		return err
 	}
@@ -494,7 +498,7 @@ func (c *Chain) connectBlockLocked(block *wire.MsgBlock) error {
 	return nil
 }
 
-func (c *Chain) validateActiveBlockLocked(block *wire.MsgBlock) (BlockIndex, *big.Int, []UTXOEntry, []string, []UTXOEntry, error) {
+func (c *Chain) validateActiveBlockLocked(block *wire.MsgBlock, precomputedHash string) (BlockIndex, *big.Int, []UTXOEntry, []string, []UTXOEntry, error) {
 	var idx BlockIndex
 	if len(block.Transactions) == 0 {
 		return idx, nil, nil, nil, nil, ErrNoTransactions
@@ -536,7 +540,7 @@ func (c *Chain) validateActiveBlockLocked(block *wire.MsgBlock) (BlockIndex, *bi
 	if block.Header.Bits != expectedBits {
 		return idx, nil, nil, nil, nil, fmt.Errorf("%w: got %08x, want %08x", ErrBadBits, block.Header.Bits, expectedBits)
 	}
-	hash, err := c.HashHeader(block.Header)
+	hash, err := chainhash.FromString(precomputedHash)
 	if err != nil {
 		return idx, nil, nil, nil, nil, err
 	}
@@ -575,7 +579,7 @@ func (c *Chain) processBlockLocked(block *wire.MsgBlock) (BlockProcessResult, er
 		return result, err
 	}
 	hashStr := result.Hash
-	if err := c.connectBlockLocked(block); err != nil {
+	if err := c.connectBlockLocked(block, hashStr); err != nil {
 		result.Status = BlockStatusRejected
 		result.Reason = err.Error()
 		return result, err
@@ -766,7 +770,7 @@ func (c *Chain) acceptOrphanChildrenLocked(parentHash string) {
 			if c.tip == nil || c.tip.Hash != orphanBlock.Header.PrevBlock.String() {
 				continue
 			}
-			if err := c.connectBlockLocked(orphanBlock); err != nil {
+			if err := c.connectBlockLocked(orphanBlock, orphanHash); err != nil {
 				continue
 			}
 			c.removeOrphanLocked(orphanHash)
@@ -911,7 +915,7 @@ func (c *Chain) tryActivateSideChainLocked(sideTipHash string) error {
 		// Connect side branch from fork child to side tip.
 		connected := make([]*wire.MsgBlock, 0, len(attachRev))
 		for i := len(attachRev) - 1; i >= 0; i-- {
-			if err := c.connectBlockLocked(attachRev[i].block); err != nil {
+			if err := c.connectBlockLocked(attachRev[i].block, attachRev[i].hash); err != nil {
 				// Roll back partial side activation.
 				fmt.Printf("blockchain: reorg failed during connect at height %d: %v, rolling back\n", c.tip.Height+1, err)
 				if rollbackErr := c.disconnectNLocked(len(connected)); rollbackErr != nil {
@@ -937,7 +941,7 @@ func (c *Chain) tryActivateSideChainLocked(sideTipHash string) error {
 	// Fast path (already at fork): just connect side branch and rollback on failure.
 	connected := make([]*wire.MsgBlock, 0, len(attachRev))
 	for i := len(attachRev) - 1; i >= 0; i-- {
-		if err := c.connectBlockLocked(attachRev[i].block); err != nil {
+		if err := c.connectBlockLocked(attachRev[i].block, attachRev[i].hash); err != nil {
 			if rollbackErr := c.disconnectNLocked(len(connected)); rollbackErr != nil {
 				return fmt.Errorf("side-branch fast-path rollback failed: %v (original: %w)", rollbackErr, err)
 			}
@@ -964,7 +968,11 @@ func (c *Chain) disconnectNLocked(n int) error {
 
 func (c *Chain) reconnectBlocksLocked(disconnected []*wire.MsgBlock) error {
 	for i := len(disconnected) - 1; i >= 0; i-- {
-		if err := c.connectBlockLocked(disconnected[i]); err != nil {
+		hash, err := c.HashHeader(disconnected[i].Header)
+		if err != nil {
+			return err
+		}
+		if err := c.connectBlockLocked(disconnected[i], hash.String()); err != nil {
 			return err
 		}
 	}
