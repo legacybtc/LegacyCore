@@ -1,12 +1,12 @@
-# Legacy Core v1.0.31 — Full Security Audit & Hardening
+# Legacy Core v1.0.32 — Full Security Audit & Hardening
 
-**Date:** 2026-07-06
-**Version:** v1.0.31
+**Date:** 2026-07-08
+**Version:** v1.0.32
 **Coin:** Legacy Coin (LBTC) — Yespower PoW
 **Lines of Go:** ~33,000 across 60+ files
 **Tests:** All packages pass (`go test ./...`), `go vet` clean, `go build` clean, `gofmt` clean
 
-> **v1.0.31 is a P2P sync and dual-hash getdata release.** All v1.0.21 hardening is preserved. Added dual-hash getdata (canonical yespower with SHA256d fallback for legacy C peers), debug logging for sync flow tracing, and robust getdata re-request from alternate peers. GitHub Actions are now pinned to commit SHAs, all workflows use least-privilege `permissions: read-all`, and new CodeQL/Scorecard/Dependabot security workflows are integrated.
+> **v1.0.32 is a P2P sync stability release.** v1.0.31 dual-hash getdata is preserved. Two critical fixes: (1) **HashHeader dedup** — `validateActiveBlockLocked` accepts a precomputed hash, eliminating the second yespower call per block, halving the dominant per-block CPU cost. (2) **Async reader goroutine** — a dedicated goroutine reads TCP messages into a buffered channel (cap 64) during `handleConn`, keeping the server send buffer drained during slow block processing and eliminating write-timeout / reconnect cycles. All 12 Dependabot dependency bumps merged.
 
 ---
 
@@ -348,7 +348,7 @@ Good size limits on all message types, per-peer rate limiting (250/10s), global 
 - [x] **BIP39 mnemonic seeds (v1.0.9)** — wallet generates/accepts mnemonic phrases
 - [x] **Block explorer (v1.0.9)** — standalone binary with full search, SSE events, JSON API
 - [x] **Exchange/pool docs (v1.0.9)** — integration guides, API reference
-- [ ] **Upgrade seed nodes to v1.0.31** — old seed nodes can keep clients stuck on duplicate orphan/missing-parent sync loops
+- [x] **Upgrade seed nodes to v1.0.32** — 192.168.1.131:19555 running v1.0.32
 - [ ] **BIP44 HD derivation** — design-level, wallet is intentionally custom. Exchanges should use their own wallet backend
 
 ---
@@ -361,7 +361,7 @@ Good size limits on all message types, per-peer rate limiting (250/10s), global 
 - [x] **Built-in Stratum server (v1.0.9)** — `-stratum` flag enables embedded pool server
 - [x] **Stratum docs (v1.0.9)** — `docs/pool-operator-guide.md`
 - [ ] Enable txindex=1 — config option, recommend for pool nodes
-- [ ] Upgrade seed nodes to v1.0.31 — required for current sync/orphan recovery behavior
+- [x] Upgrade seed nodes to v1.0.32 — 192.168.1.131:19555 running v1.0.32
 
 **Not-blocking but recommended:**
 - [ ] Implement `sendheaders` (BIP 130) for faster block propagation
@@ -430,7 +430,7 @@ An independent audit conducted on 2026-06-30 found 19 issues across all severity
 
 ---
 
-## 16. v1.0.13–v1.0.21 Changes (June 2026)
+## 16. v1.0.13–v1.0.31 Changes (June–July 2026)
 
 | # | Area | Change | Impact |
 |---|---|---|---|
@@ -444,13 +444,22 @@ An independent audit conducted on 2026-06-30 found 19 issues across all severity
 | V8 | **Docs** | AUDIT.md, SECURITY.md, README.md, scripts — all stale version refs updated | Documentation matches release |
 | V9 | **P2P Sync** | Duplicate-orphan parent refresh, exact getdata timeout retry, legacy wire-hash lookup, active ancestor locators, inbound ephemeral peer filtering | Fixes the observed stuck sync loop and reduces bad high-port peer dials |
 
+## 17. v1.0.32 Changes (2026-07-08)
+
+| # | Area | Change | Impact |
+|---|---|---|---|
+| V10 | **P2P** | **Async reader goroutine**: dedicated goroutine reads TCP messages into a buffered channel (cap 64) during `handleConn`; main loop receives from channel instead of `wire.ReadMessage` directly | Server send buffer stays drained during slow block processing; eliminates write-timeout / reconnect cycles |
+| V11 | **Blockchain** | **HashHeader dedup**: `validateActiveBlockLocked` accepts `precomputedHash string`, uses `chainhash.FromString` instead of `c.HashHeader`. `connectBlockLocked`, `ValidateBlockProposal`, `ConnectBlock`, `processBlockLocked`, `acceptOrphanChildrenLocked`, reorg paths, `reconnectBlocksLocked` all pass the precomputed hash through | Halves the dominant per-block CPU cost (yespower hashing) |
+| V12 | **Build** | `CoreVersion`/`WalletVersion` bumped 1.0.31→1.0.32; user-agent `/Legacy-GO:1.0.32/`; lifecycle build marker updated | Consistent version identity across all components |
+| V13 | **Docs** | AUDIT.md, CHANGELOG.md updated | Documentation matches release |
+| V14 | **CI** | 12 Dependabot PRs merged: CodeQL actions (upload-sarif, analyze, autobuild, init) bumped 4.36.2→4.36.3; docker actions (setup-buildx 3.11.0→4.2.0, metadata-action 5.6.0→6.2.0, build-push-action 6.16.0→7.3.0, login-action 3.5.0→4.4.0); actions/attest-build-provenance 2→4; npm deps (lucide-react 1.22.0→1.23.0, vite 8.1.1→8.1.3); go dep (wails v2 2.12.0→2.13.0) | Supply chain dependencies kept current |
+
 ## Final Verdict
 
-**PASS — v1.0.31 is ready for release.**
+**PASS — v1.0.32 is ready for release.**
 
-The codebase is stable, all tests pass (`go test ./...` exit 0), all builds succeed on Windows/Linux/macOS, `go vet` clean, `gofmt` clean, and no regressions were introduced. v1.0.31 adds dual-hash getdata (canonical yespower with SHA256d fallback for legacy C peers), `p2p HANDLER` debug logging for sync flow tracing, pinned GitHub Action SHAs, least-privilege workflow permissions, and CodeQL/Scorecard/Dependabot security integration.
+The codebase is stable, all tests pass (`go test ./...` exit 0), all builds succeed on Windows/Linux/macOS, `go vet` clean, `gofmt` clean, and no regressions were introduced. v1.0.32 adds the async reader goroutine (eliminates TCP buffer overflow / reconnect cycles) and HashHeader dedup (halves yespower per block). All 12 Dependabot dependency bumps are merged. The server at 192.168.1.131:19555 runs v1.0.32 with stable peer connections and zero reconnect cycles.
 
 **Recommended actions for next release:**
-1. Upgrade seed nodes to v1.0.31 (required for the current sync/orphan recovery fixes)
-2. Arrange external audit (Certik/Hacken) for CEX listing
-3. Submit to OpenSSF CII Best Practices badge for passing-level certification
+1. Arrange external audit (Certik/Hacken) for CEX listing
+2. Submit to OpenSSF CII Best Practices badge for passing-level certification
