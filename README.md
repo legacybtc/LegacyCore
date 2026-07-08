@@ -9,37 +9,107 @@ Legacy Core is the official full-node, CLI, miner, and desktop wallet for **Lega
 
 ---
 
-## Quick Start (Pre-built)
+## Quick Start (Pre-built) — New User Guide
 
-Download the latest release from [GitHub Releases](https://github.com/legacybtc/LegacyCore/releases).
+> **No coding or terminal experience needed.** Follow these steps.
 
-**Windows:**
-```
-Extract the ZIP → double-click START_HERE.bat → wallet opens
-```
-Or run the node manually:
-```
-legacycoind.exe
-legacycoin-cli getblockchaininfo
-```
+### 1. Download
 
-**Linux:**
+Go to the [Releases page](https://github.com/legacybtc/LegacyCore/releases) and download the latest version for your system.
+
+| Platform | File to download |
+|---|---|
+| **Windows** | `LegacyWallet-LBTC-mainnet-windows-amd64-v1.0.32.zip` |
+| **Linux** | `LegacyCore-LBTC-mainnet-linux-amd64-v1.0.32.tar.gz` |
+| **macOS (Intel)** | `LegacyCore-LBTC-mainnet-macos-amd64-v1.0.32.tar.gz` |
+| **macOS (Apple Silicon)** | `LegacyCore-LBTC-mainnet-macos-arm64-v1.0.32.tar.gz` |
+
+> **Security tip:** After downloading, verify the file's SHA256 checksum matches the one in `SHA256SUMS.txt`. See [Verification](#verification) below.
+
+### 2. Extract
+
+**Windows:** Right-click the `.zip` → **Extract All** → pick a folder (e.g. `C:\LegacyCoin`).
+
+**Linux / macOS:** Open a terminal in your Downloads folder:
 ```bash
 tar -xzf LegacyCore-LBTC-mainnet-linux-amd64-*.tar.gz
+cd LegacyCore-LBTC-mainnet-linux-*
 chmod +x legacycoind legacycoin-cli
-./legacycoind
-./legacycoin-cli getblockchaininfo
 ```
 
-**macOS:**
+### 3. Run the Node
+
+**Windows:** Double-click `legacycoind.exe`. A terminal window opens and the node starts syncing automatically.
+
+**Linux / macOS:** Open a terminal in the extracted folder:
 ```bash
-tar -xzf LegacyCore-LBTC-mainnet-macos-amd64-*.tar.gz
-chmod +x legacycoind legacycoin-cli
 ./legacycoind
-./legacycoin-cli getblockchaininfo
 ```
 
-> **Verify integrity:** Compare SHA256 checksums against `SHA256SUMS.txt` before running.
+> **First sync takes ~30–60 minutes** depending on your CPU and internet speed. The node downloads and verifies every block since genesis. You can use your computer normally while it syncs in the background.
+
+### 4. Check Sync Progress
+
+Open a **second** terminal / Command Prompt in the same folder and run:
+
+```bash
+legacycoin-cli getblockcount
+```
+
+Returns the current block height. It climbs until it reaches the network tip (~6650 blocks). When it stops climbing, you're fully synced.
+
+Other useful checks:
+
+```bash
+legacycoin-cli getpeerinfo        # See connected peers and their software versions
+legacycoin-cli getnetworkinfo     # Node version, protocol, network stats
+legacycoin-cli getblockchaininfo  # Chain state, difficulty, best block hash
+```
+
+### 5. Use the Desktop Wallet (Windows)
+
+Double-click `LegacyWallet.exe` in the same folder. The wallet connects to your local node automatically. From there you can:
+
+- **Dashboard** — see node status, sync progress, balance
+- **Send / Receive** — transactions
+- **Mining** — start/stop CPU mining
+- **AI** — built-in AI assistant (chat, image generation, research)
+
+### 6. (Optional) CPU Mining
+
+No special hardware needed. Your computer's CPU can mine LBTC:
+
+```bash
+legacycoin-cli setminerthreads 4   # Use 4 CPU threads
+legacycoin-cli startminer          # Start mining
+legacycoin-cli getminerstatus      # Check hash rate and found blocks
+```
+
+### 7. Stop the Node
+
+```bash
+legacycoin-cli stop
+```
+
+Or just close the terminal window (graceful shutdown is automatic).
+
+---
+
+### Verification
+
+Before running any downloaded binary, verify its integrity:
+
+**Windows (PowerShell):**
+```powershell
+Get-FileHash .\legacycoind.exe -Algorithm SHA256
+```
+Compare the output hash against the one in `SHA256SUMS.txt` from the release page.
+
+**Linux / macOS:**
+```bash
+sha256sum legacycoind
+# or on macOS: shasum -a 256 legacycoind
+```
 
 ---
 
