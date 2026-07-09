@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.0.33 (2026-07-09)
+
+### P2P Header Validation Fix
+- **prevHash linkage**: `ValidateHeaderSequence` now sets `prevHash` to SHA256d (`LegacyHeaderHash`) instead of yespower canonical hash — matches wire-protocol `PrevBlock` so validator accepts consecutive header batches without rejecting them as non-connected
+- **Per-block hash reuse in P2P handler**: `HandleBlock` computes `BlockHash` once and passes `precomputedHash` through `ProcessBlockWithResult`, eliminating redundant yespower hashing during block processing
+- **Dual-hash block serving**: `serveInventory` uses `BlockByWireHash` which supports dual-hash lookup (canonical yespower via direct DB load, legacy SHA256d via cache scan), ensuring blocks can be served to peers regardless of which hash they request
+
+### Binaries
+- Windows amd64: legacycoind, legacycoin-cli, LegacyWallet
+- Linux amd64: legacycoind, legacycoin-cli
+
+---
+
 ## v1.0.32 (2026-07-08)
 
 ### P2P Sync Stability

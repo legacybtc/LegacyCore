@@ -1,12 +1,12 @@
-# Legacy Core v1.0.32 — Full Security Audit & Hardening
+# Legacy Core v1.0.33 — Full Security Audit & Hardening
 
-**Date:** 2026-07-08
-**Version:** v1.0.32
+**Date:** 2026-07-09
+**Version:** v1.0.33
 **Coin:** Legacy Coin (LBTC) — Yespower PoW
 **Lines of Go:** ~33,000 across 60+ files
 **Tests:** All packages pass (`go test ./...`), `go vet` clean, `go build` clean, `gofmt` clean
 
-> **v1.0.32 is a P2P sync stability release.** v1.0.31 dual-hash getdata is preserved. Two critical fixes: (1) **HashHeader dedup** — `validateActiveBlockLocked` accepts a precomputed hash, eliminating the second yespower call per block, halving the dominant per-block CPU cost. (2) **Async reader goroutine** — a dedicated goroutine reads TCP messages into a buffered channel (cap 64) during `handleConn`, keeping the server send buffer drained during slow block processing and eliminating write-timeout / reconnect cycles. All 12 Dependabot dependency bumps merged.
+> **v1.0.33 is a P2P sync reliability release.** v1.0.32 async reader and HashHeader dedup are preserved. Three critical fixes: (1) **ValidateHeaderSequence prevHash linkage fix** — `prevHash` now set to SHA256d (`LegacyHeaderHash`) instead of yespower canonical hash, matching wire-protocol `PrevBlock` so consecutive header batches are accepted. (2) **Per-block hash reuse in P2P handler** — `HandleBlock` computes `BlockHash` once and passes through to `ProcessBlockWithResult`. (3) **Dual-hash block serving** — `BlockByWireHash` supports canonical yespower lookup and legacy SHA256d cache scan, ensuring blocks are served regardless of which hash the requesting peer used.
 
 ---
 
@@ -348,7 +348,7 @@ Good size limits on all message types, per-peer rate limiting (250/10s), global 
 - [x] **BIP39 mnemonic seeds (v1.0.9)** — wallet generates/accepts mnemonic phrases
 - [x] **Block explorer (v1.0.9)** — standalone binary with full search, SSE events, JSON API
 - [x] **Exchange/pool docs (v1.0.9)** — integration guides, API reference
-- [x] **Upgrade seed nodes to v1.0.32** — 192.168.1.131:19555 running v1.0.32
+- [x] **Upgrade seed nodes to v1.0.33** — 192.168.1.131:19555 running v1.0.33
 - [ ] **BIP44 HD derivation** — design-level, wallet is intentionally custom. Exchanges should use their own wallet backend
 
 ---
@@ -361,7 +361,7 @@ Good size limits on all message types, per-peer rate limiting (250/10s), global 
 - [x] **Built-in Stratum server (v1.0.9)** — `-stratum` flag enables embedded pool server
 - [x] **Stratum docs (v1.0.9)** — `docs/pool-operator-guide.md`
 - [ ] Enable txindex=1 — config option, recommend for pool nodes
-- [x] Upgrade seed nodes to v1.0.32 — 192.168.1.131:19555 running v1.0.32
+- [x] Upgrade seed nodes to v1.0.33 — 192.168.1.131:19555 running v1.0.33
 
 **Not-blocking but recommended:**
 - [ ] Implement `sendheaders` (BIP 130) for faster block propagation
@@ -454,11 +454,21 @@ An independent audit conducted on 2026-06-30 found 19 issues across all severity
 | V13 | **Docs** | AUDIT.md, CHANGELOG.md updated | Documentation matches release |
 | V14 | **CI** | 12 Dependabot PRs merged: CodeQL actions (upload-sarif, analyze, autobuild, init) bumped 4.36.2→4.36.3; docker actions (setup-buildx 3.11.0→4.2.0, metadata-action 5.6.0→6.2.0, build-push-action 6.16.0→7.3.0, login-action 3.5.0→4.4.0); actions/attest-build-provenance 2→4; npm deps (lucide-react 1.22.0→1.23.0, vite 8.1.1→8.1.3); go dep (wails v2 2.12.0→2.13.0) | Supply chain dependencies kept current |
 
+## 18. v1.0.33 Changes (2026-07-09)
+
+| # | Area | Change | Impact |
+|---|---|---|---|
+| V15 | **Blockchain** | **ValidateHeaderSequence prevHash fix**: `prevHash` now computed via `LegacyHeaderHash` (SHA256d) instead of yespower canonical hash | Consecutive header batches from peers are no longer rejected as non-connected — wire-protocol `PrevBlock` is SHA256d, matching this fix |
+| V16 | **P2P** | **Per-block hash reuse**: `HandleBlock` computes `BlockHash` once via `BlockHash(block.Header)` and passes `precomputedHash` to `ProcessBlockWithResult` → `processBlockLocked` → `connectBlockLocked` | Eliminates redundant yespower hashing during P2P block processing — the precomputed hash flows through the entire connection path |
+| V17 | **P2P** | **BlockByWireHash dual-hash serving**: `serveInventory` uses `BlockByWireHash` which first tries canonical yespower hash via direct DB `LoadBlock`, then checks `legacyByHash` cache (SHA256d→canonical), then falls back to linear scan from tip | Ensures blocks can be served regardless of which hash (canonical or SHA256d) the requesting peer sent in getdata — critical for mixed-version network compatibility |
+| V18 | **Build** | `CoreVersion`/`WalletVersion` bumped 1.0.32→1.0.33; user-agent `/Legacy-GO:1.0.33/` | Consistent version identity across all components |
+| V19 | **Docs** | AUDIT.md, CHANGELOG.md, README.md, SECURITY.md updated | Documentation matches release |
+
 ## Final Verdict
 
-**PASS — v1.0.32 is ready for release.**
+**PASS — v1.0.33 is released.**
 
-The codebase is stable, all tests pass (`go test ./...` exit 0), all builds succeed on Windows/Linux/macOS, `go vet` clean, `gofmt` clean, and no regressions were introduced. v1.0.32 adds the async reader goroutine (eliminates TCP buffer overflow / reconnect cycles) and HashHeader dedup (halves yespower per block). All 12 Dependabot dependency bumps are merged. The server at 192.168.1.131:19555 runs v1.0.32 with stable peer connections and zero reconnect cycles.
+The codebase is stable, all tests pass (`go test ./...` exit 0), all builds succeed on Windows/Linux/macOS, `go vet` clean, `gofmt` clean, and no regressions were introduced. v1.0.33 fixes the header validation bug (SHA256d prevHash linkage), adds per-block hash reuse in the P2P handler (eliminating redundant yespower calls), and ensures `BlockByWireHash` serves blocks regardless of which hash the peer used in getdata. Both the server (192.168.1.131:19555) and Windows node run v1.0.33 with improved sync reliability.
 
 **Recommended actions for next release:**
 1. Arrange external audit (Certik/Hacken) for CEX listing
