@@ -30,8 +30,11 @@ func TestValidateHeaderSequenceChecksEveryHeaderBits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	header1Hash, _ := fakeHasher{}.HashHeader(header1Block.Header)
-	header2Block, err := buildBlock(header1Hash, 2, 3, false)
+	header1LegacyHash, err := chain.LegacyHeaderHash(header1Block.Header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	header2Block, err := buildBlock(header1LegacyHash, 2, 3, false)
 	if err != nil {
 		t.Fatal(err)
 	}
