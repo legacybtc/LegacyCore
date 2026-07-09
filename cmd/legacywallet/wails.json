@@ -1,0 +1,20 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "Legacy Wallet",
+  "outputfilename": "LegacyWallet",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "http://localhost:5173",
+  "info": {
+    "companyName": "Legacy Coin",
+    "productName": "Legacy Wallet",
+    "productVersion": "1.0.27",
+    "copyright": "Legacy Coin Project",
+    "comments": "CPU-friendly Proof-of-Work wallet"
+  },
+  "author": {
+    "name": "Legacy Coin",
+    "email": ""
+  }
+}

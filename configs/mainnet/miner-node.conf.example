@@ -1,0 +1,12 @@
+# Legacy Coin miner node example config
+# Keep this host restricted. The miner may need a hot wallet, so use the minimum
+# amount required for operation and backup it carefully.
+
+bind=0.0.0.0
+rpcbind=127.0.0.1
+rpcuser=legacyminerrpc
+rpcpassword=CHANGE-THIS-TO-32+RANDOM-CHARS
+
+addnode=legacycoinseed.space:19555
+addnode=legacycoinseed2.space:19555
+addnode=91.219.63.20:19555

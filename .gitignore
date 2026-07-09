@@ -1,0 +1,48 @@
+# Build artifacts
+dist/
+*.zip
+*.tar.gz
+*.exe
+*.exe~
+*.dll
+*.so
+*.syso
+*.dylib
+legacycoind_linux
+legacycoind_linux_debug
+
+# Frontend generated output
+cmd/legacywallet/frontend/node_modules/
+cmd/legacywallet/frontend/.dashboard-test/
+cmd/legacywallet/frontend/dist/
+
+# Wails build output (binaries), but track template files (appicon.png, windows/*)
+cmd/legacywallet/build/bin/
+
+# Release packages
+LegacyWallet-*-WINDOWS/
+LegacyWallet-*-LINUX/
+
+# Local build caches
+.gocache-build/
+.tmp-linux-build/
+.gotmp-build/
+.gotmp-linux/
+.gotmp-wails/
+.tmp-multinode-smoke/
+release-assets/
+testdata/
+
+# Local temporary build folders
+.tmp-linux-build/
+TEST-BUILD-*
+
+# Local blockchain data
+data/
+
+# Test logs
+sync_test.log
+sync_*.log
+
+# Test data
+test_data_win/

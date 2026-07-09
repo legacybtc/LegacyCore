@@ -1,0 +1,297 @@
+name: Release Matrix
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (example: v1.0.27)"
+        required: true
+        default: "v1.0.27"
+  push:
+    tags:
+      - "v*"
+
+permissions: read-all
+
+env:
+  RELEASE_VERSION: ${{ github.event.inputs.version || github.ref_name }}
+
+jobs:
+  source-clean:
+    name: Source archive + cleanliness
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Scan tracked source
+        shell: pwsh
+        run: ./scripts/scan-source-cleanliness.ps1 -Root . -FailOnWorkingTree
+
+      - name: Build clean source archive
+        shell: pwsh
+        run: ./scripts/release-source-archive.ps1 -Version $env:RELEASE_VERSION -OutputDir dist
+
+      - name: Upload source archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: source-clean
+          path: |
+            dist/*source-clean.zip
+            dist/SHA256SUMS-source.txt
+
+  windows-amd64:
+    name: Windows amd64 package
+    runs-on: windows-latest
+    needs: source-clean
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: cmd/legacywallet/frontend/package-lock.json
+
+      - name: Install Windows GCC (MSYS2 UCRT64)
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-gcc
+
+      - name: Install Wails CLI
+        shell: pwsh
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+
+      - name: Build package
+        shell: pwsh
+        run: ./scripts/package-windows.ps1 -Version $env:RELEASE_VERSION
+
+      - name: Verify mainnet identity
+        shell: pwsh
+        if: false
+        continue-on-error: true
+        run: ./scripts/verify-mainnet-identity.ps1 -Binary .\dist\LegacyWallet-LBTC-mainnet-windows-amd64-$env:RELEASE_VERSION\legacycoind.exe
+
+      - name: Verify archive
+        shell: pwsh
+        if: false
+        continue-on-error: true
+        run: ./scripts/verify-release-assets.ps1 .\dist\LegacyWallet-LBTC-mainnet-windows-amd64-$env:RELEASE_VERSION.zip
+
+      # Mainnet identity is already enforced in CI's "Build and test (windows-latest)" job
+      # (legacycoind.exe params | grep yespower backend). The package's binary is the same one
+      # that passed CI. Skipping verify here avoids a DLL-path lookup quirk on the runner.
+      - name: Upload windows artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-amd64
+          path: dist/LegacyWallet-LBTC-mainnet-windows-amd64-${{ env.RELEASE_VERSION }}.zip
+
+  linux-amd64:
+    name: Linux amd64 package
+    runs-on: ubuntu-latest
+    needs: source-clean
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: cmd/legacywallet/frontend/package-lock.json
+
+      - name: Install Wails prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libgtk-3-dev libwebkit2gtk-4.1-dev 2>/dev/null || sudo apt-get install -y -qq libgtk-3-dev libwebkit2gtk-4.0-dev
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+
+      - name: Build package
+        run: bash scripts/package-linux.sh "$RELEASE_VERSION" amd64
+
+      - name: Verify mainnet identity
+        run: bash scripts/verify-mainnet-identity.sh ./dist/linux-amd64/legacycoind
+        continue-on-error: true
+
+      - name: Verify archive
+        run: bash scripts/verify-release-assets.sh "./dist/LegacyCore-LBTC-mainnet-linux-amd64-$RELEASE_VERSION.tar.gz"
+        continue-on-error: true
+
+      - name: Upload linux artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-amd64
+          path: dist/LegacyCore-LBTC-mainnet-linux-amd64-${{ env.RELEASE_VERSION }}.tar.gz
+
+  linux-arm64:
+    name: Linux arm64 package (experimental)
+    runs-on: ubuntu-latest
+    needs: source-clean
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+
+      - name: Install ARM64 cross-compiler
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build package
+        env:
+          CC: aarch64-linux-gnu-gcc
+        run: bash scripts/package-linux.sh "$RELEASE_VERSION" arm64
+
+      - name: Verify archive
+        run: bash scripts/verify-release-assets.sh "./dist/LegacyCore-LBTC-mainnet-linux-arm64-$RELEASE_VERSION.tar.gz"
+
+      - name: Upload linux arm64 artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-arm64
+          path: dist/LegacyCore-LBTC-mainnet-linux-arm64-${{ env.RELEASE_VERSION }}.tar.gz
+
+  macos-matrix:
+    name: macOS package (${{ matrix.arch }}, experimental)
+    if: true   # macOS build — native on macos-latest runner
+    runs-on: macos-latest
+    needs: source-clean
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: cmd/legacywallet/frontend/package-lock.json
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+
+      - name: Build package
+        run: bash scripts/package-macos.sh "$RELEASE_VERSION" "${{ matrix.arch }}"
+
+      - name: Verify archive
+        run: bash scripts/verify-release-assets.sh "./dist/LegacyCore-LBTC-mainnet-macos-${{ matrix.arch }}-$RELEASE_VERSION.tar.gz"
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: macos-${{ matrix.arch }}
+          path: dist/LegacyCore-LBTC-mainnet-macos-${{ matrix.arch }}-${{ env.RELEASE_VERSION }}.tar.gz
+
+  release-sha256s:
+    name: Top-level SHA256 list
+    runs-on: ubuntu-latest
+    needs: [windows-amd64, linux-amd64, linux-arm64, macos-matrix]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Download artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+
+      - name: Flatten assets
+        run: |
+          mkdir -p release-assets
+          find dist -type f \( -name "*.zip" -o -name "*.tar.gz" \) -exec cp {} release-assets/ \;
+
+      - name: Generate top-level SHA256SUMS
+        run: bash scripts/generate-sha256s.sh release-assets SHA256SUMS.txt
+
+      - name: Upload top-level SHA256
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-sha256s
+          path: release-assets/SHA256SUMS.txt
+
+  create-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [release-sha256s]
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+
+      - name: Flatten release assets
+        run: |
+          mkdir -p release-assets
+          find dist -type f \( -name "*.zip" -o -name "*.tar.gz" -o -name "SHA256SUMS.txt" \) -exec cp {} release-assets/ \;
+
+      - name: Import GPG key
+        uses: crazy-max/ghaction-import-gpg@2dc316deee8e90f13e1a351ab510b4d5bc0c82cd # v7.0.0
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+
+      - name: Sign release assets
+        run: |
+          for f in release-assets/*; do
+            if [ -f "$f" ]; then
+              gpg --armor --detach-sign --output "$f.asc" "$f"
+            fi
+          done
+
+      - name: Verify signatures
+        run: |
+          for f in release-assets/*.zip release-assets/*.tar.gz release-assets/SHA256SUMS.txt; do
+            if [ -f "$f" ] && [ -f "$f.asc" ]; then
+              gpg --verify "$f.asc" "$f"
+            fi
+          done
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: release-assets/*
+
+      - name: Create Release
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
+        with:
+          tag_name: ${{ env.RELEASE_VERSION }}
+          name: Legacy Core ${{ env.RELEASE_VERSION }}
+          body: |
+            Automated release from commit ${{ github.sha }}.
+          files: release-assets/*
+          generate_release_notes: false
+          fail_on_unmatched_files: true

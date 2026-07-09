@@ -1,0 +1,152 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - v1.0.2-mainnet-candidate
+      - v1.0.3-integration-hardening
+      - v1.0.4-core-integration-release-superiority
+      - infrastructure-ready-source
+      - v1.0.2-pool-rpc-framework-hardening
+      - feature/legacy-ai-companion-v2
+  pull_request:
+    branches:
+      - main
+      - v1.0.2-mainnet-candidate
+      - v1.0.3-integration-hardening
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  source-cleanliness:
+    name: Source cleanliness and leak scans
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Scan tracked source
+        shell: pwsh
+        run: ./scripts/scan-source-cleanliness.ps1 -Root . -FailOnWorkingTree
+
+  build-test:
+    name: Build and test (${{ matrix.os }})
+    needs: source-cleanliness
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+
+      - name: Show Go version
+        run: go version
+
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: cmd/legacywallet/frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: cmd/legacywallet/frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: cmd/legacywallet/frontend
+        run: npm run build
+
+      - name: Install Windows GCC (MSYS2 UCRT64)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-gcc
+
+      - name: Go mod download (Linux)
+        if: runner.os == 'Linux'
+        run: go mod download
+
+      - name: Go test short (Linux)
+        if: runner.os == 'Linux'
+        env:
+          CGO_ENABLED: "1"
+          CC: gcc
+        run: go test -short -count=1 ./...
+
+      - name: Go vet (Linux)
+        if: runner.os == 'Linux'
+        run: go vet ./...
+
+      - name: Build binaries (Linux)
+        if: runner.os == 'Linux'
+        env:
+          CGO_ENABLED: "1"
+          CC: gcc
+        run: |
+          go build -trimpath -o legacycoind ./cmd/legacycoind
+          go build -trimpath -o legacycoin-cli ./cmd/legacycoin-cli
+          go build -trimpath -o legacy-wallet-compile-smoke ./cmd/legacywallet
+          ./legacycoind params | tee params.txt
+          grep -q "yespower backend: cgo-c-reference" params.txt
+          pwsh ./scripts/verify-mainnet-identity.ps1 -Binary ./legacycoind
+
+      - name: Chaos CI smoke (Linux diagnostic)
+        if: runner.os == 'Linux'
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          chmod +x ./scripts/chaos-ci-smoke.sh
+          bash ./scripts/chaos-ci-smoke.sh ./legacycoind ./legacycoin-cli ./.tmp-chaos-ci
+
+      - name: Go mod download (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: go mod download
+
+      - name: Go test short (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          CGO_ENABLED: "1"
+          CC: gcc
+        run: |
+          $env:Path = "C:\msys64\ucrt64\bin;$env:Path"
+          go test -short -count=1 ./...
+
+      - name: Go vet (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: go vet ./...
+
+      - name: Build binaries (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          CGO_ENABLED: "1"
+          CC: gcc
+        run: |
+          $env:Path = "C:\msys64\ucrt64\bin;$env:Path"
+          go build -trimpath -o legacycoind.exe ./cmd/legacycoind
+          go build -trimpath -o legacycoin-cli.exe ./cmd/legacycoin-cli
+          go build -trimpath -o legacy-wallet-compile-smoke.exe ./cmd/legacywallet
+          $params = .\legacycoind.exe params | Out-String
+          $params
+          if ($params -notmatch "yespower backend:\s+cgo-c-reference") { throw "Expected cgo-c-reference backend for production build." }
+          ./scripts/verify-mainnet-identity.ps1 -Binary .\legacycoind.exe
+
+      - name: Final source scan
+        shell: pwsh
+        run: ./scripts/scan-source-cleanliness.ps1 -Root .
