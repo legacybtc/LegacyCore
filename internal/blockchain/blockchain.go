@@ -1277,6 +1277,7 @@ func (c *Chain) ValidateHeaderSequence(headers []wire.BlockHeader) ([]chainhash.
 	hashes := make([]chainhash.Hash, 0, len(headers))
 	prevHash := headers[0].PrevBlock
 	nextHeight := startHeight + 1
+	legacyBatch := make(map[string]string, len(headers))
 
 	for i, header := range headers {
 		if header.PrevBlock != prevHash {
@@ -1308,6 +1309,15 @@ func (c *Chain) ValidateHeaderSequence(headers []wire.BlockHeader) ([]chainhash.
 		prevHash = legacyHash
 		recent = prependRecentEntry(recent, consensus.BlockWindowEntry{Height: nextHeight, Time: header.Timestamp, Bits: header.Bits}, consensus.DGWv3PastBlocks)
 		nextHeight++
+
+		legacy, lerr := c.LegacyHeaderHash(header)
+		if lerr == nil {
+			legacyStr := legacy.String()
+			hashStr := hash.String()
+			if legacyStr != "" && legacyStr != hashStr {
+				legacyBatch[legacyStr] = hashStr
+			}
+		}
 	}
 
 	// If the active ancestor changed while the expensive validation was running,
@@ -1319,6 +1329,20 @@ func (c *Chain) ValidateHeaderSequence(headers []wire.BlockHeader) ([]chainhash.
 	if !startStillActive || currentStartHeight != startHeight {
 		return nil, errors.New("active tip changed during header validation")
 	}
+
+	if len(legacyBatch) > 0 {
+		c.mu.Lock()
+		for legacyStr, hashStr := range legacyBatch {
+			if c.legacyByHash == nil {
+				c.legacyByHash = make(map[string]string)
+			}
+			if _, exists := c.legacyByHash[legacyStr]; !exists {
+				c.legacyByHash[legacyStr] = hashStr
+			}
+		}
+		c.mu.Unlock()
+	}
+
 	return hashes, nil
 }
 
