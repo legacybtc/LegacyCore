@@ -713,7 +713,7 @@ func apiEndpoint(w http.ResponseWriter, r *http.Request) {
 		"coin":     "Legacy Coin",
 		"ticker":   "LBTC",
 		"version":  version.CoreVersion,
-		"explorer": "v1.0.33",
+		"explorer": "v1.0.34",
 		"endpoints": map[string]string{
 			"GET /api/latest":         "Latest blocks summary",
 			"GET /api/block/{hash}":   "Block details",

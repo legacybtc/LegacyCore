@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.0.34 (2026-07-11)
+
+### P2P Sync Flow — Single Getdata & Header Linkage Fix
+- **Single combined getdata**: `requestHeaderBlocks` now sends one combined message per batch instead of two separate getdata calls — fixes double `markBlocksRequested` / `addBlocksRequested` count that could stall block-body processing
+- **Deduplicated LegacyHeaderHash**: `ValidateHeaderSequence` computes `LegacyHeaderHash` once per header and reuses it for both `prevHash` linkage and cache-warming; falls back to canonical hash on error instead of failing the batch
+- **Cache warming during header validation**: `ValidateHeaderSequence` warms `legacyByHash` cache so subsequent `BlockByWireHash` lookups (from SHA256d peers) succeed without a full DB scan
+- **Header linkage debug logging**: when a header batch is rejected at position N, logs header.PrevBlock, computed prevHash, first_prev, our_tip, and batch_len — confirms SHA256d peers are on a fundamentally different chain after block 1
+
+### Known Limitations
+- **Headers from SHA256d peers are incompatible**: old peers (v1.0.20, v1.0.30) are on a SHA256d-mined chain that diverges from the yespower chain at block 1 (different PoW → different block content → different SHA256d hashes). Header-based sync (`getheaders`) will always fail with these peers. **Sync relies on the INV flow** (`requestUnknownBlocks`) which is reliable and reaches chain tip.
+- **Height comparison with SHA256d peers is misleading**: peer heights (e.g. 7080) cannot be compared to yespower chain heights (e.g. 1025) — they are on different chains. The daemon will log `sync behind peer` but the header/block requests will fail gracefully.
+
+### Binaries
+- Windows amd64: legacycoind, legacycoin-cli
+- Linux amd64: legacycoind, legacycoin-cli (native CGo yespower, musl-linked)
+- macOS amd64/arm64: legacycoind, legacycoin-cli
+
+---
+
 ## v1.0.33 (2026-07-09)
 
 ### P2P Header Validation Fix
