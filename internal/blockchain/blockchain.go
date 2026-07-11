@@ -1302,15 +1302,15 @@ func (c *Chain) ValidateHeaderSequence(headers []wire.BlockHeader) ([]chainhash.
 			return nil, fmt.Errorf("header %d failed proof-of-work: %w", i, err)
 		}
 		hashes = append(hashes, hash)
-		legacyHash, err := c.LegacyHeaderHash(header)
-		if err != nil {
-			return nil, fmt.Errorf("legacy hash for header %d: %w", i, err)
-		}
-		prevHash = legacyHash
 		recent = prependRecentEntry(recent, consensus.BlockWindowEntry{Height: nextHeight, Time: header.Timestamp, Bits: header.Bits}, consensus.DGWv3PastBlocks)
 		nextHeight++
 
 		legacy, lerr := c.LegacyHeaderHash(header)
+		if lerr == nil {
+			prevHash = legacy
+		} else {
+			prevHash = hash
+		}
 		if lerr == nil {
 			legacyStr := legacy.String()
 			hashStr := hash.String()

@@ -3713,12 +3713,12 @@ func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error 
 		batches++
 		batch := make([]wire.InvVect, 0, maxGetDataItems)
 		batchBlocks := 0
-		startIdx := batchStart
-		for batchStart < len(wanted) && len(batch) < maxGetDataItems {
+		for batchStart < len(wanted) && len(batch) < maxGetDataItems-1 {
 			w := wanted[batchStart]
 			batchStart++
-			batch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: w.hash})
 			batchBlocks++
+			batch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: w.hash})
+			batch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: w.legacy})
 		}
 		if len(batch) == 0 {
 			continue
@@ -3733,26 +3733,6 @@ func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error 
 		p.markBlocksRequested(batchBlocks)
 		s.addBlocksRequested(batchBlocks)
 		for _, inv := range batch {
-			if inv.Type == wire.InvTypeBlock {
-				s.recordGetdataReq(inv.Hash.String(), p.remote)
-			}
-		}
-		// Also send a legacy (SHA256d) getdata alongside so that
-		// mixed-version peers (e.g. BIP152 pure-Go) can serve either form.
-		legacyBatch := make([]wire.InvVect, 0, batchBlocks)
-		for j := startIdx; j < batchStart; j++ {
-			legacyBatch = append(legacyBatch, wire.InvVect{Type: wire.InvTypeBlock, Hash: wanted[j].legacy})
-		}
-		legacyPayload, err := wire.InvPayload(legacyBatch)
-		if err != nil {
-			return err
-		}
-		if err := s.writePeerMessage(p, wire.CommandGetData, legacyPayload); err != nil {
-			return err
-		}
-		p.markBlocksRequested(batchBlocks)
-		s.addBlocksRequested(batchBlocks)
-		for _, inv := range legacyBatch {
 			if inv.Type == wire.InvTypeBlock {
 				s.recordGetdataReq(inv.Hash.String(), p.remote)
 			}
