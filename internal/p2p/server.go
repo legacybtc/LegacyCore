@@ -3653,10 +3653,10 @@ func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error 
 	}
 	s.log.Printf("p2p received %d headers from %s (first_prev=%s, our_tip=%d:%s)", len(headers), p.remote, firstPrev, tipHeight, tipHash)
 	if len(headers) > 0 {
-		s.log.Printf("p2p header[0] from %s: prev=%s bits=%08x time=%d", p.remote, headers[0].PrevBlock.String(), headers[0].Bits, headers[0].Timestamp)
+		s.log.Printf("p2p header[0] from %s: prev=%s bits=%08x time=%d nonce=%d ver=%d merkle=%s", p.remote, headers[0].PrevBlock.String(), headers[0].Bits, headers[0].Timestamp, headers[0].Nonce, headers[0].Version, headers[0].MerkleRoot.String())
 	}
 	if len(headers) > 1 {
-		s.log.Printf("p2p header[1] from %s: prev=%s bits=%08x time=%d", p.remote, headers[1].PrevBlock.String(), headers[1].Bits, headers[1].Timestamp)
+		s.log.Printf("p2p header[1] from %s: prev=%s bits=%08x time=%d nonce=%d ver=%d merkle=%s", p.remote, headers[1].PrevBlock.String(), headers[1].Bits, headers[1].Timestamp, headers[1].Nonce, headers[1].Version, headers[1].MerkleRoot.String())
 	}
 	hashes, err := s.chain.ValidateHeaderSequence(headers)
 	if err != nil {
