@@ -1281,7 +1281,7 @@ func (c *Chain) ValidateHeaderSequence(headers []wire.BlockHeader) ([]chainhash.
 
 	for i, header := range headers {
 		if header.PrevBlock != prevHash {
-			return nil, fmt.Errorf("headers not linked at position %d", i)
+			return nil, fmt.Errorf("headers not linked at position %d: header.PrevBlock=%s prevHash=%s", i, header.PrevBlock.String(), prevHash.String())
 		}
 		expectedBits := requiredBitsFromRecent(recent, genesisBits, postGenesisBits)
 		if header.Bits != expectedBits {
