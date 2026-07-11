@@ -130,6 +130,24 @@ Backs up current binaries, builds from source, verifies mainnet identity, stops 
 
 ---
 
+## Seed Nodes
+
+Connect to the Legacy Coin network by specifying seed peers on first run:
+
+```bash
+legacycoind run -seed-peers
+```
+
+The daemon will discover peers from DNS seeds (`legacycoinseed.space`, `legacycoinseed2.space`) and maintain a local peer database. You can also manually add known nodes:
+
+```bash
+legacycoin-cli addnode 192.168.1.131:19555 add
+```
+
+> **Note:** Legacy Core uses **Yespower Proof-of-Work**. Old SHA256d peers (v1.0.20–v1.0.30) are on a different chain — the daemon will ignore their headers (expected) and sync blocks from them via the INV flow. Sync reaches chain tip reliably.
+
+---
+
 ## Mainnet Identity
 
 | Field | Value |
