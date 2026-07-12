@@ -290,8 +290,8 @@ jobs:
         with:
           tag_name: ${{ env.RELEASE_VERSION }}
           name: Legacy Core ${{ env.RELEASE_VERSION }}
-          body: |
-            Automated release from commit ${{ github.sha }}.
+          body: Legacy Core ${{ env.RELEASE_VERSION }}
+          # Manual: after CI finishes, edit release body with gh to include changelog
           files: release-assets/*
           generate_release_notes: false
           fail_on_unmatched_files: true
