@@ -5,6 +5,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 )
 
 type GPUInfo struct {
@@ -20,20 +21,26 @@ type GPUInfo struct {
 }
 
 var (
-	gpuCache  GPUInfo
-	gpuOnce   sync.Once
-	gpuCached bool
+	gpuCache     GPUInfo
+	gpuCacheMu   sync.RWMutex
+	gpuCachedAt  time.Time
+	gpuCacheTTL  = 5 * time.Minute
 )
 
 func DetectGPU() GPUInfo {
-	gpuOnce.Do(func() {
-		gpuCache = detectGPU()
-		gpuCached = true
-	})
-	if !gpuCached {
-		return detectGPU()
+	gpuCacheMu.RLock()
+	cached := gpuCache
+	cachedAt := gpuCachedAt
+	gpuCacheMu.RUnlock()
+	if !cachedAt.IsZero() && time.Since(cachedAt) < gpuCacheTTL {
+		return cached
 	}
-	return gpuCache
+	info := detectGPU()
+	gpuCacheMu.Lock()
+	gpuCache = info
+	gpuCachedAt = time.Now()
+	gpuCacheMu.Unlock()
+	return info
 }
 
 func detectGPU() GPUInfo {

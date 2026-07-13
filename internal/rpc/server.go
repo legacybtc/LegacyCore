@@ -47,6 +47,87 @@ import (
 	"legacycoin/legacy-go/internal/wire"
 )
 
+type ctxKey string
+
+const ctxKeyAuthorized = ctxKey("rpc_authorized")
+
+type rpcAuthLevel int
+
+const (
+	rpcAuthPublic   rpcAuthLevel = iota
+	rpcAuthSensitive
+)
+
+var rpcMethodAuth = map[string]rpcAuthLevel{
+	// Public / read-only
+	"getinfo":                  rpcAuthPublic,
+	"help":                     rpcAuthPublic,
+	"getblockcount":            rpcAuthPublic,
+	"getbestblockhash":         rpcAuthPublic,
+	"getblockhash":             rpcAuthPublic,
+	"getblock":                 rpcAuthPublic,
+	"getblockheader":           rpcAuthPublic,
+	"getblockchaininfo":        rpcAuthPublic,
+	"getchaintips":             rpcAuthPublic,
+	"getdifficulty":            rpcAuthPublic,
+	"getdifficultyhistory":     rpcAuthPublic,
+	"getmempoolinfo":           rpcAuthPublic,
+	"getrawmempool":            rpcAuthPublic,
+	"getmempoolentry":          rpcAuthPublic,
+	"getnetworkinfo":           rpcAuthPublic,
+	"getpeerinfo":              rpcAuthPublic,
+	"getconnectioncount":       rpcAuthPublic,
+	"uptime":                   rpcAuthPublic,
+	"getrawtransaction":        rpcAuthPublic,
+	"gettxout":                 rpcAuthPublic,
+	"gettxoutsetinfo":          rpcAuthPublic,
+	"validateaddress":          rpcAuthPublic,
+	"getaddressinfo":           rpcAuthPublic,
+	"verifymessage":            rpcAuthPublic,
+	"estimatefee":              rpcAuthPublic,
+	"estimatesmartfee":         rpcAuthPublic,
+	"getmininginfo":            rpcAuthPublic,
+	"getminerstatus":           rpcAuthPublic,
+	"getblocklocator":          rpcAuthPublic,
+	"getchaintiming":           rpcAuthPublic,
+	"getpolicy":                rpcAuthPublic,
+	"getscriptstatus":          rpcAuthPublic,
+	"getchainparams":           rpcAuthPublic,
+	"getbootstrapinfo":         rpcAuthPublic,
+	"getnodeconfig":            rpcAuthPublic,
+	"getreadiness":             rpcAuthPublic,
+	"getselfcheck":             rpcAuthPublic,
+	"getlaunchstatus":          rpcAuthPublic,
+	"getlaunchchecklist":       rpcAuthPublic,
+	"doctor":                   rpcAuthPublic,
+	"getsyncstatus":            rpcAuthPublic,
+	"getchainstatus":           rpcAuthPublic,
+	"getforkstatus":            rpcAuthPublic,
+	"getknownpeers":            rpcAuthPublic,
+	"getblocktemplate":         rpcAuthPublic,
+	"decoderawtransaction":     rpcAuthPublic,
+	"getaddresstxids":          rpcAuthPublic,
+	"getaddressutxos":          rpcAuthPublic,
+	"getaddressbalance":        rpcAuthPublic,
+	"getaddresshistory":        rpcAuthPublic,
+	"listtransactions":         rpcAuthPublic,
+	"listsinceblock":           rpcAuthPublic,
+	"listunspent":              rpcAuthPublic,
+	"getbalance":               rpcAuthPublic,
+	"getwalletinfo":            rpcAuthPublic,
+	"getreceivedbyaddress":     rpcAuthPublic,
+	"gettxoutproof":            rpcAuthPublic,
+	"verifytxoutproof":         rpcAuthPublic,
+	"getspentinfo":             rpcAuthPublic,
+
+	// All other methods require authentication
+}
+
+func (s *Server) methodRequiresAuth(method string) bool {
+	level, ok := rpcMethodAuth[method]
+	return !ok || level != rpcAuthPublic
+}
+
 type Server struct {
 	chain      *blockchain.Chain
 	pool       *mempool.Pool
@@ -518,25 +599,31 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 }
 
 var globalCORSOrigin string
+var globalCORSOriginMu sync.RWMutex
 
 func (s *Server) SetCORSOrigin(origin string) {
 	origin = strings.TrimSpace(origin)
 	s.corsOrigin = origin
+	globalCORSOriginMu.Lock()
 	globalCORSOrigin = origin
+	globalCORSOriginMu.Unlock()
 }
 
 func (s *Server) corsAllowedOrigin() string {
 	if s.corsOrigin != "" {
 		return s.corsOrigin
 	}
-	return "*"
+	return ""
 }
 
 func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
+	origin := s.corsAllowedOrigin()
 	if r.Method == http.MethodOptions {
-		w.Header().Set("Access-Control-Allow-Origin", s.corsAllowedOrigin())
-		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		}
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -549,11 +636,13 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
 		return
 	}
-	if s.auth.Enabled && !s.authorized(r) {
+	authorized := s.authorized(r)
+	if s.auth.Enabled && !authorized {
 		w.Header().Set("WWW-Authenticate", `Basic realm="LegacyCoin RPC"`)
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
+	ctx := context.WithValue(r.Context(), ctxKeyAuthorized, authorized)
 	r.Body = http.MaxBytesReader(w, r.Body, MaxRPCRequestBytes)
 	rawBody, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -581,7 +670,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		responses := make([]response, 0, len(reqs))
 		for _, req := range reqs {
-			responses = append(responses, s.handleRPCRequest(r.Context(), req))
+			responses = append(responses, s.handleRPCRequest(ctx, req))
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(responses)
@@ -592,7 +681,7 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		writeResponse(w, response{Error: &rpcError{Code: -32700, Message: err.Error()}})
 		return
 	}
-	writeResponse(w, s.handleRPCRequest(r.Context(), req))
+	writeResponse(w, s.handleRPCRequest(ctx, req))
 }
 
 func (s *Server) handleRPCRequest(ctx context.Context, req request) response {
@@ -637,6 +726,15 @@ func (s *Server) handleRPCRequest(ctx context.Context, req request) response {
 		s.rpcDiagMu.Unlock()
 	}()
 
+	if s.methodRequiresAuth(req.Method) {
+		authorized, _ := ctx.Value(ctxKeyAuthorized).(bool)
+		if !authorized {
+			s.rpcDiagMu.Lock()
+			s.rpcErrorCount++
+			s.rpcDiagMu.Unlock()
+			return response{ID: req.ID, Error: &rpcError{Code: -32601, Message: "method requires authentication"}}
+		}
+	}
 	start := time.Now()
 	result, rpcErr = s.call(ctx, req.Method, params)
 	duration := time.Since(start)
@@ -2760,6 +2858,9 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 		if health := s.chain.StorageHealth(); !health.OK {
 			return nil, &rpcError{Code: -32603, Message: "mining refused: storage health failed: " + health.Error}
 		}
+		if safety := s.checkSafeToMine(cfg, true); !safety.Safe && !force {
+			return nil, &rpcError{Code: -32603, Message: "mining refused: " + safety.Reason}
+		}
 		if s.p2p != nil && s.p2p.PeerCount() == 0 && !force {
 			tip := s.chain.Tip()
 			if tip != nil && tip.Height > 0 {
@@ -4135,13 +4236,14 @@ func amountFloat(v int64) float64 {
 
 func writeResponse(w http.ResponseWriter, resp response) {
 	w.Header().Set("Content-Type", "application/json")
+	globalCORSOriginMu.RLock()
 	origin := globalCORSOrigin
-	if origin == "" {
-		origin = "*"
+	globalCORSOriginMu.RUnlock()
+	if origin != "" {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 	}
-	w.Header().Set("Access-Control-Allow-Origin", origin)
-	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 	_ = json.NewEncoder(w).Encode(resp)
 }
 

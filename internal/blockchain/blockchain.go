@@ -221,6 +221,7 @@ func (c *Chain) HashHeader(header wire.BlockHeader) (chainhash.Hash, error) {
 func (c *Chain) Close() {
 	if c.hasherCtx != nil {
 		c.hasherCtx.Close()
+		c.hasherCtx = nil
 		pow.RecordChainContextFree()
 	}
 }
@@ -1081,7 +1082,7 @@ func (c *Chain) validateBlockTransactions(block *wire.MsgBlock, height int32) ([
 		for inputIndex, in := range tx.TxIn {
 			key := OutPointKey(in.PreviousOutPoint.Hash.String(), in.PreviousOutPoint.Index)
 			if _, ok := seenSpends[key]; ok {
-				return nil, nil, nil, fmt.Errorf("%w: %s", ErrDuplicateSpend, key)
+				return nil, nil, nil, ErrDuplicateSpend
 			}
 			seenSpends[key] = struct{}{}
 
@@ -1089,12 +1090,12 @@ func (c *Chain) validateBlockTransactions(block *wire.MsgBlock, height int32) ([
 			if !fromSameBlock {
 				loaded, err := c.store.LoadUTXO(key)
 				if err != nil {
-					return nil, nil, nil, fmt.Errorf("%w: %s", ErrMissingTxOut, key)
+					return nil, nil, nil, ErrMissingTxOut
 				}
 				prev = *loaded
 			}
 			if prev.Coinbase && height-prev.Height < int32(chaincfg.CoinbaseMaturity) {
-				return nil, nil, nil, fmt.Errorf("%w: %s", ErrImmatureCoinbase, key)
+				return nil, nil, nil, ErrImmatureCoinbase
 			}
 			prevScript, err := hex.DecodeString(prev.PkScript)
 			if err != nil {
@@ -1880,24 +1881,21 @@ func (c *Chain) StorageHealth() StorageHealth {
 
 func (c *Chain) ReindexActiveChain() (map[string]any, error) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	tip := c.tip
 
 	if repairer, ok := c.store.(fullIndexRepairer); ok {
 		if err := repairer.RepairIndexes(); err != nil {
-			c.mu.Unlock()
 			return nil, err
 		}
 	} else if repairer, ok := c.store.(heightIndexRepairer); ok {
 		if err := repairer.RepairHeightIndex(); err != nil {
-			c.mu.Unlock()
 			return nil, err
 		}
 	}
 	if err := c.rebuildActiveChainworkLocked(); err != nil {
-		c.mu.Unlock()
 		return nil, err
 	}
-	c.mu.Unlock()
 
 	health := c.StorageHealth()
 	result := map[string]any{

@@ -58,11 +58,22 @@ func TestJSONRPCBatchRequest(t *testing.T) {
 	}
 }
 
+func authServer() *Server {
+	return &Server{
+		auth: config.RPCAuth{User: "test", Password: "test", Enabled: true},
+	}
+}
+
+func authRequest(req *http.Request) *http.Request {
+	req.SetBasicAuth("test", "test")
+	return req
+}
+
 func TestJSONRPCInvalidParamsSubmitBlockNoArgs(t *testing.T) {
-	s := &Server{}
+	s := authServer()
 	body := `{"jsonrpc":"1.0","id":"probe","method":"submitblock","params":[]}`
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(body))
+	req := authRequest(httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(body)))
 	s.handle(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -191,10 +202,10 @@ func TestSetMiningAddressRequiresWalletOwnedAddress(t *testing.T) {
 		t.Fatalf("NewAddress: %v", err)
 	}
 	unowned := address.EncodeBase58Check(chaincfg.PublicKeyHashVersion, bytes.Repeat([]byte{0x42}, 20))
-	s := &Server{wallet: w, configPath: filepath.Join(dir, config.ConfigFile)}
+	s := &Server{wallet: w, configPath: filepath.Join(dir, config.ConfigFile), auth: config.RPCAuth{User: "test", Password: "test", Enabled: true}}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{"jsonrpc":"1.0","id":"set","method":"setminingaddress","params":["`+unowned+`"]}`))
+	req := authRequest(httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{"jsonrpc":"1.0","id":"set","method":"setminingaddress","params":["`+unowned+`"]}`)))
 	s.handle(rec, req)
 	var rejected response
 	if err := json.Unmarshal(rec.Body.Bytes(), &rejected); err != nil {
@@ -205,7 +216,7 @@ func TestSetMiningAddressRequiresWalletOwnedAddress(t *testing.T) {
 	}
 
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{"jsonrpc":"1.0","id":"set","method":"setminingaddress","params":["`+owned+`"]}`))
+	req = authRequest(httptest.NewRequest(http.MethodPost, "/", bytes.NewBufferString(`{"jsonrpc":"1.0","id":"set","method":"setminingaddress","params":["`+owned+`"]}`)))
 	s.handle(rec, req)
 	var accepted response
 	if err := json.Unmarshal(rec.Body.Bytes(), &accepted); err != nil {

@@ -184,7 +184,9 @@ type Server struct {
 	peerRateWindow    time.Duration
 	globalRateWindow  time.Duration
 	connectOnly       map[string]struct{}
+	connectOnlyMu     sync.RWMutex
 	seedPeers         bool
+	configMu          sync.RWMutex
 
 	listener            net.Listener
 	peers               atomic.Int32
@@ -310,6 +312,8 @@ func (s *Server) OutboundCount() int32 {
 }
 
 func (s *Server) SetPeerPolicy(chainID string, enforce bool, peerSafety bool, banThreshold int, seedPeers bool, connectOnly []string) {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	if strings.TrimSpace(chainID) != "" {
 		s.chainID = strings.TrimSpace(chainID)
 	}
@@ -320,6 +324,7 @@ func (s *Server) SetPeerPolicy(chainID string, enforce bool, peerSafety bool, ba
 	}
 	s.seedPeers = seedPeers
 	if len(connectOnly) > 0 {
+		s.connectOnlyMu.Lock()
 		s.connectOnly = make(map[string]struct{}, len(connectOnly))
 		for _, addr := range connectOnly {
 			normalized, err := normalizePeerAddress(addr, s.params.DefaultPort)
@@ -328,10 +333,13 @@ func (s *Server) SetPeerPolicy(chainID string, enforce bool, peerSafety bool, ba
 			}
 			s.connectOnly[normalized] = struct{}{}
 		}
+		s.connectOnlyMu.Unlock()
 	}
 }
 
 func (s *Server) SetRuntimePolicy(maxInboundPeers int, temporaryBanSeconds int, reconnectBackoff bool, reconnectBackoffSeconds int, peerRateLimit int, maxPerIP int, maxPerSubnet int, globalRateLimit int, misbehaviorDecaySeconds int, staleTimeoutSeconds int) {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
 	if maxInboundPeers > 0 {
 		s.maxInboundPeers = maxInboundPeers
 	}
@@ -759,14 +767,20 @@ func (s *Server) inboundSubnetCount(subnet string) int {
 
 func (s *Server) allowPeerMessage(p *peer, command string) bool {
 	now := time.Now()
-	window := s.peerRateWindow
+	s.configMu.RLock()
+	peerRateWindow := s.peerRateWindow
+	globalRateWindow := s.globalRateWindow
+	globalRateLimit := s.globalRateLimit
+	peerRateLimit := s.peerRateLimit
+	s.configMu.RUnlock()
+	window := peerRateWindow
 	if window <= 0 {
 		window = 10 * time.Second
 	}
 	allowed := true
 	globalAllowed := true
-	gWindow := s.globalRateWindow
-	if s.globalRateLimit > 0 {
+	gWindow := globalRateWindow
+	if globalRateLimit > 0 {
 		if gWindow <= 0 {
 			gWindow = 10 * time.Second
 		}
@@ -778,7 +792,7 @@ func (s *Server) allowPeerMessage(p *peer, command string) bool {
 		s.globalWindowCount++
 		gCount := s.globalWindowCount
 		s.rateMu.Unlock()
-		if gCount > s.globalRateLimit {
+		if gCount > globalRateLimit {
 			globalAllowed = false
 		}
 	}
@@ -789,16 +803,15 @@ func (s *Server) allowPeerMessage(p *peer, command string) bool {
 	}
 	p.rateWindowCount++
 	count := p.rateWindowCount
-	limit := s.peerRateLimit
-	if limit > 0 && count > limit {
+	if peerRateLimit > 0 && count > peerRateLimit {
 		p.rateLimited = true
-		p.lastPenaltyReason = fmt.Sprintf("peer message rate limit exceeded (%d/%d per %s) cmd=%s", count, limit, window.String(), command)
+		p.lastPenaltyReason = fmt.Sprintf("peer message rate limit exceeded (%d/%d per %s) cmd=%s", count, peerRateLimit, window.String(), command)
 		p.lastPenaltyAt = now
 		allowed = false
 	}
 	if !globalAllowed {
 		p.rateLimited = true
-		p.lastPenaltyReason = fmt.Sprintf("global message rate limit exceeded (>%d per %s)", s.globalRateLimit, gWindow.String())
+		p.lastPenaltyReason = fmt.Sprintf("global message rate limit exceeded (>%d per %s)", globalRateLimit, gWindow.String())
 		p.lastPenaltyAt = now
 		allowed = false
 	}
@@ -807,14 +820,18 @@ func (s *Server) allowPeerMessage(p *peer, command string) bool {
 }
 
 func (s *Server) shouldThrottleOutboundDial(addr string) bool {
-	if !s.reconnectBackoff || s.reconnectEvery <= 0 {
+	s.configMu.RLock()
+	reconnectBackoff := s.reconnectBackoff
+	reconnectEvery := s.reconnectEvery
+	s.configMu.RUnlock()
+	if !reconnectBackoff || reconnectEvery <= 0 {
 		return false
 	}
 	s.knownMu.Lock()
 	defer s.knownMu.Unlock()
 	now := time.Now()
 	last, ok := s.outboundLastAttempt[addr]
-	if ok && now.Sub(last) < s.reconnectEvery {
+	if ok && now.Sub(last) < reconnectEvery {
 		return true
 	}
 	s.outboundLastAttempt[addr] = now
@@ -1601,10 +1618,12 @@ func (s *Server) AddNode(ctx context.Context, addr string) error {
 		return err
 	}
 	addr = normalized
-	if len(s.connectOnly) > 0 {
-		if _, ok := s.connectOnly[addr]; !ok {
-			return fmt.Errorf("peer %s is not allowed by connect-only policy", addr)
-		}
+	s.connectOnlyMu.RLock()
+	connectOnlyLen := len(s.connectOnly)
+	_, connectOnlyOk := s.connectOnly[addr]
+	s.connectOnlyMu.RUnlock()
+	if connectOnlyLen > 0 && !connectOnlyOk {
+		return fmt.Errorf("peer %s is not allowed by connect-only policy", addr)
 	}
 	s.addBootstrapPeer(addr)
 	if s.shouldThrottleOutboundDial(addr) {
@@ -2132,7 +2151,13 @@ func (s *Server) connectSeeds(ctx context.Context) {
 			s.log.Printf("p2p add known peer %s: %v", peer, err)
 		}
 	}
-	if !s.seedPeers || len(s.connectOnly) > 0 {
+	s.configMu.RLock()
+	seedPeers := s.seedPeers
+	s.configMu.RUnlock()
+	s.connectOnlyMu.RLock()
+	connectOnlyLen := len(s.connectOnly)
+	s.connectOnlyMu.RUnlock()
+	if !seedPeers || connectOnlyLen > 0 {
 		return
 	}
 	for _, peer := range s.params.FixedSeeds {
@@ -2432,6 +2457,19 @@ func (s *Server) unmarkOutbound(addr string) {
 }
 
 func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.log.Printf("p2p handleConn panicked: %v", r)
+		}
+	}()
+	s.configMu.RLock()
+	maxInboundPeers := s.maxInboundPeers
+	maxPerIP := s.maxPerIP
+	maxPerSubnet := s.maxPerSubnet
+	s.configMu.RUnlock()
+	s.connectOnlyMu.RLock()
+	connectOnlyMap := s.connectOnly
+	s.connectOnlyMu.RUnlock()
 	now := time.Now()
 	p := &peer{conn: conn, outbound: outbound, remote: conn.RemoteAddr().String(), connected: now, lastSeen: now, lastPong: now, lastHeightUpdate: now}
 	defer conn.Close()
@@ -2441,22 +2479,22 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, outbound bool) {
 	}
 	host := splitHost(conn.RemoteAddr().String())
 	if !outbound {
-		if s.maxInboundPeers > 0 && s.inboundPeerCount() >= s.maxInboundPeers {
-			s.log.Printf("p2p rejected inbound peer %s (max inbound reached: %d)", conn.RemoteAddr(), s.maxInboundPeers)
+		if maxInboundPeers > 0 && s.inboundPeerCount() >= maxInboundPeers {
+			s.log.Printf("p2p rejected inbound peer %s (max inbound reached: %d)", conn.RemoteAddr(), maxInboundPeers)
 			return
 		}
-		if s.maxPerIP > 0 && s.inboundHostCount(host) >= s.maxPerIP {
-			s.log.Printf("p2p rejected inbound peer %s (per-ip cap %d)", conn.RemoteAddr(), s.maxPerIP)
+		if maxPerIP > 0 && s.inboundHostCount(host) >= maxPerIP {
+			s.log.Printf("p2p rejected inbound peer %s (per-ip cap %d)", conn.RemoteAddr(), maxPerIP)
 			return
 		}
 		subnet := subnetKey(host)
-		if s.maxPerSubnet > 0 && subnet != "" && s.inboundSubnetCount(subnet) >= s.maxPerSubnet {
-			s.log.Printf("p2p rejected inbound peer %s (subnet cap %d for %s)", conn.RemoteAddr(), s.maxPerSubnet, subnet)
+		if maxPerSubnet > 0 && subnet != "" && s.inboundSubnetCount(subnet) >= maxPerSubnet {
+			s.log.Printf("p2p rejected inbound peer %s (subnet cap %d for %s)", conn.RemoteAddr(), maxPerSubnet, subnet)
 			return
 		}
 	}
-	if len(s.connectOnly) > 0 && !outbound {
-		if _, ok := s.connectOnly[conn.RemoteAddr().String()]; !ok {
+	if len(connectOnlyMap) > 0 && !outbound {
+		if _, ok := connectOnlyMap[conn.RemoteAddr().String()]; !ok {
 			s.logConnectOnlyReject(conn.RemoteAddr().String())
 			return
 		}
@@ -3074,8 +3112,12 @@ func (s *Server) versionPayload(remote net.Addr) ([]byte, error) {
 	if err := buf.WriteByte(0); err != nil {
 		return nil, err
 	}
-	if s.enforceChainID {
-		if err := wire.WriteVarBytes(&buf, []byte(s.chainID)); err != nil {
+	s.configMu.RLock()
+	enforceChainID := s.enforceChainID
+	chainID := s.chainID
+	s.configMu.RUnlock()
+	if enforceChainID {
+		if err := wire.WriteVarBytes(&buf, []byte(chainID)); err != nil {
 			return nil, err
 		}
 		if _, err := buf.Write(s.params.MessageStart[:]); err != nil {
@@ -3165,20 +3207,26 @@ func (p *peer) addBytesRecv(n uint64) {
 }
 
 func (s *Server) scorePeer(p *peer, score int, reason string) {
-	if !s.peerSafety || p == nil || score <= 0 {
+	s.configMu.RLock()
+	peerSafety := s.peerSafety
+	banThreshold := s.banThreshold
+	banDuration := s.banDuration
+	misbehaviorDecay := s.misbehaviorDecay
+	s.configMu.RUnlock()
+	if !peerSafety || p == nil || score <= 0 {
 		return
 	}
 	now := time.Now()
 	p.lastMu.Lock()
-	if s.misbehaviorDecay > 0 && !p.lastPenaltyAt.IsZero() && p.banScore > 0 {
+	if misbehaviorDecay > 0 && !p.lastPenaltyAt.IsZero() && p.banScore > 0 {
 		elapsed := now.Sub(p.lastPenaltyAt)
-		steps := int(elapsed / s.misbehaviorDecay)
+		steps := int(elapsed / misbehaviorDecay)
 		if steps > 0 {
 			p.banScore -= steps
 			if p.banScore < 0 {
 				p.banScore = 0
 			}
-			p.lastPenaltyAt = p.lastPenaltyAt.Add(time.Duration(steps) * s.misbehaviorDecay)
+			p.lastPenaltyAt = p.lastPenaltyAt.Add(time.Duration(steps) * misbehaviorDecay)
 		}
 	}
 	p.banScore += score
@@ -3186,8 +3234,8 @@ func (s *Server) scorePeer(p *peer, score int, reason string) {
 	p.lastPenaltyAt = now
 	p.lastPenaltyReason = reason
 	p.lastMu.Unlock()
-	if s.banThreshold > 0 && total >= s.banThreshold {
-		d := s.banDuration
+	if banThreshold > 0 && total >= banThreshold {
+		d := banDuration
 		if d <= 0 {
 			d = time.Hour
 		}

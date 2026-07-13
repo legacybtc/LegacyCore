@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	btcecdsa "github.com/btcsuite/btcd/btcec/v2/ecdsa"
 
@@ -27,14 +28,17 @@ type Entry struct {
 type Pool struct {
 	mu sync.RWMutex
 
-	entries map[string]Entry
-	spent   map[string]string
-	parents map[string]map[string]struct{}
-	childs  map[string]map[string]struct{}
-	maxTx   int
-	orphans map[string]*wire.MsgTx
-	orphRef map[string]map[string]struct{}
-	maxOrph int
+	entries       map[string]Entry
+	spent         map[string]string
+	parents       map[string]map[string]struct{}
+	childs        map[string]map[string]struct{}
+	maxTx         int
+	orphans       map[string]*wire.MsgTx
+	orphRef       map[string]map[string]struct{}
+	maxOrph       int
+	orphanOrder   []string
+	rateLimitMu   sync.Mutex
+	rateTimestamps []time.Time
 }
 
 const (
@@ -201,6 +205,18 @@ func (p *Pool) Lookup(txid string) (*wire.MsgTx, bool) {
 }
 
 func (p *Pool) Add(chain *blockchain.Chain, tx *wire.MsgTx) (Entry, error) {
+	p.rateLimitMu.Lock()
+	now := time.Now()
+	cutoff := now.Add(-time.Second)
+	for len(p.rateTimestamps) > 0 && p.rateTimestamps[0].Before(cutoff) {
+		p.rateTimestamps = p.rateTimestamps[1:]
+	}
+	if len(p.rateTimestamps) >= 1000 {
+		p.rateLimitMu.Unlock()
+		return Entry{}, fmt.Errorf("mempool tx rate limit exceeded")
+	}
+	p.rateTimestamps = append(p.rateTimestamps, now)
+	p.rateLimitMu.Unlock()
 	txid, fee, missing, err := validateTransaction(chain, tx, p)
 	if err != nil {
 		if errors.Is(err, blockchain.ErrMissingTxOut) {
@@ -478,12 +494,12 @@ func (p *Pool) addOrphan(tx *wire.MsgTx, txid string, missing []string) {
 		return
 	}
 	if len(p.orphans) >= p.maxOrph {
-		for id := range p.orphans {
-			p.deleteOrphanLocked(id)
-			break
+		for len(p.orphans) >= p.maxOrph && len(p.orphanOrder) > 0 {
+			p.deleteOrphanLocked(p.orphanOrder[0])
 		}
 	}
 	p.orphans[txid] = tx
+	p.orphanOrder = append(p.orphanOrder, txid)
 	for _, dep := range missing {
 		if p.orphRef[dep] == nil {
 			p.orphRef[dep] = make(map[string]struct{})
@@ -498,6 +514,12 @@ func (p *Pool) deleteOrphanLocked(txid string) {
 		return
 	}
 	delete(p.orphans, txid)
+	for i, id := range p.orphanOrder {
+		if id == txid {
+			p.orphanOrder = append(p.orphanOrder[:i], p.orphanOrder[i+1:]...)
+			break
+		}
+	}
 	for _, in := range tx.TxIn {
 		key := blockchain.OutPointKey(in.PreviousOutPoint.Hash.String(), in.PreviousOutPoint.Index)
 		waiters := p.orphRef[key]

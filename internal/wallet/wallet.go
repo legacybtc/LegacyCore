@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"io"
 	"os"
 	"path/filepath"
@@ -171,6 +172,14 @@ func (w *Wallet) NewAddress() (string, error) {
 	if err := w.requireUnlocked(); err != nil {
 		return "", err
 	}
+	addr, err := w.newAddressLocked()
+	if err != nil {
+		return "", err
+	}
+	return addr, w.persist()
+}
+
+func (w *Wallet) newAddressLocked() (string, error) {
 	var (
 		priv *btcec.PrivateKey
 		err  error
@@ -192,7 +201,7 @@ func (w *Wallet) NewAddress() (string, error) {
 	w.addresses[addr] = struct{}{}
 	w.refreshMetadataLocked()
 	w.mu.Unlock()
-	return addr, w.persist()
+	return addr, nil
 }
 
 func (w *Wallet) SetHDSeed(seedHex string) (string, error) {
@@ -303,6 +312,7 @@ func (w *Wallet) DumpPrivKey(addr string) (string, error) {
 	if err != nil || len(keyBytes) != 32 {
 		return "", fmt.Errorf("invalid private key")
 	}
+	defer func() { for i := range keyBytes { keyBytes[i] = 0 } }()
 	payload := append([]byte{}, keyBytes...)
 	payload = append(payload, 0x01)
 	return address.EncodeBase58Check(chaincfg.PrivateKeyVersion, payload), nil
@@ -869,6 +879,7 @@ func (w *Wallet) SignRawTransaction(chain *blockchain.Chain, tx *wire.MsgTx) (*w
 			priv, _ := btcec.PrivKeyFromBytes(keyBytes)
 			sig := btcecdsa.Sign(priv, sighash[:]).Serialize()
 			sigScript, err := script.SignatureScript(sig, priv.PubKey().SerializeCompressed())
+			for i := range keyBytes { keyBytes[i] = 0 }
 			if err != nil {
 				signErrors = append(signErrors, map[string]any{
 					"txid":    prevTxID,
@@ -1049,7 +1060,7 @@ func (w *Wallet) sendWithSource(chain *blockchain.Chain, pool *mempool.Pool, fro
 		if u.Locked {
 			continue
 		}
-		if u.Coinbase && u.Confirmations > 0 && u.Confirmations < int32(chaincfg.CoinbaseMaturity) {
+		if u.Coinbase && u.Confirmations < int32(chaincfg.CoinbaseMaturity) {
 			// Conservative wallet policy: avoid selecting immature coinbase outputs.
 			continue
 		}
@@ -1063,6 +1074,10 @@ func (w *Wallet) sendWithSource(chain *blockchain.Chain, pool *mempool.Pool, fro
 			}
 			priv, _ := btcec.PrivKeyFromBytes(keyBytes)
 			selected = append(selected, chosen{utxo: u, classicKey: priv})
+			func() { for i := range keyBytes { keyBytes[i] = 0 } }()
+			if math.MaxInt64-total < u.Value {
+				break
+			}
 			total += u.Value
 			if total >= target {
 				break
@@ -1075,6 +1090,9 @@ func (w *Wallet) sendWithSource(chain *blockchain.Chain, pool *mempool.Pool, fro
 				continue
 			}
 			selected = append(selected, chosen{utxo: u, hybridKey: hk})
+			if math.MaxInt64-total < u.Value {
+				break
+			}
 			total += u.Value
 			if total >= target {
 				break
@@ -1093,7 +1111,16 @@ func (w *Wallet) sendWithSource(chain *blockchain.Chain, pool *mempool.Pool, fro
 		if total > target {
 			numOuts++ // change output
 		}
-		estSize := 10 + len(selected)*148 + numOuts*34
+		classicInputs := 0
+		hybridInputs := 0
+		for _, c := range selected {
+			if c.hybridKey != nil {
+				hybridInputs++
+			} else {
+				classicInputs++
+			}
+		}
+		estSize := 10 + classicInputs*148 + hybridInputs*5400 + numOuts*34
 		fee = (int64(estSize)*mempool.MinRelayFeePerKB + 999) / 1000
 		if fee < mempool.MinRelayFeePerKB {
 			fee = mempool.MinRelayFeePerKB
@@ -1124,7 +1151,7 @@ func (w *Wallet) sendWithSource(chain *blockchain.Chain, pool *mempool.Pool, fro
 	tx.TxOut = append(tx.TxOut, extraOutputs...)
 	change := total - target
 	if change > 0 {
-		changeAddr, err := w.NewAddress()
+		changeAddr, err := w.newAddressLocked()
 		if err != nil {
 			return "", err
 		}
@@ -1194,6 +1221,11 @@ func (w *Wallet) sendWithSource(chain *blockchain.Chain, pool *mempool.Pool, fro
 	entry, err := pool.Add(chain, tx)
 	if err != nil {
 		return "", err
+	}
+	if change > 0 {
+		if err := w.persist(); err != nil {
+			return entry.TxID, err
+		}
 	}
 	return entry.TxID, nil
 }
@@ -1396,7 +1428,7 @@ func encryptState(state keyState, passphrase string) (cipherHex string, saltHex 
 			passBytes[i] = 0
 		}
 	}()
-	key, err := scrypt.Key(passBytes, salt, 65536, 8, 1, 32)
+	key, err := scrypt.Key(passBytes, salt, 1048576, 8, 1, 32)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -1441,26 +1473,30 @@ func decryptState(cipherHex string, saltHex string, nonceHex string, passphrase 
 			passBytes[i] = 0
 		}
 	}()
-	key, err := scrypt.Key(passBytes, salt, 65536, 8, 1, 32)
-	if err != nil {
-		return zero, err
-	}
-	defer func() {
+	var plain []byte
+	for _, n := range []int{1048576, 65536} {
+		key, kerr := scrypt.Key(passBytes, salt, n, 8, 1, 32)
+		if kerr != nil {
+			return zero, kerr
+		}
+		block, kerr := aes.NewCipher(key)
 		for i := range key {
 			key[i] = 0
 		}
-	}()
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return zero, err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return zero, err
-	}
-	plain, err := gcm.Open(nil, nonce, ciphertext, []byte("legacycoin-wallet-v1"))
-	if err != nil {
-		return zero, fmt.Errorf("decrypt wallet: %w", err)
+		if kerr != nil {
+			return zero, kerr
+		}
+		gcm, kerr := cipher.NewGCM(block)
+		if kerr != nil {
+			return zero, kerr
+		}
+		plain, kerr = gcm.Open(nil, nonce, ciphertext, []byte("legacycoin-wallet-v1"))
+		if kerr == nil {
+			break
+		}
+		if n == 65536 {
+			return zero, fmt.Errorf("decrypt wallet: %w", kerr)
+		}
 	}
 	defer func() {
 		for i := range plain {
@@ -1490,6 +1526,7 @@ func (w *Wallet) deriveNextPrivateKeyLocked() (*btcec.PrivateKey, error) {
 	if err != nil || len(seed) == 0 {
 		return nil, fmt.Errorf("invalid HD seed")
 	}
+	defer func() { for i := range seed { seed[i] = 0 } }()
 	mac := hmac.New(sha256.New, seed)
 	_, _ = mac.Write([]byte("legacycoin-hd-v1"))
 	idx := w.nextIndex
@@ -1497,6 +1534,7 @@ func (w *Wallet) deriveNextPrivateKeyLocked() (*btcec.PrivateKey, error) {
 	idxBytes := [4]byte{byte(idx & 0xff), byte((idx >> 8) & 0xff), byte((idx >> 16) & 0xff), byte((idx >> 24) & 0xff)}
 	_, _ = mac.Write(idxBytes[:])
 	sum := mac.Sum(nil)
+	defer func() { for i := range sum { sum[i] = 0 } }()
 	priv, _ := btcec.PrivKeyFromBytes(sum)
 	w.nextIndex++
 	return priv, nil
