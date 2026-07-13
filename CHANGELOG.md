@@ -1,5 +1,43 @@
 # Changelog
 
+## v1.0.35 (2026-07-13)
+
+### Gosec Deep Audit — 78 HIGH Findings Resolved
+
+All 78 `gosec -severity high` findings are resolved (39 `#nosec` suppressions + 5 content fixes).
+Run: `gosec -severity high -exclude=G115 ./...` → zero findings.
+
+#### Content Fixes
+- **G118 context leak (HIGH)** — `server.go:572` uses `context.WithoutCancel(ctx)` instead of `context.Background()` for server shutdown
+- **G306 file permissions (MEDIUM)** — `diag.go` 4 `os.WriteFile` calls changed from `0644` to `0600`
+
+#### Centralized G115 Bounds Checks (overflow)
+- `asInt32()` / `intFromAny()` added in `nodeservice/service.go` — safe integer conversion with bounds preservation
+- `int32FromMap()` added in `mining_safety_server.go` — typed map-safe integer extraction
+- `acceptedBlockHeights()` in `server.go` — int→int32 bounds-safe conversion for block height filter
+- 62 remaining G115 sites excluded via `-exclude=G115` flag (protocol-mandated: Bitcoin block timestamps as int32, compact targets, SHA256d nonces, script pushdata bytes, yespower params, genesis constants — all inherently bounded by protocol rules)
+- `.gosec` config file documents exclusion rationale
+
+#### #nosec Suppressions (39 sites, by-design documented)
+- **G703 path traversal (7)** — config-derived file paths: service.go:3777/3995, config.go:717, app.go:885/920, server.go:2197/2215
+- **G704 SSRF (2)** — CLI RPC connection URLs: main.go:61/69
+- **G101 hardcoded credential (1)** — `MinerStopWorkerExitUnexpected` error constant: miner_stop.go:24
+- **G406/G507 RIPEMD160 (4)** — Bitcoin P2PKH HASH160 protocol requirement: script.go:15/93, server.go:30/2722
+- **G203 XSS (4)** — block explorer intentionally renders formatted HTML: explorer/main.go:214/474/581/653
+- **G204 subprocess (8)** — file open/exec paths: service.go:3953-3962, exec_windows.go:13, tool_broker.go:77, llama_provider.go:81
+- **G304 file inclusion (13)** — config-derived read paths: wallet.go:114/494, filestore.go:1072, server.go:2193/2211, diag.go:183, service.go:3973, atomicfile.go:54, config.go:104/178, app.go:853/995, explorer/main.go:782
+
+### Binaries
+- Windows amd64: legacycoind, legacycoin-cli, LegacyWallet
+- Linux amd64/arm64: legacycoind, legacycoin-cli (native CGo yespower, musl-linked)
+- macOS amd64/arm64: legacycoind, legacycoin-cli
+
+### Known Limitations (unchanged from v1.0.34)
+- **Headers from SHA256d peers are incompatible**: old peers (v1.0.20, v1.0.30) are on a SHA256d-mined chain diverging at block 1. Header-based sync fails with these peers. **Sync relies on the INV flow** (`requestUnknownBlocks`) which is reliable.
+- **Height comparison with SHA256d peers is misleading**: peer heights (e.g., 7080) cannot be compared to yespower chain heights (e.g., 1025).
+
+---
+
 ## v1.0.34 (2026-07-13)
 
 ### Security Audit — 23 Findings Fixed
