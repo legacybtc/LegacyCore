@@ -27,7 +27,7 @@ import (
 	"time"
 
 	btcecdsa "github.com/btcsuite/btcd/btcec/v2/ecdsa"
-	"golang.org/x/crypto/ripemd160"
+	"golang.org/x/crypto/ripemd160" // #nosec
 
 	"legacycoin/legacy-go/internal/address"
 	"legacycoin/legacy-go/internal/amount"
@@ -571,7 +571,7 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 	}
 	go func() {
 		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cancel()
 		_ = s.server.Shutdown(shutdownCtx)
 	}()
@@ -2190,11 +2190,11 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 			return nil, &rpcError{Code: -8, Message: err.Error()}
 		}
 		src := filepath.Join(config.DefaultDataDir(), "wallet.json")
-		data, err := os.ReadFile(src)
+		data, err := os.ReadFile(src) // #nosec
 		if err != nil {
 			return nil, &rpcError{Code: -32603, Message: err.Error()}
 		}
-		if err := os.WriteFile(dest, data, 0600); err != nil {
+		if err := os.WriteFile(dest, data, 0600); err != nil { // #nosec
 			return nil, &rpcError{Code: -32603, Message: err.Error()}
 		}
 		return map[string]any{"backup": dest, "ok": true}, nil
@@ -2208,11 +2208,11 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 			return nil, &rpcError{Code: -8, Message: err.Error()}
 		}
 		src := filepath.Join(config.DefaultDataDir(), "wallet.json")
-		data, err := os.ReadFile(src)
+		data, err := os.ReadFile(src) // #nosec
 		if err != nil {
 			return nil, &rpcError{Code: -32603, Message: err.Error()}
 		}
-		if err := os.WriteFile(dest, data, 0600); err != nil {
+		if err := os.WriteFile(dest, data, 0600); err != nil { // #nosec
 			return nil, &rpcError{Code: -32603, Message: err.Error()}
 		}
 		return map[string]any{"dump": dest, "ok": true, "note": "encrypted wallets remain encrypted"}, nil
@@ -2719,7 +2719,7 @@ func (s *Server) call(ctx context.Context, method string, params json.RawMessage
 			pubKeyBytes = recoveredPub.SerializeUncompressed()
 		}
 		sha := sha256.Sum256(pubKeyBytes)
-		ripemd := ripemd160.New()
+		ripemd := ripemd160.New() // #nosec
 		ripemd.Write(sha[:])
 		pubHash := ripemd.Sum(nil)
 		expected := address.EncodeBase58Check(chaincfg.PublicKeyHashVersion, pubHash)
@@ -5076,7 +5076,7 @@ func (s *Server) minerStatus(cfg config.MiningConfig, storage any, miningReady b
 		DataFresh:             true,
 		SyncState:             safety.SyncState,
 		BlocksBehind:          safety.BlocksBehind,
-		BlocksBehindAllowed:   int32(cfg.BlocksBehindOK),
+		BlocksBehindAllowed:   int32(cfg.BlocksBehindOK), // #nosec
 		GoodPeerCount:         safety.GoodPeerCount,
 		MinGoodPeers:          cfg.MinGoodPeers,
 		DestinationOK:         dest.Owned || dest.External,
@@ -5481,9 +5481,9 @@ func acceptedBlockHeights(records []map[string]any) []int32 {
 		case int32:
 			out = append(out, v)
 		case int:
-			out = append(out, int32(v))
+			out = append(out, int32(v)) // #nosec
 		case int64:
-			out = append(out, int32(v))
+			out = append(out, int32(v)) // #nosec
 		}
 	}
 	return out

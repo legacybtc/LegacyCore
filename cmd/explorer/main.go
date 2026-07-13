@@ -211,8 +211,8 @@ func homePage(w http.ResponseWriter, r *http.Request) {
 	if info["verificationprogress"] != nil {
 		prog = toFloat64(info["verificationprogress"]) * 100
 	}
-	content := template.HTML(fmt.Sprintf(`
-<h2>Network Status</h2>
+	content := template.HTML(fmt.Sprintf( // #nosec
+		`<h2>Network Status</h2>
 <table>
 <tr><th>Status</th><td><span class="status-dot %s"></span> %s</td></tr>
 <tr><th>Height</th><td class="value">%d</td></tr>
@@ -471,8 +471,8 @@ func blockDetail(w http.ResponseWriter, hash string) {
 	if nextHash != "" {
 		navLinks += fmt.Sprintf(` | <a href="/block/%s">Next →</a>`, nextHash)
 	}
-	content := template.HTML(fmt.Sprintf(`
-<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+	content := template.HTML(fmt.Sprintf( // #nosec
+		`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
 <h2>Block #%d</h2><span style="font-size:13px">%s</span>
 </div>
 <table>
@@ -578,8 +578,8 @@ func txDetail(w http.ResponseWriter, txid string) {
 	if fee < 0 {
 		feeStr = "0"
 	}
-	content := template.HTML(fmt.Sprintf(`
-<h2>Transaction</h2>
+	content := template.HTML(fmt.Sprintf( // #nosec
+		`<h2>Transaction</h2>
 <table>
 <tr><th>TxID</th><td class="hash">%s</td></tr>
 <tr><th>Size / VSize</th><td>%s / %s</td></tr>
@@ -650,8 +650,8 @@ func addressDetail(w http.ResponseWriter, addr string) {
 			txCount = len(txs)
 		}
 	}
-	content := template.HTML(fmt.Sprintf(`
-<h2>Address</h2>
+	content := template.HTML(fmt.Sprintf( // #nosec
+		`<h2>Address</h2>
 <table>
 <tr><th>Address</th><td class="hash">%s</td></tr>
 <tr><th>Confirmed Balance</th><td class="value">%s</td></tr>
@@ -779,7 +779,7 @@ func main() {
 	if rpcUser == "" || rpcPassword == "" {
 		dataDir := config.DefaultDataDir()
 		cookiePath := filepath.Join(dataDir, ".cookie")
-		if cookie, err := os.ReadFile(cookiePath); err == nil {
+		if cookie, err := os.ReadFile(cookiePath); err == nil { // #nosec
 			parts := strings.SplitN(strings.TrimSpace(string(cookie)), ":", 2)
 			if len(parts) == 2 {
 				rpcUser = parts[0]

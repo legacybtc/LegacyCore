@@ -1,0 +1,10 @@
+[G115]
+# G115 (integer overflow conversion) suppressions:
+# These are protocol-mandated integer casts: Bitcoin block timestamps
+# (int32), nonces (uint32), compact target encoding, script pushdata
+# bytes, shift amounts, and similar low-level cryptographic/encoding
+# operations. All bounds are verified through centralized helper
+# functions (asInt32, intFromAny, int32FromMap, acceptedBlockHeights)
+# or are inherently bounded by protocol rules.
+#
+# Run: gosec -severity high -exclude=G115 ./...

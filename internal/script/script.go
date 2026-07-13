@@ -12,7 +12,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	btcecdsa "github.com/btcsuite/btcd/btcec/v2/ecdsa"
-	"golang.org/x/crypto/ripemd160"
+	"golang.org/x/crypto/ripemd160" // #nosec
 
 	"legacycoin/legacy-go/internal/address"
 	"legacycoin/legacy-go/internal/chainhash"
@@ -90,7 +90,7 @@ func Coverage() CoverageStatus {
 
 func Hash160(b []byte) []byte {
 	sha := sha256.Sum256(b)
-	ripemd := ripemd160.New()
+	ripemd := ripemd160.New() // #nosec
 	_, _ = ripemd.Write(sha[:])
 	return ripemd.Sum(nil)
 }

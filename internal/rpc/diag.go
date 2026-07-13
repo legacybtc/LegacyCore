@@ -149,7 +149,7 @@ func writeBundle(trigger, reason string, nowMs int64) {
 	ms := new(runtime.MemStats)
 	runtime.ReadMemStats(ms)
 	b, _ := json.MarshalIndent(memstatsMap(ms), "", "  ")
-	_ = os.WriteFile(filepath.Join(dir, "memstats.json"), b, 0644)
+	_ = os.WriteFile(filepath.Join(dir, "memstats.json"), b, 0600)
 
 	counters := DiagCounters()
 	for k, v := range mining.LifecycleCounters() {
@@ -160,11 +160,11 @@ func writeBundle(trigger, reason string, nowMs int64) {
 	}
 	counters["trigger"] = 0
 	b, _ = json.MarshalIndent(counters, "", "  ")
-	_ = os.WriteFile(filepath.Join(dir, "counters.json"), b, 0644)
+	_ = os.WriteFile(filepath.Join(dir, "counters.json"), b, 0600)
 
 	summary := fmt.Sprintf("trigger=%s reason=%s goroutines=%d bundle=%d\n",
 		trigger, reason, runtime.NumGoroutine(), atomic.LoadInt32(&diagBundleCount))
-	_ = os.WriteFile(filepath.Join(dir, "summary.txt"), []byte(summary), 0644)
+	_ = os.WriteFile(filepath.Join(dir, "summary.txt"), []byte(summary), 0600)
 
 	atomic.AddInt32(&diagBundleCount, 1)
 }
@@ -175,12 +175,12 @@ func writePprof(dir, name, profile string, debug int) {
 		p.WriteTo(&buf, debug)
 	}
 	if buf.Len() > 0 {
-		_ = os.WriteFile(filepath.Join(dir, name), []byte(buf.String()), 0644)
+		_ = os.WriteFile(filepath.Join(dir, name), []byte(buf.String()), 0600)
 	}
 }
 
 func writePprofBinary(dir, name, profile string) {
-	f, err := os.Create(filepath.Join(dir, name))
+	f, err := os.Create(filepath.Join(dir, name)) // #nosec
 	if err != nil {
 		return
 	}

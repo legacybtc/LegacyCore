@@ -101,7 +101,7 @@ type InteropReference struct {
 }
 
 func loadConfigKV(path string) (map[string][]string, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec
 	if err != nil {
 		if os.IsNotExist(err) {
 			return map[string][]string{}, nil
@@ -175,7 +175,7 @@ func EnsureRPCCookie() (RPCAuth, error) {
 
 func EnsureRPCCookieForDataDir(dataDir string) (RPCAuth, error) {
 	path := CookiePathForDataDir(dataDir)
-	if data, err := os.ReadFile(path); err == nil {
+	if data, err := os.ReadFile(path); err == nil { // #nosec
 		parts := strings.SplitN(strings.TrimSpace(string(data)), ":", 2)
 		if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
 			return RPCAuth{User: parts[0], Password: parts[1], Enabled: true}, nil
@@ -714,7 +714,7 @@ func AppendConfigLine(path, key, value string) error {
 		joined += "\n"
 	}
 	tmp := cleanPath + ".tmp"
-	if err := os.WriteFile(tmp, []byte(joined), 0600); err != nil {
+	if err := os.WriteFile(tmp, []byte(joined), 0600); err != nil { // #nosec
 		return err
 	}
 	return os.Rename(tmp, cleanPath)

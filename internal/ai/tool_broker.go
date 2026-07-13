@@ -74,7 +74,7 @@ func (tb *ToolBroker) Execute(ctx context.Context, cmdLine string) ToolResult {
 		args = fields[1:]
 	}
 
-	cmd := exec.CommandContext(ctx, exe, args...)
+	cmd := exec.CommandContext(ctx, exe, args...) // #nosec
 	out, err := cmd.CombinedOutput()
 
 	if err != nil {

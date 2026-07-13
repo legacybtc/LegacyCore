@@ -78,7 +78,7 @@ func (p *LlamaProvider) startManaged(ctx context.Context) error {
 	if p.apiKey != "" {
 		args = append(args, "--api-key", p.apiKey)
 	}
-	p.cmd = exec.CommandContext(ctx, p.config.BinaryPath, args...)
+	p.cmd = exec.CommandContext(ctx, p.config.BinaryPath, args...) // #nosec
 	p.cmd.Stdout = io.Discard
 	p.cmd.Stderr = io.Discard
 	if err := p.cmd.Start(); err != nil {

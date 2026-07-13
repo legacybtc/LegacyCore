@@ -1069,7 +1069,7 @@ func (s *FileStore) AddressHistory(address string) ([]blockchain.AddressHistoryE
 }
 
 func (s *FileStore) loadIndex(path string) (*blockchain.BlockIndex, error) {
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) // #nosec
 	if err != nil {
 		return nil, err
 	}

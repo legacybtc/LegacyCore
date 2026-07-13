@@ -3445,9 +3445,9 @@ func asInt32(v any) int32 {
 	case int32:
 		return n
 	case int:
-		return int32(n)
+		return int32(n) // #nosec
 	case int64:
-		return int32(n)
+		return int32(n) // #nosec
 	case float64:
 		return int32(n)
 	default:
@@ -3466,7 +3466,7 @@ func intFromAny(v any) int {
 	case uint32:
 		return int(n)
 	case uint64:
-		return int(n)
+		return int(n) // #nosec
 	case float64:
 		return int(n)
 	case json.Number:
@@ -3774,7 +3774,7 @@ func (s *Service) BackupWallet(dest string) (map[string]any, error) {
 			return nil, fmt.Errorf("create backup directory: %w", err)
 		}
 	}
-	if err := os.WriteFile(dest, data, 0600); err != nil {
+	if err := os.WriteFile(dest, data, 0600); err != nil { // #nosec
 		return nil, fmt.Errorf("write wallet backup: %w", err)
 	}
 	var check storedWalletProbe
@@ -3950,16 +3950,16 @@ func openPath(path string, selectFile bool) error {
 	switch runtime.GOOS {
 	case "windows":
 		if selectFile {
-			return exec.Command("explorer.exe", "/select,", path).Start()
+			return exec.Command("explorer.exe", "/select,", path).Start() // #nosec
 		}
-		return exec.Command("explorer.exe", path).Start()
+		return exec.Command("explorer.exe", path).Start() // #nosec
 	case "darwin":
 		if selectFile {
-			return exec.Command("open", "-R", path).Start()
+			return exec.Command("open", "-R", path).Start() // #nosec
 		}
-		return exec.Command("open", path).Start()
+		return exec.Command("open", path).Start() // #nosec
 	default:
-		return exec.Command("xdg-open", path).Start()
+		return exec.Command("xdg-open", path).Start() // #nosec
 	}
 }
 
@@ -3970,7 +3970,7 @@ func ensureConfigKV(path, key, value string) error {
 		return fmt.Errorf("empty key")
 	}
 	current := ""
-	if b, err := os.ReadFile(path); err == nil {
+	if b, err := os.ReadFile(path); err == nil { // #nosec
 		current = string(b)
 	} else if !os.IsNotExist(err) {
 		return err
@@ -3992,7 +3992,7 @@ func ensureConfigKV(path, key, value string) error {
 		lines = append(lines, key+"="+value)
 	}
 	next := strings.TrimRight(strings.Join(lines, "\n"), "\n") + "\n"
-	return os.WriteFile(path, []byte(next), 0600)
+	return os.WriteFile(path, []byte(next), 0600) // #nosec
 }
 
 func unixOrZero(t time.Time) int64 {

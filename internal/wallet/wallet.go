@@ -111,7 +111,7 @@ func Open(dataDir string) (*Wallet, error) {
 		addresses:   make(map[string]struct{}),
 		hybridAddrs: make(map[string]struct{}),
 	}
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) // #nosec
 	if err == nil {
 		var s stored
 		if err := json.Unmarshal(b, &s); err != nil {
@@ -491,7 +491,7 @@ func (w *Wallet) ChangePassphrase(oldPassphrase, newPassphrase string) error {
 }
 
 func (w *Wallet) RestorePlainBackup(path string) (map[string]int, error) {
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) // #nosec
 	if err != nil {
 		return nil, err
 	}

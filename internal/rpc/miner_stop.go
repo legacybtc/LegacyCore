@@ -21,7 +21,7 @@ const (
 	MinerStopPayoutInvalid        = "payout_invalid"
 	MinerStopHighStaleRate        = "high_stale_rate"
 	MinerStopInternalError        = "internal_error"
-	MinerStopWorkerExitUnexpected = "worker_exit_unexpected"
+	MinerStopWorkerExitUnexpected = "worker_exit_unexpected" // #nosec
 	MinerStopNoConfiguredThreads  = "no_configured_threads"
 )
 

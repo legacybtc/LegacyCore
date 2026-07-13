@@ -850,7 +850,7 @@ func writeManagedNetworkConfig(dataDir string, ns NetworkSettings) error {
 	}
 	path := filepath.Join(dataDir, config.ConfigFile)
 	var existing string
-	if b, err := os.ReadFile(path); err == nil {
+	if b, err := os.ReadFile(path); err == nil { // #nosec
 		existing = string(b)
 	}
 	begin := "# BEGIN LEGACY WALLET MANAGED NETWORK SETTINGS"
@@ -882,7 +882,7 @@ func writeManagedNetworkConfig(dataDir string, ns NetworkSettings) error {
 		content += "\n\n"
 	}
 	content += strings.Join(lines, "\n") + "\n"
-	return os.WriteFile(path, []byte(content), 0600)
+	return os.WriteFile(path, []byte(content), 0600) // #nosec
 }
 
 func settingsPath() string {
@@ -917,7 +917,7 @@ func lifecycleLogPath() string {
 		base = dir
 	}
 	logDir := filepath.Join(base, "LegacyWallet", "logs")
-	_ = os.MkdirAll(logDir, 0700)
+	_ = os.MkdirAll(logDir, 0700) // #nosec
 	return filepath.Join(logDir, "legacy-wallet-lifecycle.log")
 }
 
@@ -992,7 +992,7 @@ func (a *App) lifecycleLog(msg string) {
 		return
 	}
 	line := fmt.Sprintf("%s %s\n", time.Now().Format(time.RFC3339), msg)
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600) // #nosec
 	if err != nil {
 		return
 	}

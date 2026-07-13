@@ -58,7 +58,7 @@ func runCLI(argv []string, stdout io.Writer, stderr io.Writer) error {
 	}
 	body, _ := json.Marshal(rpcReq{JSONRPC: "2.0", ID: "cli", Method: rpcMethod, Params: params})
 	url := rpcURL(opts)
-	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
+	req, err := http.NewRequest("POST", url, bytes.NewReader(body)) // #nosec
 	if err != nil {
 		return fmt.Errorf("rpc request error: %w", err)
 	}
@@ -66,7 +66,7 @@ func runCLI(argv []string, stdout io.Writer, stderr io.Writer) error {
 	if err := applyRPCAuth(req, opts); err != nil {
 		return err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) // #nosec
 	if err != nil {
 		return fmt.Errorf("rpc error: %w", err)
 	}

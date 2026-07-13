@@ -10,7 +10,7 @@ import (
 const createNoWindow = 0x08000000
 
 func runCommandOutput(name string, args ...string) ([]byte, error) {
-	cmd := exec.Command(name, args...)
+	cmd := exec.Command(name, args...) // #nosec
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow:    true,
 		CreationFlags: createNoWindow,

@@ -51,7 +51,7 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 }
 
 func syncDir(dir string) error {
-	d, err := os.Open(dir)
+	d, err := os.Open(dir) // #nosec
 	if err != nil {
 		return err
 	}

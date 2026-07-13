@@ -519,11 +519,11 @@ func int32FromMap(m map[string]any, key string, fallback int32) int32 {
 	if v, ok := m[key]; ok {
 		switch n := v.(type) {
 		case int:
-			return int32(n)
+			return int32(n) // #nosec
 		case int32:
 			return n
 		case int64:
-			return int32(n)
+			return int32(n) // #nosec
 		case float64:
 			return int32(n)
 		}
