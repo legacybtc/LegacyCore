@@ -29,6 +29,8 @@ Legacy Core is early mainnet software. Treat RPC, wallet storage, private keys, 
 
 Cookie auth and `rpcuser`/`rpcpassword` auth are implemented. Public unauthenticated non-local RPC is refused. Operators should still keep RPC on localhost or a private network.
 
+Per-method RBAC is enforced: wallet spending, key export, mining control, and node control methods require authentication even on localhost. Read-only methods (chain queries, network info) are accessible without auth.
+
 ## Reporting Vulnerabilities
 
 Please report security issues privately to project maintainers before public disclosure.
