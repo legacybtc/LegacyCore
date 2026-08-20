@@ -1,1 +1,5 @@
-LegacyCore repository status is maintained on the main branch. Validation and release workflows are configured for main only; dependency update pull requests are disabled to keep production changes centralized.
+# Repository status
+
+LegacyCore production development is consolidated on `main`.
+
+CI triggers on `main` only. Dependency-update pull requests are disabled so validated dependency upgrades can be applied deliberately to the production line.
