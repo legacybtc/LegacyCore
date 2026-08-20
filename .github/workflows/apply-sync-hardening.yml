@@ -1,0 +1,105 @@
+name: Apply Sync Hardening
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Patch sync engine
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          path = Path("internal/p2p/server.go")
+          text = path.read_text(encoding="utf-8")
+          original = text
+
+          text = text.replace('userAgent                    = "/Legacy-GO:1.0.33/"', 'userAgent                    = "/Legacy-GO:1.0.36/"')
+
+          # Do not issue a second, competing getblocks request during handshake.
+          old = '''\t\t\tif err := s.requestBlocks(p); err != nil {\n\t\t\t\ts.log.Printf("p2p request blocks from %s: %v", conn.RemoteAddr(), err)\n\t\t\t}'''
+          text = text.replace(old, '')
+
+          # Let validated header batches be the single source of block-body requests.
+          old = '''\tif err := s.requestBlocks(p); err != nil {\n\t\ts.log.Printf("p2p send getblocks to %s failed (non-fatal): %v", p.remote, err)\n\t}'''
+          text = text.replace(old, '')
+
+          # Request only the canonical consensus hash for each validated header.
+          old = '''\ttype wantedBlock struct {\n\t\theader wire.BlockHeader\n\t\thash   chainhash.Hash\n\t\tlegacy chainhash.Hash\n\t}'''
+          new = '''\ttype wantedBlock struct {\n\t\theader wire.BlockHeader\n\t\thash   chainhash.Hash\n\t}'''
+          text = text.replace(old, new)
+
+          old = '''\t\tlegacy, err := s.chain.LegacyHeaderHash(headers[i])\n\t\tif err != nil {\n\t\t\treturn fmt.Errorf("legacy hash for header %d: %w", i, err)\n\t\t}\n\t\twanted = append(wanted, wantedBlock{header: headers[i], hash: hash, legacy: legacy})'''
+          new = '''\t\twanted = append(wanted, wantedBlock{header: headers[i], hash: hash})'''
+          text = text.replace(old, new)
+
+          old = '''\t\tfor batchStart < len(wanted) && len(batch) < maxGetDataItems-1 {\n\t\t\tw := wanted[batchStart]\n\t\t\tbatchStart++\n\t\t\tbatchBlocks++\n\t\t\tbatch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: w.hash})\n\t\t\tbatch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: w.legacy})\n\t\t}'''
+          new = '''\t\tfor batchStart < len(wanted) && len(batch) < maxGetDataItems {\n\t\t\tw := wanted[batchStart]\n\t\t\tbatchStart++\n\t\t\tbatchBlocks++\n\t\t\tbatch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: w.hash})\n\t\t}'''
+          text = text.replace(old, new)
+
+          if text == original:
+              raise SystemExit("sync hardening patch made no changes; source layout changed")
+
+          required = [
+              'userAgent                    = "/Legacy-GO:1.0.36/"',
+              'type wantedBlock struct {',
+              'batch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: w.hash})',
+          ]
+          for marker in required:
+              if marker not in text:
+                  raise SystemExit(f"required marker missing after patch: {marker}")
+
+          path.write_text(text, encoding="utf-8")
+
+      - name: Add regression guard
+        shell: python
+        run: |
+          from pathlib import Path
+          test = Path("internal/p2p/sync_request_shape_test.go")
+          test.write_text(r'''package p2p
+
+import (
+    "os"
+    "strings"
+    "testing"
+)
+
+func TestSyncRequestsUseCanonicalBlockHashOnly(t *testing.T) {
+    b, err := os.ReadFile("server.go")
+    if err != nil {
+        t.Fatal(err)
+    }
+    s := string(b)
+    if strings.Contains(s, "batch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: w.legacy})") {
+        t.Fatal("sync engine must not request legacy SHA256d hash alongside canonical block hash")
+    }
+    if strings.Contains(s, "requestBlocks(p)") {
+        t.Fatal("sync engine must not issue a competing getblocks request in parallel with header-driven block sync")
+    }
+}
+''', encoding="utf-8")
+
+      - name: Test
+        run: |
+          go test ./internal/p2p
+          go vet ./internal/p2p
+
+      - name: Commit hardened sync engine
+        shell: bash
+        run: |
+          git config user.name "Legacy Coin"
+          git config user.email "legacycoinbtc@gmail.com"
+          git add internal/p2p/server.go internal/p2p/sync_request_shape_test.go .github/workflows/apply-sync-hardening.yml
+          git rm -f .github/workflows/apply-sync-hardening.yml
+          git commit -m "fix: harden header-driven block sync" || exit 0
+          git push origin HEAD:main
