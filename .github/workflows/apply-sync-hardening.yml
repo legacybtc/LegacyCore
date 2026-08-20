@@ -3,6 +3,7 @@ name: Apply Sync Hardening
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -18,7 +19,6 @@ jobs:
         shell: python
         run: |
           from pathlib import Path
-          import re
 
           path = Path("internal/p2p/server.go")
           text = path.read_text(encoding="utf-8")
@@ -26,15 +26,12 @@ jobs:
 
           text = text.replace('userAgent                    = "/Legacy-GO:1.0.33/"', 'userAgent                    = "/Legacy-GO:1.0.36/"')
 
-          # Do not issue a second, competing getblocks request during handshake.
           old = '''\t\t\tif err := s.requestBlocks(p); err != nil {\n\t\t\t\ts.log.Printf("p2p request blocks from %s: %v", conn.RemoteAddr(), err)\n\t\t\t}'''
           text = text.replace(old, '')
 
-          # Let validated header batches be the single source of block-body requests.
           old = '''\tif err := s.requestBlocks(p); err != nil {\n\t\ts.log.Printf("p2p send getblocks to %s failed (non-fatal): %v", p.remote, err)\n\t}'''
           text = text.replace(old, '')
 
-          # Request only the canonical consensus hash for each validated header.
           old = '''\ttype wantedBlock struct {\n\t\theader wire.BlockHeader\n\t\thash   chainhash.Hash\n\t\tlegacy chainhash.Hash\n\t}'''
           new = '''\ttype wantedBlock struct {\n\t\theader wire.BlockHeader\n\t\thash   chainhash.Hash\n\t}'''
           text = text.replace(old, new)
@@ -50,12 +47,11 @@ jobs:
           if text == original:
               raise SystemExit("sync hardening patch made no changes; source layout changed")
 
-          required = [
+          for marker in (
               'userAgent                    = "/Legacy-GO:1.0.36/"',
               'type wantedBlock struct {',
               'batch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: w.hash})',
-          ]
-          for marker in required:
+          ):
               if marker not in text:
                   raise SystemExit(f"required marker missing after patch: {marker}")
 
@@ -99,7 +95,7 @@ func TestSyncRequestsUseCanonicalBlockHashOnly(t *testing.T) {
         run: |
           git config user.name "Legacy Coin"
           git config user.email "legacycoinbtc@gmail.com"
-          git add internal/p2p/server.go internal/p2p/sync_request_shape_test.go .github/workflows/apply-sync-hardening.yml
+          git add internal/p2p/server.go internal/p2p/sync_request_shape_test.go
           git rm -f .github/workflows/apply-sync-hardening.yml
-          git commit -m "fix: harden header-driven block sync" || exit 0
+          git commit -m "fix: harden header-driven block sync"
           git push origin HEAD:main
