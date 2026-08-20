@@ -3681,6 +3681,15 @@ func (s *Server) serveHeaders(p *peer, req wire.GetBlocks) error {
 	return s.writePeerMessage(p, wire.CommandHeaders, payload)
 }
 
+func peerPrefersLegacyWireHash(p *peer) bool {
+	if p == nil {
+		return false
+	}
+	p.lastMu.Lock()
+	defer p.lastMu.Unlock()
+	return strings.Contains(strings.ToLower(p.subver), "legacy-go:0.1.0")
+}
+
 func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error {
 	if len(headers) == 0 {
 		p.markHeightMetadataSeen()
@@ -3759,7 +3768,15 @@ func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error 
 			w := wanted[batchStart]
 			batchStart++
 			batchBlocks++
-			batch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: w.hash})
+			requestHash := w.hash
+			if peerPrefersLegacyWireHash(p) {
+				legacyHash, err := s.chain.LegacyHeaderHash(w.header)
+				if err != nil {
+					return err
+				}
+				requestHash = legacyHash
+			}
+			batch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: requestHash})
 		}
 		if len(batch) == 0 {
 			continue

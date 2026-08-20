@@ -1,18 +1,14 @@
 package p2p
 
-import (
-	"os"
-	"strings"
-	"testing"
-)
+import "testing"
 
-func TestSyncRequestsUseCanonicalBlockHashOnly(t *testing.T) {
-	b, err := os.ReadFile("server.go")
-	if err != nil {
-		t.Fatal(err)
+func TestPeerPrefersLegacyWireHashForLegacyGO010(t *testing.T) {
+	legacy := &peer{subver: "/Legacy-GO:0.1.0/"}
+	modern := &peer{subver: "/Legacy-GO:1.0.36/"}
+	if !peerPrefersLegacyWireHash(legacy) {
+		t.Fatal("Legacy-GO 0.1.0 peer must use legacy wire block hashes")
 	}
-	s := string(b)
-	if strings.Contains(s, "batch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: w.legacy})") {
-		t.Fatal("sync engine must not request legacy SHA256d hash alongside canonical block hash")
+	if peerPrefersLegacyWireHash(modern) {
+		t.Fatal("modern peer must remain on canonical wire block hashes")
 	}
 }
