@@ -1,0 +1,1 @@
+Temporary validation trigger for the sync-hardening candidate. The workflow will apply the source patch, run tests/builds, and commit the hardened server.go. This marker may remain as validation history.
