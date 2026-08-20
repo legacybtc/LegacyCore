@@ -1,0 +1,1 @@
+Candidate validation is pending.
