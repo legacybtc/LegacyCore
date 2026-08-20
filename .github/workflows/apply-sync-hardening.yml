@@ -1,5 +1,7 @@
 name: Apply Sync Hardening
 
+# Validation trigger for the real sync hardening source patch.
+
 on:
   push:
     branches: [main, sync-fix-validation]
