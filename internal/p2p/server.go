@@ -28,7 +28,7 @@ import (
 const (
 	protocolVersion       int32  = 70015
 	nodeNetwork           uint64 = 1
-	userAgent                    = "/Legacy-GO:1.0.33/"
+	userAgent                    = "/Legacy-GO:1.0.36/"
 	maxPeers                     = 125
 	maxOutboundPeers             = 16
 	maxGetDataItems              = 256
@@ -49,7 +49,6 @@ var (
 	peerPongTimeout      = 90 * time.Second
 	peerReconnectEvery   = 8 * time.Second
 	syncWatchdogEvery    = 20 * time.Second
-
 )
 
 var (
@@ -98,50 +97,50 @@ type getdataReq struct {
 }
 
 type peer struct {
-	conn              net.Conn
-	outbound          bool
-	remote            string
-	writeMu           sync.Mutex
-	lastMu            sync.Mutex
-	connected         time.Time
-	lastSeen          time.Time
-	lastPong          time.Time
-	lastHeightUpdate  time.Time
-	lastPing          time.Time
-	lastRTT           time.Duration
-	minRTT            time.Duration
-	missedPongs       int
-	version           int32
-	subver            string
-	height            int32
-	chainID           string
-	banScore          int
-	bytesSent         uint64
-	bytesRecv         uint64
-	lastSyncRequest   time.Time
-	lastSyncError     string
-	lastBlockReject   string
-	lastLocatorTip    string
-	lastBlockHash     string
-	lastBlockPrev     string
-	lastBlockHeight   int32
-	lastBestUpdate    string
+	conn               net.Conn
+	outbound           bool
+	remote             string
+	writeMu            sync.Mutex
+	lastMu             sync.Mutex
+	connected          time.Time
+	lastSeen           time.Time
+	lastPong           time.Time
+	lastHeightUpdate   time.Time
+	lastPing           time.Time
+	lastRTT            time.Duration
+	minRTT             time.Duration
+	missedPongs        int
+	version            int32
+	subver             string
+	height             int32
+	chainID            string
+	banScore           int
+	bytesSent          uint64
+	bytesRecv          uint64
+	lastSyncRequest    time.Time
+	lastSyncError      string
+	lastBlockReject    string
+	lastLocatorTip     string
+	lastBlockHash      string
+	lastBlockPrev      string
+	lastBlockHeight    int32
+	lastBestUpdate     string
 	lastBlockReason    string
 	lastConnectedBlock time.Time
 	lastHeaderRecv     time.Time
 	lastBlockRecv      time.Time
-	blocksRequested   int
-	blocksServed      int
-	syncFailures      int
-	syncSuccesses     int
-	lastPenaltyAt     time.Time
-	lastPenaltyReason string
-	rateLimited       bool
-	addrDialCount     int
-	wantHeaders       bool
-	bannedUntil       time.Time
-	rateWindowStart   time.Time
-	rateWindowCount   int
+	blocksRequested    int
+	blocksServed       int
+	syncFailures       int
+	syncSuccesses      int
+	lastPenaltyAt      time.Time
+	lastPenaltyReason  string
+	rateLimited        bool
+	addrDialCount      int
+	wantHeaders        bool
+	bannedUntil        time.Time
+	rateWindowStart    time.Time
+	rateWindowCount    int
 }
 
 type knownPeerAddress struct {
@@ -3734,7 +3733,6 @@ func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error 
 	type wantedBlock struct {
 		header wire.BlockHeader
 		hash   chainhash.Hash
-		legacy chainhash.Hash
 	}
 	skipped := 0
 	wanted := make([]wantedBlock, 0, len(hashes))
@@ -3744,11 +3742,7 @@ func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error 
 			skipped++
 			continue
 		}
-		legacy, err := s.chain.LegacyHeaderHash(headers[i])
-		if err != nil {
-			return fmt.Errorf("legacy hash for header %d: %w", i, err)
-		}
-		wanted = append(wanted, wantedBlock{header: headers[i], hash: hash, legacy: legacy})
+		wanted = append(wanted, wantedBlock{header: headers[i], hash: hash})
 	}
 	if len(wanted) == 0 {
 		s.log.Printf("p2p validated %d headers from %s but all %d block bodies already present (want=0, skipped=%d)",
@@ -3761,12 +3755,11 @@ func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error 
 		batches++
 		batch := make([]wire.InvVect, 0, maxGetDataItems)
 		batchBlocks := 0
-		for batchStart < len(wanted) && len(batch) < maxGetDataItems-1 {
+		for batchStart < len(wanted) && len(batch) < maxGetDataItems {
 			w := wanted[batchStart]
 			batchStart++
 			batchBlocks++
 			batch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: w.hash})
-			batch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: w.legacy})
 		}
 		if len(batch) == 0 {
 			continue
