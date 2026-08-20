@@ -1,1 +1,0 @@
-Validation trigger: staging candidate is ready for CI evaluation.
