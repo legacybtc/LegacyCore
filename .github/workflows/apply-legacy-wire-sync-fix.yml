@@ -1,0 +1,110 @@
+name: apply-legacy-wire-sync-fix
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  fix-and-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply targeted compatibility fix
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('internal/p2p/server.go')
+          text = path.read_text(encoding='utf-8')
+
+          marker = 'func (s *Server) requestHeaderBlocks(p *peer, headers []wire.BlockHeader) error {'
+          helper = '''func peerPrefersLegacyWireHash(p *peer) bool {
+          if p == nil {
+              return false
+          }
+          p.lastMu.Lock()
+          defer p.lastMu.Unlock()
+          return strings.Contains(strings.ToLower(p.subver), "legacy-go:0.1.0")
+          }
+
+          '''
+          if 'func peerPrefersLegacyWireHash(p *peer) bool {' not in text:
+              if marker not in text:
+                  raise SystemExit('requestHeaderBlocks marker not found')
+              text = text.replace(marker, helper + marker, 1)
+
+          old = 'batch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: w.hash})'
+          new = '''requestHash := w.hash
+                  if peerPrefersLegacyWireHash(p) {
+                      requestHash = w.legacy
+                  }
+                  batch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: requestHash})'''
+          if old not in text:
+              raise SystemExit('canonical request line not found')
+          text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding='utf-8')
+
+          test = Path('internal/p2p/sync_request_shape_test.go')
+          test.write_text('''package p2p
+
+          import "testing"
+
+          func TestPeerPrefersLegacyWireHashForLegacyGO010(t *testing.T) {
+              legacy := &peer{subver: "/Legacy-GO:0.1.0/"}
+              modern := &peer{subver: "/Legacy-GO:1.0.36/"}
+              if !peerPrefersLegacyWireHash(legacy) {
+                  t.Fatal("Legacy-GO 0.1.0 peer must use legacy wire block hashes")
+              }
+              if peerPrefersLegacyWireHash(modern) {
+                  t.Fatal("modern peer must remain on canonical wire block hashes")
+              }
+          }
+          ''', encoding='utf-8')
+
+      - name: Format and verify diff
+        shell: bash
+        run: |
+          gofmt -w internal/p2p/server.go internal/p2p/sync_request_shape_test.go
+          git diff --check
+          git diff -- internal/p2p/server.go internal/p2p/sync_request_shape_test.go
+
+      - name: Full tests
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          go test ./...
+          go test -race ./internal/p2p ./internal/blockchain ./internal/nodeservice
+          go vet ./...
+
+      - name: Build core binaries
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          go build -buildvcs=false -trimpath -o /tmp/legacycoind ./cmd/legacycoind
+          go build -buildvcs=false -trimpath -o /tmp/legacycoin-cli ./cmd/legacycoin-cli
+          go build -buildvcs=false -trimpath -o /tmp/legacywallet ./cmd/legacywallet
+
+      - name: Verify mainnet identity
+        run: /tmp/legacycoind params
+
+      - name: Commit tested source and remove temporary workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "Legacy Coin"
+          git config user.email "legacycoinbtc@gmail.com"
+          rm -f .github/workflows/apply-legacy-wire-sync-fix.yml
+          git add internal/p2p/server.go internal/p2p/sync_request_shape_test.go .github/workflows/apply-legacy-wire-sync-fix.yml
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git commit -m "fix: support legacy wire hashes during block sync"
+          git push origin HEAD:main
