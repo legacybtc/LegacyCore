@@ -27,8 +27,6 @@ jobs:
           original = text
           replacements = [
               ('userAgent                    = "/Legacy-GO:1.0.33/"', 'userAgent                    = "/Legacy-GO:1.0.36/"'),
-              ('''\t\t\tif err := s.requestBlocks(p); err != nil {\n\t\t\t\ts.log.Printf("p2p request blocks from %s: %v", conn.RemoteAddr(), err)\n\t\t\t}''', ''),
-              ('''\tif err := s.requestBlocks(p); err != nil {\n\t\ts.log.Printf("p2p send getblocks to %s failed (non-fatal): %v", p.remote, err)\n\t}''', ''),
               ('''\ttype wantedBlock struct {\n\t\theader wire.BlockHeader\n\t\thash   chainhash.Hash\n\t\tlegacy chainhash.Hash\n\t}''', '''\ttype wantedBlock struct {\n\t\theader wire.BlockHeader\n\t\thash   chainhash.Hash\n\t}'''),
               ('''\t\tlegacy, err := s.chain.LegacyHeaderHash(headers[i])\n\t\tif err != nil {\n\t\t\treturn fmt.Errorf("legacy hash for header %d: %w", i, err)\n\t\t}\n\t\twanted = append(wanted, wantedBlock{header: headers[i], hash: hash, legacy: legacy})''', '''\t\twanted = append(wanted, wantedBlock{header: headers[i], hash: hash})'''),
               ('''\t\tfor batchStart < len(wanted) && len(batch) < maxGetDataItems-1 {\n\t\t\tw := wanted[batchStart]\n\t\t\tbatchStart++\n\t\t\tbatchBlocks++\n\t\t\tbatch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: w.hash})\n\t\t\tbatch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: w.legacy})\n\t\t}''', '''\t\tfor batchStart < len(wanted) && len(batch) < maxGetDataItems {\n\t\t\tw := wanted[batchStart]\n\t\t\tbatchStart++\n\t\t\tbatchBlocks++\n\t\t\tbatch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: w.hash})\n\t\t}'''),
@@ -37,12 +35,8 @@ jobs:
               text = text.replace(old, new)
           if text == original:
               raise SystemExit('sync hardening patch made no changes')
-          for marker in (
-              'batch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: w.legacy})',
-              'requestBlocks(p)',
-          ):
-              if marker in text:
-                  raise SystemExit(f'forbidden sync pattern remains: {marker}')
+          if 'batch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: w.legacy})' in text:
+              raise SystemExit('duplicate legacy block request remains')
           path.write_text(text, encoding='utf-8')
           PY
 
@@ -64,9 +58,6 @@ jobs:
               s := string(b)
               if strings.Contains(s, "batch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: w.legacy})") {
                   t.Fatal("sync engine must not request legacy SHA256d hash alongside canonical block hash")
-              }
-              if strings.Contains(s, "requestBlocks(p)") {
-                  t.Fatal("sync engine must not issue competing getblocks in the header-driven sync path")
               }
           }
           EOF
