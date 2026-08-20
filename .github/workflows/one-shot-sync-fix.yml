@@ -1,0 +1,92 @@
+name: One-shot sync fix
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.event_name == 'workflow_dispatch' || github.event.commits[0].message != 'ci: add one-shot sync fix validation'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Patch sync engine
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path('internal/p2p/server.go')
+          text = path.read_text(encoding='utf-8')
+          original = text
+          replacements = [
+              ('userAgent                    = "/Legacy-GO:1.0.33/"', 'userAgent                    = "/Legacy-GO:1.0.36/"'),
+              ('''\t\t\tif err := s.requestBlocks(p); err != nil {\n\t\t\t\ts.log.Printf("p2p request blocks from %s: %v", conn.RemoteAddr(), err)\n\t\t\t}''', ''),
+              ('''\tif err := s.requestBlocks(p); err != nil {\n\t\ts.log.Printf("p2p send getblocks to %s failed (non-fatal): %v", p.remote, err)\n\t}''', ''),
+              ('''\ttype wantedBlock struct {\n\t\theader wire.BlockHeader\n\t\thash   chainhash.Hash\n\t\tlegacy chainhash.Hash\n\t}''', '''\ttype wantedBlock struct {\n\t\theader wire.BlockHeader\n\t\thash   chainhash.Hash\n\t}'''),
+              ('''\t\tlegacy, err := s.chain.LegacyHeaderHash(headers[i])\n\t\tif err != nil {\n\t\t\treturn fmt.Errorf("legacy hash for header %d: %w", i, err)\n\t\t}\n\t\twanted = append(wanted, wantedBlock{header: headers[i], hash: hash, legacy: legacy})''', '''\t\twanted = append(wanted, wantedBlock{header: headers[i], hash: hash})'''),
+              ('''\t\tfor batchStart < len(wanted) && len(batch) < maxGetDataItems-1 {\n\t\t\tw := wanted[batchStart]\n\t\t\tbatchStart++\n\t\t\tbatchBlocks++\n\t\t\tbatch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: w.hash})\n\t\t\tbatch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: w.legacy})\n\t\t}''', '''\t\tfor batchStart < len(wanted) && len(batch) < maxGetDataItems {\n\t\t\tw := wanted[batchStart]\n\t\t\tbatchStart++\n\t\t\tbatchBlocks++\n\t\t\tbatch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: w.hash})\n\t\t}'''),
+          ]
+          for old, new in replacements:
+              text = text.replace(old, new)
+          if text == original:
+              raise SystemExit('sync hardening patch made no changes')
+          for marker in (
+              'batch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: w.legacy})',
+              'requestBlocks(p)',
+          ):
+              if marker in text:
+                  raise SystemExit(f'forbidden sync pattern remains: {marker}')
+          path.write_text(text, encoding='utf-8')
+
+      - name: Add regression test
+        shell: python
+        run: |
+          from pathlib import Path
+          Path('internal/p2p/sync_request_shape_test.go').write_text(r'''package p2p
+
+import (
+    "os"
+    "strings"
+    "testing"
+)
+
+func TestSyncRequestsUseCanonicalBlockHashOnly(t *testing.T) {
+    b, err := os.ReadFile("server.go")
+    if err != nil { t.Fatal(err) }
+    s := string(b)
+    if strings.Contains(s, "batch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: w.legacy})") {
+        t.Fatal("sync engine must not request legacy SHA256d hash alongside canonical block hash")
+    }
+    if strings.Contains(s, "requestBlocks(p)") {
+        t.Fatal("sync engine must not issue competing getblocks in the header-driven sync path")
+    }
+}
+''', encoding='utf-8')
+
+      - name: Test and build
+        run: |
+          gofmt -w internal/p2p/server.go internal/p2p/sync_request_shape_test.go
+          go test ./internal/p2p
+          go test -race ./internal/p2p
+          go vet ./internal/p2p
+          go test ./...
+          go test -race ./internal/p2p ./internal/blockchain ./internal/nodeservice
+          go vet ./...
+          CGO_ENABLED=1 go build -buildvcs=false -o /tmp/legacycoind ./cmd/legacycoind
+          CGO_ENABLED=1 go build -buildvcs=false -o /tmp/legacycoin-cli ./cmd/legacycoin-cli
+          CGO_ENABLED=1 go build -buildvcs=false -o /tmp/legacywallet ./cmd/legacywallet
+
+      - name: Commit source fix and remove one-shot workflow
+        shell: bash
+        run: |
+          git config user.name "Legacy Coin"
+          git config user.email "legacycoinbtc@gmail.com"
+          git add internal/p2p/server.go internal/p2p/sync_request_shape_test.go .github/workflows/one-shot-sync-fix.yml
+          git rm .github/workflows/one-shot-sync-fix.yml
+          git commit -m "fix: harden header-driven block synchronization"
+          git push origin HEAD:main
