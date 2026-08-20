@@ -42,7 +42,11 @@ jobs:
           old = 'batch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: w.hash})'
           new = '''requestHash := w.hash
                   if peerPrefersLegacyWireHash(p) {
-                      requestHash = w.legacy
+                      legacyHash, err := s.chain.LegacyHeaderHash(w.header)
+                      if err != nil {
+                          return err
+                      }
+                      requestHash = legacyHash
                   }
                   batch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: requestHash})'''
           if old not in text:
