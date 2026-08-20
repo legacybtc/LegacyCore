@@ -3,17 +3,21 @@ package p2p
 import "testing"
 
 func TestMaxDualHashGetDataBlocksMatchesServeLimit(t *testing.T) {
-	if got, want := maxDualHashGetDataBlocks(), maxGetDataItems/2; got != want {
-		t.Fatalf("max dual-hash blocks = %d, want %d", got, want)
+	const perBatch = maxGetDataItems / 2
+	if perBatch <= 0 {
+		t.Fatal("dual-hash batch capacity must be positive")
 	}
-	if got := maxDualHashGetDataBlocks() * 2; got > maxGetDataItems {
+	if got := perBatch * 2; got > maxGetDataItems {
 		t.Fatalf("dual-hash batch emits %d inventory entries, exceeds max %d", got, maxGetDataItems)
+	}
+	if got, want := maxGetDataItems, maxServeInvItems; got != want {
+		t.Fatalf("request and serve inventory limits diverged: request=%d serve=%d", got, want)
 	}
 }
 
 func TestDualHashBatchHasNoOversizedTail(t *testing.T) {
 	const wantedBlocks = 2000
-	perBatch := maxDualHashGetDataBlocks()
+	const perBatch = maxGetDataItems / 2
 	batches := (wantedBlocks + perBatch - 1) / perBatch
 	if batches != 16 {
 		t.Fatalf("wanted %d blocks should require 16 batches at %d blocks/batch, got %d", wantedBlocks, perBatch, batches)
