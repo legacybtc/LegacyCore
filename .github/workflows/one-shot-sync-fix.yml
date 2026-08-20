@@ -1,9 +1,10 @@
 name: One-shot sync fix
 
-on:
+"on":
+  workflow_dispatch: {}
   push:
-    branches: [main]
-  workflow_dispatch:
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -16,9 +17,11 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Patch sync engine
-        shell: python
+        shell: bash
         run: |
+          python3 <<'PY'
           from pathlib import Path
+
           path = Path('internal/p2p/server.go')
           text = path.read_text(encoding='utf-8')
           original = text
@@ -41,31 +44,32 @@ jobs:
               if marker in text:
                   raise SystemExit(f'forbidden sync pattern remains: {marker}')
           path.write_text(text, encoding='utf-8')
+          PY
 
       - name: Add regression test
-        shell: python
+        shell: bash
         run: |
-          from pathlib import Path
-          Path('internal/p2p/sync_request_shape_test.go').write_text(r'''package p2p
+          cat > internal/p2p/sync_request_shape_test.go <<'EOF'
+          package p2p
 
-import (
-    "os"
-    "strings"
-    "testing"
-)
+          import (
+              "os"
+              "strings"
+              "testing"
+          )
 
-func TestSyncRequestsUseCanonicalBlockHashOnly(t *testing.T) {
-    b, err := os.ReadFile("server.go")
-    if err != nil { t.Fatal(err) }
-    s := string(b)
-    if strings.Contains(s, "batch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: w.legacy})") {
-        t.Fatal("sync engine must not request legacy SHA256d hash alongside canonical block hash")
-    }
-    if strings.Contains(s, "requestBlocks(p)") {
-        t.Fatal("sync engine must not issue competing getblocks in the header-driven sync path")
-    }
-}
-''', encoding='utf-8')
+          func TestSyncRequestsUseCanonicalBlockHashOnly(t *testing.T) {
+              b, err := os.ReadFile("server.go")
+              if err != nil { t.Fatal(err) }
+              s := string(b)
+              if strings.Contains(s, "batch = append(batch, wire.InvVect{Type: wire.InvTypeBlock, Hash: w.legacy})") {
+                  t.Fatal("sync engine must not request legacy SHA256d hash alongside canonical block hash")
+              }
+              if strings.Contains(s, "requestBlocks(p)") {
+                  t.Fatal("sync engine must not issue competing getblocks in the header-driven sync path")
+              }
+          }
+          EOF
 
       - name: Test and build
         run: |
@@ -85,7 +89,9 @@ func TestSyncRequestsUseCanonicalBlockHashOnly(t *testing.T) {
         run: |
           git config user.name "Legacy Coin"
           git config user.email "legacycoinbtc@gmail.com"
-          git add internal/p2p/server.go internal/p2p/sync_request_shape_test.go .github/workflows/one-shot-sync-fix.yml
-          git rm .github/workflows/one-shot-sync-fix.yml
+          git add internal/p2p/server.go internal/p2p/sync_request_shape_test.go
           git commit -m "fix: harden header-driven block synchronization"
+          git push origin HEAD:main
+          git rm .github/workflows/one-shot-sync-fix.yml
+          git commit -m "chore: remove one-shot sync fix workflow"
           git push origin HEAD:main
