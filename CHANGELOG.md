@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.0.36 (2026-08-20)
+
+### Release hardening and synchronization reliability
+- Promoted the clean production line to **Legacy Core 1.0.36** and **Legacy Wallet 1.0.36**.
+- Added/retained P2P synchronization regression coverage for request batching and wire-message limits.
+- Removed obsolete development-branch triggers from the production CI workflow; CI now targets `main` for normal pushes and validation.
+- Updated GitHub Actions tooling used by the production/release pipeline to current validated major releases.
+- Kept consensus parameters and mainnet identity unchanged; this release is a maintenance, reliability, and release-engineering update rather than a consensus fork.
+
+### Release components
+- Windows amd64: `legacycoind.exe`, `legacycoin-cli.exe`, Legacy Wallet
+- Linux amd64/arm64: `legacycoind`, `legacycoin-cli`
+- macOS amd64/arm64: `legacycoind`, `legacycoin-cli`
+- Clean source archive and SHA256 checksums
+
+### Verification gate
+The v1.0.36 release is intended to ship only from the corrected `main` commit after the repository CI/release matrix reports successful Linux/Windows testing, source-cleanliness validation, mainnet identity checks, package generation, and artifact verification.
+
+---
+
 ## v1.0.35 (2026-07-13)
 
 ### Gosec Deep Audit — 78 HIGH Findings Resolved
@@ -34,7 +54,7 @@ Run: `gosec -severity high -exclude=G115 ./...` → zero findings.
 
 ### Known Limitations (unchanged from v1.0.34)
 - **Headers from SHA256d peers are incompatible**: old peers (v1.0.20, v1.0.30) are on a SHA256d-mined chain diverging at block 1. Header-based sync fails with these peers. **Sync relies on the INV flow** (`requestUnknownBlocks`) which is reliable.
-- **Height comparison with SHA256d peers is misleading**: peer heights (e.g., 7080) cannot be compared to yespower chain heights (e.g., 1025).
+- **Height comparison with SHA256d peers is misleading**: peer heights (e.g. 7080) cannot be compared to yespower chain heights (e.g. 1025).
 
 ---
 
@@ -77,66 +97,3 @@ Run: `gosec -severity high -exclude=G115 ./...` → zero findings.
 - Windows amd64: legacycoind, legacycoin-cli, LegacyWallet
 - Linux amd64/arm64: legacycoind, legacycoin-cli (native CGo yespower, musl-linked)
 - macOS amd64/arm64: legacycoind, legacycoin-cli
-
----
-
-## v1.0.33 (2026-07-09)
-
-### P2P Header Validation Fix
-- **prevHash linkage**: `ValidateHeaderSequence` now sets `prevHash` to SHA256d (`LegacyHeaderHash`) instead of yespower canonical hash — matches wire-protocol `PrevBlock` so validator accepts consecutive header batches without rejecting them as non-connected
-- **Per-block hash reuse in P2P handler**: `HandleBlock` computes `BlockHash` once and passes `precomputedHash` through `ProcessBlockWithResult`, eliminating redundant yespower hashing during block processing
-- **Dual-hash block serving**: `serveInventory` uses `BlockByWireHash` which supports dual-hash lookup (canonical yespower via direct DB load, legacy SHA256d via cache scan), ensuring blocks can be served to peers regardless of which hash they request
-
-### Binaries
-- Windows amd64: legacycoind, legacycoin-cli, LegacyWallet
-- Linux amd64: legacycoind, legacycoin-cli
-
----
-
-## v1.0.32 (2026-07-08)
-
-### P2P Sync Stability
-- **HashHeader dedup**: `validateActiveBlockLocked` accepts precomputed hash so `connectBlockLocked` skips the second yespower call — halves the dominant per-block CPU cost
-- **Async reader goroutine**: dedicated goroutine reads TCP messages into a buffered channel (cap 64) during `handleConn`; server send buffer stays drained during slow block processing, eliminating write-timeout / reconnect cycles
-
-### Binaries
-- Windows amd64: legacycoind, legacycoin-cli, LegacyWallet
-- Linux amd64: legacycoind, legacycoin-cli
-
----
-
-## v1.0.31 (2026-07-06)
-
-### P2P Sync Recovery
-- **dual-hash getdata**: canonical yespower hash first, SHA256d as fallback for mixed-version peers
-- **debug logging**: added `p2p HANDLER` trace logging at handshake, requestHeaders, serveHeaders, and requestSyncFromPeerIfBehind — visible in all log modes
-- **getdata robustness**: missing INV-based getdata now re-requests from alternate peers
-- **header sync**: locator-based header sync verified working across mixed-version nodes
-
-### Build & Security
-- **GitHub Actions**: all action references pinned to commit SHAs (supply chain security)
-- **permissions: read-all**: least-privilege token model on all CI workflows
-- **CodeQL + Scorecard + Dependabot**: new security workflows integrated
-- **.gitignore**: patterns for linux cross-compiled binaries and test data directories
-
-### Binaries
-- Windows amd64: legacycoind, legacycoin-cli, LegacyWallet
-- Linux amd64/arm64: legacycoind, legacycoin-cli
-- macOS amd64/arm64: legacycoind, legacycoin-cli
-
----
-
-## v1.0.30 (2026-07-03)
-
-### Dual-Hash getdata
-- `serveBlockInventory` fixed to use stored hashes instead of recomputing via HashHeader
-- Dual-hash getdata: canonical yespower hash first, SHA256d fallback for legacy C-peer compatibility
-- Full test suite passes with mixed-version mock peers
-
----
-
-## v1.0.29 (2026-06-30)
-
-### Dual-Hash Fallback
-- Dual-hash getdata with SHA256d fallback for peer compat
-- Improved header sync reliability across network protocol versions
