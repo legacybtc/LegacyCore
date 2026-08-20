@@ -10,7 +10,6 @@ permissions:
 
 jobs:
   fix:
-    if: github.event_name == 'workflow_dispatch' || github.event.commits[0].message != 'ci: add one-shot sync fix validation'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
