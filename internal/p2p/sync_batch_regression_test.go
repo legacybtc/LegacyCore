@@ -2,7 +2,10 @@ package p2p
 
 import "testing"
 
-func TestMaxDualHashGetDataBlocksMatchesServeLimit(t *testing.T) {
+// The P2P protocol currently uses two block hashes per requested block
+// (canonical Yespower plus the legacy SHA256d compatibility hash). Keep the
+// regression invariant tied directly to the wire limits used by the server.
+func TestDualHashGetDataCapacityMatchesServeLimit(t *testing.T) {
 	const perBatch = maxGetDataItems / 2
 	if perBatch <= 0 {
 		t.Fatal("dual-hash batch capacity must be positive")
