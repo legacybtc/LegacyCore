@@ -2,9 +2,9 @@ package version
 
 const (
 	WalletName    = "Legacy Wallet"
-	WalletVersion = "1.0.35"
+	WalletVersion = "1.0.36"
 	CoreName      = "Legacy Core"
-	CoreVersion   = "1.0.35"
+	CoreVersion   = "1.0.36"
 )
 
 var (
